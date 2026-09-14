@@ -1,0 +1,129 @@
+name: qd-qq-e2e
+on:
+  workflow_dispatch:
+    inputs:
+      qq_url:
+        description: QQ apk
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/com.tencent.mobileqq.apk
+        required: false
+      qd_url:
+        description: qidian apk
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk
+        required: false
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Setup binder and adb
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+
+      - name: Boot + install both apps
+        run: |
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 2>&1 || true
+          for i in $(seq 1 30); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if [ "$B" = "1" ]; then echo "booted try $i"; break; fi
+            sleep 8
+          done
+          curl -sSL --max-time 900 -o /tmp/qq.apk "${{ inputs.qq_url }}" || echo QQ_DL_FAIL
+          curl -sSL --max-time 300 -o /tmp/qd.apk "${{ inputs.qd_url }}" || echo QD_DL_FAIL
+          timeout 900 adb -s localhost:5555 install -r -t /tmp/qq.apk 2>&1 | tail -2
+          timeout 300 adb -s localhost:5555 install -r -t /tmp/qd.apk 2>&1 | tail -2
+          timeout 20 adb -s localhost:5555 shell "pm list packages | grep -i mobileqq" || true
+
+      - name: Dump helper
+        run: |
+          cat > /tmp/dump.sh <<'EOS'
+          #!/bin/bash
+          TAG=$1
+          D="localhost:5555"
+          timeout 30 adb -s $D exec-out screencap -p > /tmp/${TAG}.png 2>/dev/null || true
+          timeout 30 adb -s $D shell uiautomator dump /sdcard/${TAG}.xml >/dev/null 2>&1 || true
+          timeout 30 adb -s $D pull /sdcard/${TAG}.xml /tmp/${TAG}.xml >/dev/null 2>&1 || true
+          echo "--- $TAG focus ---"
+          timeout 20 adb -s $D shell "dumpsys window 2>/dev/null | grep mCurrentFocus" || true
+          echo "--- $TAG ps ---"
+          timeout 20 adb -s $D shell "ps -A | grep -i -E 'mobileqq|qidian'" || echo none
+          echo "--- $TAG nodes(text+bounds) ---"
+          sed 's/></>\n</g' /tmp/${TAG}.xml 2>/dev/null | grep -o 'text="[^"]*"[^>]*bounds="\[[^]]*\]\[[^]]*\]"' | head -45 || true
+          EOS
+          chmod +x /tmp/dump.sh
+          /tmp/dump.sh boot
+
+      - name: Launch QQ properly and find its login options
+        run: |
+          timeout 20 adb -s localhost:5555 shell "logcat -c" || true
+          echo "=== am start QQ SplashActivity ==="
+          timeout 40 adb -s localhost:5555 shell "am start -W -n com.tencent.mobileqq/com.tencent.mobileqq.activity.SplashActivity" 2>&1 | tail -5
+          sleep 35
+          /tmp/dump.sh qq1
+          echo "=== try tap 同意-ish node if present ==="
+          LINE=$(sed 's/></>\n</g' /tmp/qq1.xml 2>/dev/null | grep -o 'text="[^"]*"[^>]*bounds="\[[^]]*\]\[[^]]*\]"' | grep -E '同意|允许|我知道了|进入' | tail -1)
+          echo "picked: $LINE"
+          B=$(echo "$LINE" | grep -o '\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]' | head -1)
+          if [ -n "$B" ]; then
+            X1=$(echo "$B" | sed 's/\]\[/ /;s/\[//g;s/\]//g' | awk '{print $1}')
+            Y1=$(echo "$B" | sed 's/\]\[/ /;s/\[//g;s/\]//g' | awk '{print $2}')
+            X2=$(echo "$B" | sed 's/\]\[/ /;s/\[//g;s/\]//g' | awk '{print $3}')
+            Y2=$(echo "$B" | sed 's/\]\[/ /;s/\[//g;s/\]//g' | awk '{print $4}')
+            CX=$(( (X1+X2)/2 )); CY=$(( (Y1+Y2)/2 ))
+            echo "tapping ($CX,$CY) from $B"
+            timeout 20 adb -s localhost:5555 shell "input tap $CX $CY" || true
+          else
+            echo "no agree node found; tapping bottom-right as fallback"
+            timeout 20 adb -s localhost:5555 shell "input tap 900 1900" || true
+          fi
+          sleep 25
+          /tmp/dump.sh qq2
+
+      - name: Qidian -> tap QQ login with QQ installed
+        run: |
+          timeout 20 adb -s localhost:5555 shell "logcat -c" || true
+          timeout 40 adb -s localhost:5555 shell "am start -W -n com.qidian.QDReader/com.qidian.QDReader.ui.activity.SplashActivity" 2>&1 | tail -3
+          sleep 20
+          timeout 20 adb -s localhost:5555 shell "input tap 539 1605" || true
+          sleep 20
+          timeout 20 adb -s localhost:5555 shell "input tap 84 2003" || true
+          sleep 4
+          /tmp/dump.sh qd_login
+          echo "=== TAP QQ LOGIN (539,1840) ==="
+          timeout 20 adb -s localhost:5555 shell "input tap 539 1840" || true
+          sleep 35
+          /tmp/dump.sh sso1
+          sleep 30
+          /tmp/dump.sh sso2
+
+      - name: Logs
+        if: always()
+        run: |
+          echo "=== crash ==="
+          timeout 30 adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -40 || true
+          echo "=== qq auth related ==="
+          timeout 40 adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "openSDK|QQAuth|mqq|tauth|qqauth|tim_login|msf|wtlogin|EmulatorDetect|device" | tail -70 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qq-e2e-evidence
+          path: |
+            /tmp/*.png
+            /tmp/*.xml
+          if-no-files-found: warn
