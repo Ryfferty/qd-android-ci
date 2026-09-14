@@ -1,0 +1,76 @@
+name: install-qd
+
+on:
+  workflow_dispatch:
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+
+      - name: Download APKs
+        run: |
+          mkdir -p apks
+          cd apks
+          echo "=== 下载起点 APK ==="
+          wget -q --show-progress \
+            "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk" \
+            -O qidian.apk && ls -la qidian.apk
+          echo "=== 测试 QQ APK 下载源可达性 ==="
+          for u in \
+            "https://d.apkpure.com/b/APK/com.tencent.mobileqq?version=latest" \
+            "https://apkpure.com/cn/qq/com.tencent.mobileqq/download" \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" ; do
+            printf "%-90s " "$(echo $u | cut -c1-88)"
+            curl -sSI -m 15 "$u" 2>/dev/null | head -1 | tr -d '\r'
+          done
+
+      - name: Run emulator + install
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          force-avd-creation: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 4096 -cores 4
+          disable-animations: true
+          script: |
+            echo "===== 环境 ====="
+            adb shell getprop ro.build.version.release
+            adb shell getprop ro.product.cpu.abilist
+            echo "===== APK 信息 ====="
+            ls -la $GITHUB_WORKSPACE/apks/ || ls -la apks/
+            echo "===== 安装起点（ARM-only APK）====="
+            adb install -r -t $GITHUB_WORKSPACE/apks/qidian.apk 2>&1 | tail -5
+            echo "===== 检查是否装上 ====="
+            adb shell pm list packages | grep -i qidian || echo "NOT_INSTALLED"
+            echo "===== 包信息 ====="
+            adb shell dumpsys package com.qidian.QDReader 2>/dev/null | grep -E "versionName|primaryCpuAbi|codePath" | head -5
+            echo "===== 尝试启动 ====="
+            adb shell monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1 2>&1 | tail -3
+            sleep 25
+            echo "===== 进程检查 ====="
+            adb shell ps -A 2>/dev/null | grep -i qidian || echo "进程不存在（可能崩溃）"
+            echo "===== 崩溃日志 ====="
+            adb logcat -d -b crash 2>/dev/null | tail -30 || true
+            adb logcat -d 2>/dev/null | grep -iE "qidian|FATAL|AndroidRuntime" | tail -20 || true
+            echo "===== 截图 ====="
+            adb shell screencap -p /sdcard/qd.png && adb pull /sdcard/qd.png qd_screen.png && ls -la qd_screen.png
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qd-test-out
+          path: |
+            qd_screen.png
+          retention-days: 3
