@@ -264,8 +264,18 @@ jobs:
           sleep 120
           echo "===== FULL CAPTURE ====="
           cat out/capture.txt
-          echo "===== logcat qidian grep ====="
-          adb -s localhost:5555 shell "logcat -d -v brief" 2>/dev/null | grep -iE "qidian|argus|sora|cmfu|QDInfo" | tail -60
+          echo "===== ★ 内核级：app uid 有没有 TCP 连接 ====="
+          adb -s localhost:5555 shell "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | wc -l" | tr -d '\r'
+          echo "--- 非 00000000/0000000000000000 的对端连接（有外部连接就会出现在这）---"
+          adb -s localhost:5555 shell "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null" | tr -d '\r' | awk 'NR>1' | head -20
+          echo "--- app 进程的 socket 统计 ---"
+          PIDX=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" 2>/dev/null | tr -d '\r')
+          echo "app pid=$PIDX"
+          adb -s localhost:5555 shell "ls -l /proc/$PIDX/fd 2>/dev/null | grep -c socket" | tr -d '\r'
+          echo "--- tcpdump 抓 15 秒（若容器里有）---"
+          adb -s localhost:5555 shell "which tcpdump" | tr -d '\r'
+          echo "===== logcat 全量过滤（放宽 tag）====="
+          adb -s localhost:5555 shell "logcat -d -v brief" 2>/dev/null | grep -iE "qidian|argus|sora|cmfu|QDInfo|okhttp|retrofit|http|network|Exception" | tail -80
 
       - name: Upload
         uses: actions/upload-artifact@v4
