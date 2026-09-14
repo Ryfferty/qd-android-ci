@@ -18,9 +18,9 @@ jobs:
 
       - name: Download APK
         run: |
-          mkdir -p apks && cd apks
-          wget -q "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk" -O qidian.apk
-          ls -la
+          mkdir -p apks
+          wget -q "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk" -O apks/qidian.apk
+          ls -la apks/
 
       - name: Run emulator and probe
         uses: reactivecircus/android-emulator-runner@v2
@@ -33,57 +33,40 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 4096 -cores 4
           disable-animations: true
           script: |
-            set +e
-            W=$(pwd)
-            O=$W/out
-            mkdir -p $O
-
-            echo "##### install #####"
-            adb install -r -t $W/apks/qidian.apk 2>&1 | tail -2
-            adb shell pm list packages | grep qidian
-
-            echo "##### launch #####"
+            mkdir -p out
+            adb install -r -t apks/qidian.apk 2>&1 | tail -2
             adb shell am start -n com.qidian.QDReader/.ui.activity.SplashActivity 2>&1 | tail -1
             sleep 35
-
-            echo "##### capture 1 #####"
-            adb shell screencap -p /sdcard/s1.png
-            adb pull /sdcard/s1.png $O/1_launch.png
-            adb shell uiautomator dump /sdcard/u1.xml >/dev/null 2>&1
-            adb pull /sdcard/u1.xml $O/u1.xml
-            adb shell dumpsys activity activities 2>/dev/null | grep -E "mResumedActivity" > $O/act1.txt
-
-            echo "##### tap agree (bottom area) #####"
+            adb shell screencap -p /sdcard/s1.png && adb pull /sdcard/s1.png out/1_launch.png
+            adb shell uiautomator dump /sdcard/u1.xml >/dev/null 2>&1; adb pull /sdcard/u1.xml out/u1.xml
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act1.txt
             adb shell input tap 540 1980
             sleep 8
             adb shell input tap 540 1980
-            sleep 15
-
-            echo "##### capture 2 #####"
-            adb shell screencap -p /sdcard/s2.png
-            adb pull /sdcard/s2.png $O/2_after_agree.png
-            adb shell uiautomator dump /sdcard/u2.xml >/dev/null 2>&1
-            adb pull /sdcard/u2.xml $O/u2.xml
-            adb shell dumpsys activity activities 2>/dev/null | grep -E "mResumedActivity" > $O/act2.txt
-
-            echo "##### tap bottom-right tab (my page) #####"
+            sleep 18
+            adb shell screencap -p /sdcard/s2.png && adb pull /sdcard/s2.png out/2_after_agree.png
+            adb shell uiautomator dump /sdcard/u2.xml >/dev/null 2>&1; adb pull /sdcard/u2.xml out/u2.xml
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act2.txt
             adb shell input tap 1000 2290
-            sleep 15
+            sleep 18
+            adb shell screencap -p /sdcard/s3.png && adb pull /sdcard/s3.png out/3_mytab.png
+            adb shell uiautomator dump /sdcard/u3.xml >/dev/null 2>&1; adb pull /sdcard/u3.xml out/u3.xml
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act3.txt
+            ls -la out/
 
-            echo "##### capture 3 #####"
-            adb shell screencap -p /sdcard/s3.png
-            adb pull /sdcard/s3.png $O/3_mytab.png
-            adb shell uiautomator dump /sdcard/u3.xml >/dev/null 2>&1
-            adb pull /sdcard/u3.xml $O/u3.xml
-            adb shell dumpsys activity activities 2>/dev/null | grep -E "mResumedActivity" > $O/act3.txt
-
-            echo "##### files #####"
-            ls -la $O/
+      - name: Collect
+        if: always()
+        run: |
+          mkdir -p final
+          cp -r out/* final/ 2>/dev/null || true
+          ls -la final/ || true
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ui-probe
-          path: out/
+          path: |
+            out/
+            final/
           retention-days: 3
