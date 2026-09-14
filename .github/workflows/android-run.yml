@@ -1,0 +1,57 @@
+name: android-run
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+          ls -la /dev/kvm
+
+      - name: Run Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          force-avd-creation: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 4096 -cores 4
+          disable-animations: true
+          script: |
+            echo "===== DEVICES ====="
+            adb devices -l
+            echo "===== ANDROID VERSION ====="
+            adb shell getprop ro.build.version.release
+            adb shell getprop ro.build.version.sdk
+            echo "===== ABI (关键: 看有没有 arm64-v8a) ====="
+            adb shell getprop ro.product.cpu.abilist
+            adb shell getprop ro.product.cpu.abilist64
+            adb shell getprop ro.product.cpu.abilist32
+            echo "===== NATIVE BRIDGE ====="
+            adb shell getprop ro.dalvik.vm.native.bridge
+            adb shell getprop ro.enable.native.bridge.exec
+            echo "===== 系统里的翻译库 ====="
+            adb shell 'ls /system/lib64/ | grep -iE "ndk|houdini|nb\.so"' || echo "(无)"
+            adb shell 'ls /system/lib/ | grep -iE "ndk|houdini|nb\.so"' || echo "(无)"
+            echo "===== 内存 ====="
+            adb shell cat /proc/meminfo | head -3
+            echo "===== 截图 ====="
+            adb shell screencap -p /sdcard/s.png && adb pull /sdcard/s.png screen.png && ls -la screen.png
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-run-out
+          path: screen.png
+          retention-days: 3
