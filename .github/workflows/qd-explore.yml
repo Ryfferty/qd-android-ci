@@ -1,0 +1,87 @@
+name: qd-explore
+
+on:
+  workflow_dispatch:
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+
+      - name: Prepare
+        run: |
+          mkdir -p apks out
+          wget -q "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk" -O apks/qidian.apk
+          wget -q "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook2.js" -O hook.js
+          pip install -q frida-tools 2>&1 | tail -1
+          FV=$(frida --version)
+          wget -q "https://github.com/frida/frida/releases/download/${FV}/frida-server-${FV}-android-x86_64.xz" -O fs.xz
+          unxz -f fs.xz && chmod +x fs
+          ls -la fs
+
+      - name: Run
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          force-avd-creation: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 4096 -cores 4
+          disable-animations: true
+          script: |
+            adb root 2>&1 | head -1 || true
+            sleep 5
+            adb push fs /data/local/tmp/fs || true
+            adb shell chmod 755 /data/local/tmp/fs || true
+            adb install -r -t apks/qidian.apk 2>&1 | tail -1 || true
+            adb shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &" || true
+            sleep 10
+            echo "===== frida spawn (后台) ====="
+            timeout 400 frida -U -f com.qidian.QDReader -l hook.js -q > out/frida.txt 2>&1 &
+            sleep 45
+            echo "--- frida 输出 ---"; cat out/frida.txt || true
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity || true
+            echo "===== step1: 点同意并继续 ====="
+            adb shell input tap 540 1621 || true
+            sleep 20
+            adb shell screencap -p /sdcard/e1.png && adb pull /sdcard/e1.png out/e1.png || true
+            adb shell uiautomator dump /sdcard/e1.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/e1.xml out/e1.xml || true
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act1.txt || true
+            adb shell ps -A | grep -i qidian > out/ps1.txt || true
+            cat out/act1.txt || true
+            echo "===== step2: 等主界面 ====="
+            sleep 35
+            adb shell screencap -p /sdcard/e2.png && adb pull /sdcard/e2.png out/e2.png || true
+            adb shell uiautomator dump /sdcard/e2.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/e2.xml out/e2.xml || true
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act2.txt || true
+            cat out/act2.txt || true
+            echo "===== step3: 点右下角（我的）====="
+            adb shell input tap 990 2280 || true
+            sleep 25
+            adb shell screencap -p /sdcard/e3.png && adb pull /sdcard/e3.png out/e3.png || true
+            adb shell uiautomator dump /sdcard/e3.xml >/dev/null 2>&1 || true
+            adb pull /sdcard/e3.xml out/e3.xml || true
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act3.txt || true
+            cat out/act3.txt || true
+            echo "===== frida 最终输出 ====="
+            cat out/frida.txt || true
+            ls -la out/ || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: explore-out
+          path: out/
+          retention-days: 3
