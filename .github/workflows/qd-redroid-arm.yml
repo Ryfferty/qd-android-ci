@@ -1,0 +1,138 @@
+name: qd-redroid-arm
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: APK url
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk
+        required: false
+      redroid_tag:
+        description: redroid image tag
+        default: 11.0.0-latest
+        required: false
+      gpu_mode:
+        description: gpu mode
+        default: guest
+        required: false
+
+jobs:
+  redroid:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    steps:
+      - name: Host info
+        run: |
+          uname -m
+          nproc
+          free -m | head -2
+
+      - name: Install binder kernel module and adb
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils unzip || echo "APT FAILED"
+          echo "--- android driver files ---"
+          ls -l /lib/modules/$(uname -r)/kernel/drivers/android/ 2>&1 || echo "no android dir"
+          echo "--- modprobe binder_linux ---"
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo "MODPROBE BINDER FAILED"
+          sudo modprobe binderfs 2>&1 || true
+          echo "--- /dev ---"
+          ls -l /dev/binder* 2>&1 || echo "NO BINDER DEV NODE"
+          lsmod | grep -i binder || echo "not in lsmod"
+          grep -i binder /proc/filesystems || echo "not in filesystems"
+          echo "--- adb ---"
+          adb version 2>&1 | head -2 || echo "no adb"
+
+      - name: Start redroid arm64 container
+        run: |
+          sudo docker pull redroid/redroid:${{ inputs.redroid_tag }} 2>&1 | tail -5 || echo "PULL FAILED"
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          if [ -e /dev/binder ]; then VOLS="$VOLS -v /dev/binder:/dev/binder"; fi
+          if [ -e /dev/hwbinder ]; then VOLS="$VOLS -v /dev/hwbinder:/dev/hwbinder"; fi
+          if [ -e /dev/vndbinder ]; then VOLS="$VOLS -v /dev/vndbinder:/dev/vndbinder"; fi
+          echo "vols=[$VOLS]"
+          sudo docker run -d --privileged --name redroid $VOLS \
+            -p 5555:5555 \
+            redroid/redroid:${{ inputs.redroid_tag }} \
+            androidboot.redroid_gpu_mode=${{ inputs.gpu_mode }} \
+            androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 \
+            androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 \
+            || echo "DOCKER RUN FAILED"
+          sleep 20
+          sudo docker ps -a
+          echo "--- container logs ---"
+          sudo docker logs redroid 2>&1 | tail -80 || true
+
+      - name: Wait for Android boot
+        run: |
+          adb start-server 2>&1 | tail -2 || true
+          adb connect localhost:5555 2>&1 || true
+          sleep 5
+          adb devices -l || true
+          for i in $(seq 1 45); do
+            B=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            echo "try $i boot_completed=[$B]"
+            if [ "$B" = "1" ]; then echo "BOOTED OK"; break; fi
+            sleep 10
+          done
+          echo "=== props ==="
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi 2>&1 || true
+          adb -s localhost:5555 shell getprop ro.product.cpu.abilist 2>&1 || true
+          adb -s localhost:5555 shell getprop ro.dalvik.vm.native.bridge 2>&1 || true
+          adb -s localhost:5555 shell getprop ro.build.version.release 2>&1 || true
+          adb -s localhost:5555 shell "getprop | grep -i -E 'abi|bridge'" 2>&1 || true
+          echo "=== host cpu inside container ==="
+          adb -s localhost:5555 shell "cat /proc/cpuinfo | head -20" 2>&1 || true
+
+      - name: Install qidian APK
+        run: |
+          curl -sSL --max-time 300 -o /tmp/qd.apk "${{ inputs.apk_url }}" || echo "DOWNLOAD FAILED"
+          ls -l /tmp/qd.apk || true
+          adb -s localhost:5555 install -r -t /tmp/qd.apk 2>&1 | tail -5 || echo "INSTALL FAILED"
+          echo "=== package info ==="
+          adb -s localhost:5555 shell "dumpsys package com.qidian.QDReader | grep -E 'primaryCpuAbi|secondaryCpuAbi|versionName|codePath'" 2>&1 || true
+
+      - name: Launch app and capture
+        run: |
+          adb -s localhost:5555 shell "logcat -c" || true
+          adb -s localhost:5555 shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -5 || true
+          sleep 25
+          echo "=== process ==="
+          adb -s localhost:5555 shell "ps -A | grep -i qidian" 2>&1 || true
+          echo "=== current focus ==="
+          adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp'" 2>&1 || true
+          echo "=== screencap ==="
+          adb -s localhost:5555 exec-out screencap -p > /tmp/qd_screen.png 2>/dev/null || echo "screencap failed"
+          ls -l /tmp/qd_screen.png || true
+          echo "=== ui dump ==="
+          adb -s localhost:5555 shell uiautomator dump /sdcard/ui.xml 2>&1 || true
+          adb -s localhost:5555 pull /sdcard/ui.xml /tmp/ui.xml 2>&1 || true
+          ls -l /tmp/ui.xml || true
+          echo "=== logcat errors ==="
+          adb -s localhost:5555 shell "logcat -d -v brief" 2>/dev/null | grep -i -E "fatal|UnsatisfiedLink|dlopen|AndroidRuntime|qidian|miitmdid|pangle" | tail -80 || true
+
+      - name: Second launch attempt after 40s (crash restart check)
+        run: |
+          sleep 40
+          adb -s localhost:5555 shell "ps -A | grep -i qidian" 2>&1 || echo "app not running"
+          adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep -E 'mCurrentFocus'" 2>&1 || true
+          adb -s localhost:5555 exec-out screencap -p > /tmp/qd_screen2.png 2>/dev/null || true
+          ls -l /tmp/qd_screen2.png || true
+
+      - name: Container logs tail
+        if: always()
+        run: |
+          sudo docker logs redroid 2>&1 | tail -40 || true
+          sudo docker ps -a || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redroid-arm-evidence
+          path: |
+            /tmp/qd_screen.png
+            /tmp/qd_screen2.png
+            /tmp/ui.xml
+          if-no-files-found: warn
