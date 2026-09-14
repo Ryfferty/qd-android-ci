@@ -1,0 +1,107 @@
+name: qd-qq-install
+on:
+  workflow_dispatch:
+    inputs:
+      qq_url:
+        description: QQ apk url (release asset)
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/com.tencent.mobileqq.apk
+        required: false
+      qd_url:
+        description: qidian apk url
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk
+        required: false
+
+jobs:
+  qq:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Setup binder and adb
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+          lsmod | grep -i binder || true
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+          sudo docker ps --format '{{.Names}} {{.Status}}'
+
+      - name: Boot
+        run: |
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 2>&1 || true
+          for i in $(seq 1 30); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if [ "$B" = "1" ]; then echo "booted try $i"; break; fi
+            sleep 8
+          done
+          timeout 20 adb -s localhost:5555 shell "df -h /data" 2>&1 || true
+
+      - name: Download QQ apk (release first, Tencent CDN fallback)
+        run: |
+          set +e
+          curl -sSL --max-time 600 -o /tmp/qq.apk "${{ inputs.qq_url }}" 2>&1 | tail -2
+          SZ=$(stat -c%s /tmp/qq.apk 2>/dev/null || echo 0)
+          echo "release asset size = $SZ"
+          if [ "$SZ" -lt 150000000 ]; then
+            echo "=== fallback: scrape im.qq.com for official apk ==="
+            curl -sSL --max-time 60 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "https://im.qq.com/mobileqq/index.shtml" -o /tmp/im.html 2>&1 | tail -2
+            grep -o -E 'https://dldir1[^"]*\.apk' /tmp/im.html | head -3
+            QURL=$(grep -o -E 'https://dldir1[^"]*\.apk' /tmp/im.html | head -1)
+            echo "QURL=$QURL"
+            if [ -n "$QURL" ]; then curl -sSL --max-time 900 -o /tmp/qq.apk "$QURL"; fi
+          fi
+          ls -l /tmp/qq.apk || true
+          echo "final size = $(stat -c%s /tmp/qq.apk 2>/dev/null || echo 0)"
+
+      - name: Install QQ
+        run: |
+          timeout 600 adb -s localhost:5555 install -r -t /tmp/qq.apk 2>&1 | tail -4
+          echo "=== qq pkg ==="
+          timeout 20 adb -s localhost:5555 shell "pm list packages | grep -i -E 'mobileqq|qqlite'" 2>&1 || true
+          timeout 20 adb -s localhost:5555 shell "dumpsys package com.tencent.mobileqq | grep -E 'primaryCpuAbi|versionName'" 2>&1 || true
+
+      - name: Launch QQ and see login screen
+        run: |
+          timeout 20 adb -s localhost:5555 shell "logcat -c" || true
+          timeout 30 adb -s localhost:5555 shell "monkey -p com.tencent.mobileqq -c android.intent.category.LAUNCHER 1" 2>&1 | tail -3 || true
+          sleep 30
+          timeout 20 adb -s localhost:5555 shell "ps -A | grep -i -E 'mobileqq|qq'" 2>&1 || echo NO_QQ_PROCESS
+          timeout 20 adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep mCurrentFocus" 2>&1 || true
+          timeout 30 adb -s localhost:5555 exec-out screencap -p > /tmp/qq_launch.png 2>/dev/null || true
+          timeout 30 adb -s localhost:5555 shell uiautomator dump /sdcard/qq1.xml >/dev/null 2>&1 || true
+          timeout 30 adb -s localhost:5555 pull /sdcard/qq1.xml /tmp/qq1.xml >/dev/null 2>&1 || true
+          sleep 25
+          timeout 20 adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep mCurrentFocus" 2>&1 || true
+          timeout 30 adb -s localhost:5555 exec-out screencap -p > /tmp/qq_launch2.png 2>/dev/null || true
+          timeout 30 adb -s localhost:5555 shell uiautomator dump /sdcard/qq2.xml >/dev/null 2>&1 || true
+          timeout 30 adb -s localhost:5555 pull /sdcard/qq2.xml /tmp/qq2.xml >/dev/null 2>&1 || true
+
+      - name: QQ logs
+        if: always()
+        run: |
+          echo "=== crash ==="
+          timeout 30 adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -40 || true
+          echo "=== qq log ==="
+          timeout 40 adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "mobileqq|QQ|MSF|wtlogin|emulator|root" | tail -80 || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qq-install-evidence
+          path: |
+            /tmp/qq_launch.png
+            /tmp/qq_launch2.png
+            /tmp/qq1.xml
+            /tmp/qq2.xml
+          if-no-files-found: warn
