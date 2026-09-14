@@ -52,6 +52,25 @@ jobs:
           adb -s localhost:5555 shell getprop ro.product.cpu.abi
           adb -s localhost:5555 shell getprop ro.build.version.release
 
+      - name: ★ Guest 网络连通性检查（App 发不出请求的最可能原因）
+        run: |
+          set +e
+          echo "=== 宿主侧 ==="
+          curl -sS -o /dev/null -m 12 -w "host->qidian %{http_code} %{time_total}s\n" https://bravev6.if.qidian.com/ || echo HOST_FAIL
+          echo "=== guest DNS 配置 ==="
+          adb -s localhost:5555 shell "getprop | grep -i dns" | tr -d '\r'
+          echo "=== guest ping 网关/公网 ==="
+          adb -s localhost:5555 shell "ping -c 2 -W 3 8.8.8.8 2>&1 | tail -3" | tr -d '\r'
+          echo "=== guest 解析域名 ==="
+          adb -s localhost:5555 shell "ping -c 2 -W 3 bravev6.if.qidian.com 2>&1 | tail -3" | tr -d '\r'
+          echo "=== guest TCP 连 443 ==="
+          for hp in "bravev6.if.qidian.com 443" "ptlogin.yuewen.com 443" "openmobile.qq.com 443"; do
+            set -- $hp
+            adb -s localhost:5555 shell "toybox nc -w 5 $1 $2 < /dev/null; echo rc=\$? for $1:$2" 2>&1 | tr -d '\r'
+          done
+          echo "=== guest 代理设置 ==="
+          adb -s localhost:5555 shell "settings get global http_proxy" | tr -d '\r'
+
       - name: Download APK + hook + frida-server(arm64)
         run: |
           # ★ 带重试 + 校验，避免偶发下载失败把整轮跑废
