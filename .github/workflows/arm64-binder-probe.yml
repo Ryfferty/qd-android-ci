@@ -1,0 +1,41 @@
+name: arm64-binder-probe
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Binder / container capability probe
+        run: |
+          echo "=== kernel ==="
+          uname -r
+          echo "=== /lib/modules ==="
+          ls -l /lib/modules/ 2>&1 || true
+          ls /lib/modules/$(uname -r)/ 2>&1 | head -20 || true
+          echo "=== binder in /dev ==="
+          ls -l /dev/binder* 2>&1 || true
+          echo "=== binder in /proc/filesystems ==="
+          grep -i binder /proc/filesystems 2>&1 || echo "not in filesystems"
+          echo "=== /sys/fs ==="
+          ls /sys/fs/ 2>&1
+          echo "=== try modprobe binder_linux ==="
+          sudo modprobe binder_linux 2>&1 || echo "modprobe binder_linux FAILED"
+          sudo modprobe binderfs 2>&1 || echo "modprobe binderfs FAILED"
+          echo "=== lsmod ==="
+          lsmod 2>&1 | head -20
+          echo "=== binder now? ==="
+          ls -l /dev/binder* 2>&1 || true
+          grep -i binder /proc/filesystems 2>&1 || echo "still not in filesystems"
+          echo "=== module search ==="
+          find /lib/modules -name "*binder*" 2>/dev/null | head || echo "no binder module file"
+          echo "=== module deps ==="
+          ls /lib/modules/$(uname -r)/modules.dep 2>&1 || true
+          echo "=== docker ==="
+          docker --version 2>&1 || echo "no docker"
+          docker info 2>&1 | head -5 || true
+          echo "=== apt: kernel extras ==="
+          apt-cache policy linux-modules-extra-$(uname -r) 2>&1 | head -8 || true
+          echo "=== androiddeps ==="
+          apt-cache search waydroid 2>&1 | head -5 || true
+          echo "PROBE2_DONE"
