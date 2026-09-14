@@ -34,7 +34,7 @@ jobs:
           disable-animations: true
           script: |
             set +e
-            W=$GITHUB_WORKSPACE
+            W=$(pwd)
             O=$W/out
             mkdir -p $O
 
