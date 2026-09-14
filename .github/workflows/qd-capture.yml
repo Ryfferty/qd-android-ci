@@ -82,33 +82,30 @@ jobs:
             sleep 5
           done
 
-      - name: Spawn Qidian under frida and capture traffic
+      - name: Launch Qidian + attach frida + capture
         run: |
           set +e
           mkdir -p out
           adb -s localhost:5555 shell "pm clear com.qidian.QDReader" 2>&1 | tail -1
           adb -s localhost:5555 shell "logcat -c"
-          # 用 spawn 模式，确保启动即挂上 hook
-          # ★ -l 必须是【宿主机】路径（frida 在宿主机读脚本再注入）
-          timeout 420 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l /tmp/hook_net.js -q \
+          # ★ 不用 frida spawn（在 redroid 上会 InvocationTargetException 并把 App 强停），
+          #   改成 am start 显式拉起 + attach（这是之前跑通的拉起方式）
+          echo "===== am start ====="
+          adb -s localhost:5555 shell "am start -W -n com.qidian.QDReader/com.qidian.QDReader.ui.activity.SplashActivity" 2>&1 | tail -5
+          echo "===== 等进程 ====="
+          for i in $(seq 1 20); do
+            P=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" 2>/dev/null | tr -d '\r')
+            if [ -n "$P" ]; then echo "pid=$P (try $i)"; break; fi
+            sleep 3
+          done
+          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
+          echo "===== attach frida ====="
+          timeout 500 frida -H 127.0.0.1:27042 -n com.qidian.QDReader -l /tmp/hook_net.js -q \
             > out/capture.txt 2>&1 &
           sleep 45
-          echo "===== T+45s capture head ====="
-          head -60 out/capture.txt
-          echo "===== 前台 activity ====="
-          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" || true
-          # 兜底：若 spawn 没起来（前台不是 qidian），改用 am start + attach
-          if ! adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" 2>/dev/null | grep -q qidian; then
-            echo "===== spawn 未生效 -> am start + attach 兜底 ====="
-            adb -s localhost:5555 shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -2
-            sleep 12
-            timeout 400 frida -H 127.0.0.1:27042 -n com.qidian.QDReader -l /tmp/hook_net.js -q \
-              >> out/capture.txt 2>&1 &
-            echo "attach fallback launched"
-          fi
-          sleep 45
-          echo "===== capture 现状 ====="
-          wc -l out/capture.txt; head -60 out/capture.txt
+          echo "===== T+45s capture ====="
+          wc -l out/capture.txt; head -70 out/capture.txt
+          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
 
       - name: Drive UI (privacy agree -> login page)
         run: |
