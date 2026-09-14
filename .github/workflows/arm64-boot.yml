@@ -1,0 +1,80 @@
+name: arm64-boot
+
+on:
+  workflow_dispatch:
+
+jobs:
+  arm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Setup Android SDK
+        run: |
+          set -e
+          mkdir -p $HOME/android-sdk/cmdline-tools
+          cd /tmp
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O ct.zip
+          unzip -q ct.zip -d $HOME/android-sdk/cmdline-tools
+          mv $HOME/android-sdk/cmdline-tools/cmdline-tools $HOME/android-sdk/cmdline-tools/latest
+          echo "ANDROID_SDK_ROOT=$HOME/android-sdk" >> $GITHUB_ENV
+          echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+          echo "$HOME/android-sdk/emulator" >> $GITHUB_PATH
+          echo "ANDROID_AVD_HOME=$HOME/.android/avd" >> $GITHUB_ENV
+          mkdir -p $HOME/.android/avd
+
+      - name: Install arm64 image
+        run: |
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          export PATH=$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install "platform-tools" "emulator" "system-images;android-30;google_apis;arm64-v8a" 2>&1 | tail -3
+          echo "=== 检查装了哪些镜像 ==="
+          ls $ANDROID_SDK_ROOT/system-images/android-30/google_apis/ 2>/dev/null || echo "(none)"
+
+      - name: Create AVD
+        run: |
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          export PATH=$PATH:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/emulator
+          export ANDROID_AVD_HOME=$HOME/.android/avd
+          printf 'no\n' | avdmanager create avd -n a64 -k "system-images;android-30;google_apis;arm64-v8a" -d pixel_5 --force 2>&1 | tail -5
+          echo "=== AVD 列表 ==="
+          emulator -list-avds
+          echo "=== AVD 目录 ==="
+          ls -la $HOME/.android/avd/ || true
+
+      - name: Boot arm64 emulator (TCG, slow)
+        run: |
+          export ANDROID_SDK_ROOT=$HOME/android-sdk
+          export PATH=$PATH:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/emulator
+          export ANDROID_AVD_HOME=$HOME/.android/avd
+          adb start-server
+          nohup emulator -avd a64 -no-window -no-audio -no-boot-anim -no-snapshot \
+            -gpu swiftshader_indirect -accel off -memory 3072 -cores 4 \
+            > /tmp/emu64.log 2>&1 &
+          echo "launched"
+          sleep 30
+          echo "=== 是否连上 ==="
+          timeout 120 adb wait-for-device && echo CONNECTED || echo WAIT_TIMEOUT
+          echo "=== 等 boot (最多 90 分钟) ==="
+          for i in $(seq 1 180); do
+            B=$(timeout 20 adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            if [ "$B" = "1" ]; then echo "BOOT_OK at ${i}x30s"; break; fi
+            if [ $((i % 10)) -eq 0 ]; then echo "  [$((i*30))s] still booting... ($B)"; fi
+            sleep 30
+          done
+          echo "=== INFO ==="
+          adb devices -l
+          adb shell getprop ro.build.version.release 2>&1
+          adb shell getprop ro.product.cpu.abilist 2>&1
+          adb shell getprop ro.dalvik.vm.native.bridge 2>&1
+          echo "=== emu log tail ==="
+          tail -15 /tmp/emu64.log
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-log
+          path: /tmp/emu64.log
+          retention-days: 3
