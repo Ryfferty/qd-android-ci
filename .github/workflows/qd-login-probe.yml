@@ -1,0 +1,68 @@
+name: qd-login-probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+
+      - name: Download APK
+        run: |
+          mkdir -p apks
+          wget -q "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk" -O apks/qidian.apk
+
+      - name: Run
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          force-avd-creation: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 4096 -cores 4
+          disable-animations: true
+          script: |
+            mkdir -p out
+            adb install -r -t apks/qidian.apk 2>&1 | tail -1
+            adb shell am start -n com.qidian.QDReader/.ui.activity.SplashActivity 2>&1 | tail -1
+            sleep 30
+            adb shell input tap 540 1621
+            sleep 5
+            adb shell input tap 540 1621
+            sleep 25
+            adb shell screencap -p /sdcard/a1.png && adb pull /sdcard/a1.png out/1_after_agree.png
+            adb shell uiautomator dump /sdcard/a1.xml >/dev/null 2>&1; adb pull /sdcard/a1.xml out/a1.xml
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act1.txt
+            sleep 20
+            adb shell screencap -p /sdcard/a2.png && adb pull /sdcard/a2.png out/2_home.png
+            adb shell uiautomator dump /sdcard/a2.xml >/dev/null 2>&1; adb pull /sdcard/a2.xml out/a2.xml
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act2.txt
+            adb shell input tap 1000 2290
+            sleep 20
+            adb shell screencap -p /sdcard/a3.png && adb pull /sdcard/a3.png out/3_tab5.png
+            adb shell uiautomator dump /sdcard/a3.xml >/dev/null 2>&1; adb pull /sdcard/a3.xml out/a3.xml
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act3.txt
+            adb shell input tap 540 1200
+            sleep 20
+            adb shell screencap -p /sdcard/a4.png && adb pull /sdcard/a4.png out/4_middle.png
+            adb shell uiautomator dump /sdcard/a4.xml >/dev/null 2>&1; adb pull /sdcard/a4.xml out/a4.xml
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act4.txt
+            ls -la out/
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: login-probe
+          path: out/
+          retention-days: 3
