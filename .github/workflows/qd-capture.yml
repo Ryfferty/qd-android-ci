@@ -9,7 +9,7 @@ on:
         required: false
       hook_url:
         description: frida hook（★ 用 hook_ssl.js：纯原生透明旁听，不替换 Java 实现）
-        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_ssl.js
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_ssl2.js
         required: false
 
 jobs:
