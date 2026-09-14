@@ -96,28 +96,27 @@ jobs:
           adb -s localhost:5555 shell "logcat -c"
           # ★ 不用 frida spawn（在 redroid 上会 InvocationTargetException 并把 App 强停），
           #   改成 am start 显式拉起 + attach（这是之前跑通的拉起方式）
+          # ★ 先起后台轮询：进程一出现立刻 attach（抢在 App 发启动请求之前/之中）
+          ( for i in $(seq 1 60); do
+              P=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" 2>/dev/null | tr -d '\r')
+              if [ -n "$P" ]; then
+                echo "RACE: pid=$P at try $i, attaching NOW" >> out/race.log
+                timeout 540 frida -H 127.0.0.1:27042 -p "$P" -l /tmp/hook_net.js -q \
+                  > out/capture.txt 2>&1
+                break
+              fi
+              sleep 0.4
+            done ) &
           echo "===== am start ====="
           adb -s localhost:5555 shell "am start -W -n com.qidian.QDReader/com.qidian.QDReader.ui.activity.SplashActivity" 2>&1 | tail -5
-          echo "===== 等进程 ====="
-          for i in $(seq 1 20); do
-            P=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" 2>/dev/null | tr -d '\r')
-            if [ -n "$P" ]; then echo "pid=$P (try $i)"; break; fi
-            sleep 3
-          done
+          sleep 12
+          cat out/race.log 2>/dev/null || echo "(race 未触发)" 
           adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
-          echo "===== frida-ps 看它认的名字 ====="
-          frida-ps -H 127.0.0.1:27042 2>&1 | grep -i "qidian\|qdreader" || echo "(frida-ps 里没有 qidian)"
-          PID=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" 2>/dev/null | tr -d '\r')
-          echo "拿到 pid=$PID"
-          echo "===== attach frida（优先 PID）====="
-          if [ -n "$PID" ]; then
-            timeout 520 frida -H 127.0.0.1:27042 -p "$PID" -l /tmp/hook_net.js -q \
-              > out/capture.txt 2>&1 &
-          else
-            timeout 520 frida -H 127.0.0.1:27042 -n com.qidian.QDReader -l /tmp/hook_net.js -q \
-              > out/capture.txt 2>&1 &
-          fi
-          sleep 45
+          echo "===== 等 attach 生效 ====="
+          for i in $(seq 1 30); do
+            if grep -qF "setup done" out/capture.txt 2>/dev/null; then echo "hook ready (try $i)"; break; fi
+            sleep 2
+          done
           echo "===== attach 后 capture 前 20 行 ====="
           head -20 out/capture.txt
           echo "===== T+45s capture ====="
