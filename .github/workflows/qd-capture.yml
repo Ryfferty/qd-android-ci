@@ -73,7 +73,14 @@ jobs:
           adb -s localhost:5555 shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
           sleep 12
           adb -s localhost:5555 shell "ps -A | grep fs" || echo NO_FS_PROC
-          frida-ps -H localhost:5555 2>&1 | head -15 || echo FRIDA_CONNECT_FAIL
+          # ★ 必须做端口转发，直接用 localhost:5555 连会 connection closed
+          adb -s localhost:5555 forward tcp:27042 tcp:27042 || true
+          adb -s localhost:5555 forward --list || true
+          for i in 1 2 3; do
+            echo "--- frida-ps try $i ---"
+            frida-ps -H 127.0.0.1:27042 2>&1 | head -8 && break
+            sleep 5
+          done
 
       - name: Spawn Qidian under frida and capture traffic
         run: |
@@ -82,12 +89,26 @@ jobs:
           adb -s localhost:5555 shell "pm clear com.qidian.QDReader" 2>&1 | tail -1
           adb -s localhost:5555 shell "logcat -c"
           # 用 spawn 模式，确保启动即挂上 hook
-          timeout 420 frida -H localhost:5555 -f com.qidian.QDReader -l /data/local/tmp/hook_net.js -q \
+          # ★ -l 必须是【宿主机】路径（frida 在宿主机读脚本再注入）
+          timeout 420 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l /tmp/hook_net.js -q \
             > out/capture.txt 2>&1 &
-          FPID=$!
-          sleep 60
-          echo "===== T+60s capture head ====="
-          head -80 out/capture.txt
+          sleep 45
+          echo "===== T+45s capture head ====="
+          head -60 out/capture.txt
+          echo "===== 前台 activity ====="
+          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" || true
+          # 兜底：若 spawn 没起来（前台不是 qidian），改用 am start + attach
+          if ! adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" 2>/dev/null | grep -q qidian; then
+            echo "===== spawn 未生效 -> am start + attach 兜底 ====="
+            adb -s localhost:5555 shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -2
+            sleep 12
+            timeout 400 frida -H 127.0.0.1:27042 -n com.qidian.QDReader -l /tmp/hook_net.js -q \
+              >> out/capture.txt 2>&1 &
+            echo "attach fallback launched"
+          fi
+          sleep 45
+          echo "===== capture 现状 ====="
+          wc -l out/capture.txt; head -60 out/capture.txt
 
       - name: Drive UI (privacy agree -> login page)
         run: |
