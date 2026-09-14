@@ -193,10 +193,31 @@ jobs:
           tap_text "登录" || true
           sleep 30
           echo "--- 触发后 capture 行数: $(wc -l < out/capture.txt) ---"
-          echo "--- QQ/微信入口（图标按钮，用坐标兜底 y=1840）---"
-          adb -s localhost:5555 shell "input tap 539 1840" || true
+          echo "--- ★★ 补强触发：点协议链接（开 WebView 必联网）---"
+          tap_text "《用户服务协议》及《隐私协议》" || true
+          sleep 8
+          tap_text "《用户服务协议》" || true
+          sleep 15
+          adb -s localhost:5555 shell "input keyevent KEYCODE_BACK" || true
+          sleep 5
+          echo "--- ★★ 点 +86 国家选择器（必拉服务端列表）---"
+          tap_text "+86" || true
           sleep 20
+          adb -s localhost:5555 shell "uiautomator dump /sdcard/u3.xml >/dev/null 2>&1"
+          adb -s localhost:5555 shell "cat /sdcard/u3.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -15
+          echo "   capture 行数: $(wc -l < out/capture.txt)"
+          adb -s localhost:5555 shell "input keyevent KEYCODE_BACK" || true
+          sleep 5
+          echo "--- QQ/微信入口（图标按钮，坐标兜底）---"
+          adb -s localhost:5555 shell "input tap 539 1840" || true
+          sleep 25
+          adb -s localhost:5555 shell "input tap 232 1840" || true
+          sleep 25
           echo "--- 最终 capture 行数: $(wc -l < out/capture.txt) ---"
+          echo "--- 最终界面 ---"
+          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
+          adb -s localhost:5555 shell "uiautomator dump /sdcard/u4.xml >/dev/null 2>&1"
+          adb -s localhost:5555 shell "cat /sdcard/u4.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -15
           adb -s localhost:5555 shell "dumpsys activity activities | grep -E 'ResumedActivity'" | tr -d '\r'
 
       - name: Keep capturing then dump
