@@ -1,0 +1,107 @@
+name: qd-redroid-app
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        description: APK url
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk
+        required: false
+      activity:
+        description: launcher activity
+        default: com.qidian.QDReader/com.qidian.QDReader.ui.activity.SplashActivity
+        required: false
+      redroid_tag:
+        description: redroid tag
+        default: 11.0.0-latest
+        required: false
+
+jobs:
+  app:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    steps:
+      - name: Setup binder module and adb
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils || echo "APT FAILED"
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo "MODPROBE FAILED"
+          lsmod | grep -i binder || echo "no binder module"
+          ls -l /dev/binder* 2>&1 || true
+
+      - name: Start redroid
+        run: |
+          sudo docker pull redroid/redroid:${{ inputs.redroid_tag }} 2>&1 | tail -3 || true
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:${{ inputs.redroid_tag }} \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo "DOCKER RUN FAILED"
+          sleep 15
+          sudo docker ps -a
+
+      - name: Boot wait + abi proof
+        run: |
+          adb start-server >/dev/null 2>&1 || true
+          adb connect localhost:5555 >/dev/null 2>&1 || true
+          for i in $(seq 1 40); do
+            B=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            echo "boot try $i = [$B]"
+            if [ "$B" = "1" ]; then break; fi
+            sleep 8
+          done
+          echo "ABI          = $(adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r')"
+          echo "NATIVEBRIDGE = $(adb -s localhost:5555 shell getprop ro.dalvik.vm.native.bridge | tr -d '\r')"
+          echo "ANDROID      = $(adb -s localhost:5555 shell getprop ro.build.version.release | tr -d '\r')"
+          adb -s localhost:5555 shell "ping -c 2 -W 3 223.5.5.5" 2>&1 | tail -3 || true
+
+      - name: Install apk
+        run: |
+          curl -sSL --max-time 300 -o /tmp/qd.apk "${{ inputs.apk_url }}" || echo "DL FAILED"
+          adb -s localhost:5555 install -r -t /tmp/qd.apk 2>&1 | tail -3
+          adb -s localhost:5555 shell "dumpsys package com.qidian.QDReader | grep -E 'primaryCpuAbi|versionName'" || true
+
+      - name: Launch via am start -W
+        run: |
+          adb -s localhost:5555 shell "logcat -c" || true
+          adb -s localhost:5555 shell "settings put global window_animation_scale 0" || true
+          echo "=== am start ==="
+          adb -s localhost:5555 shell "am start -W -n ${{ inputs.activity }}" 2>&1 || true
+          sleep 30
+          echo "=== ps ==="
+          adb -s localhost:5555 shell "ps -A | grep -i qidian" 2>&1 || echo "NO QIDIAN PROCESS"
+          echo "=== focus ==="
+          adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp'" 2>&1 || true
+          adb -s localhost:5555 exec-out screencap -p > /tmp/shot_30s.png 2>/dev/null || true
+          adb -s localhost:5555 shell uiautomator dump /sdcard/ui30.xml >/dev/null 2>&1 || true
+          adb -s localhost:5555 pull /sdcard/ui30.xml /tmp/ui30.xml >/dev/null 2>&1 || true
+          sleep 30
+          echo "=== ps after 60s ==="
+          adb -s localhost:5555 shell "ps -A | grep -i qidian" 2>&1 || echo "NO QIDIAN PROCESS"
+          adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep -E 'mCurrentFocus'" 2>&1 || true
+          adb -s localhost:5555 exec-out screencap -p > /tmp/shot_60s.png 2>/dev/null || true
+          adb -s localhost:5555 shell uiautomator dump /sdcard/ui60.xml >/dev/null 2>&1 || true
+          adb -s localhost:5555 pull /sdcard/ui60.xml /tmp/ui60.xml >/dev/null 2>&1 || true
+
+      - name: Crash and app logs
+        run: |
+          echo "=== crash buffer ==="
+          adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -60 || true
+          echo "=== app + native errors ==="
+          adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "qidian|UnsatisfiedLink|dlopen|miitmdid|pangle|AndroidRuntime|FATAL|tobEmbed|bytedance" | tail -120 || true
+          echo "=== app data dir ==="
+          adb -s localhost:5555 shell "ls -la /data/data/com.qidian.QDReader/ 2>&1" || true
+          adb -s localhost:5555 shell "ls -laR /data/data/com.qidian.QDReader/files/ 2>&1 | head -40" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redroid-app-evidence
+          path: |
+            /tmp/shot_30s.png
+            /tmp/shot_60s.png
+            /tmp/ui30.xml
+            /tmp/ui60.xml
+          if-no-files-found: warn
