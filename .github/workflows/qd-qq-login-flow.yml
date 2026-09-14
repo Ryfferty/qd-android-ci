@@ -59,70 +59,61 @@ jobs:
           timeout 30 adb -s $D pull /sdcard/${TAG}.xml /tmp/${TAG}.xml >/dev/null 2>&1 || true
           echo "--- $TAG focus ---"
           timeout 20 adb -s $D shell "dumpsys window 2>/dev/null | grep mCurrentFocus" || true
-          echo "--- $TAG text nodes ---"
-          sed 's/></>\n</g' /tmp/${TAG}.xml 2>/dev/null \
-            | grep -oE 'text="[^"]*"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' \
-            | grep -v 'text=""' | head -50 || true
+          echo "--- $TAG ALL TEXT ---"
+          sed 's/></>\n</g' /tmp/${TAG}.xml 2>/dev/null | grep -oE 'text="[^"]+"' | sort -u | head -60 || true
+          echo "--- $TAG nodes still on screen ---"
+          sed 's/></>\n</g' /tmp/${TAG}.xml 2>/dev/null | grep -oE 'text="[^"]*"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -25 || true
           EOS
           cat > /tmp/tap.sh <<'EOS'
           #!/bin/bash
-          # tap.sh <tag> <regex>  -> tap center of first node whose text matches regex
           TAG=$1; RE=$2
           D="localhost:5555"
           LINE=$(sed 's/></>\n</g' /tmp/${TAG}.xml 2>/dev/null \
             | grep -oE 'text="[^"]*"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' \
             | grep -E "text=\"(${RE})\"" | head -1)
-          echo "tap match[$RE]: $LINE"
-          B=$(echo "$LINE" | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | head -1)
-          if [ -z "$B" ]; then echo "NO MATCH for $RE"; exit 1; fi
-          set -- $(echo "$B" | tr -d '[]' | tr ',' ' ')
-          CX=$(( ($1+$3)/2 )); CY=$(( ($2+$4)/2 ))
+          echo "tap match[$RE]: ${LINE:0:120}"
+          BB=$(echo "$LINE" | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | head -1)
+          if [ -z "$BB" ]; then echo "NO MATCH for $RE"; exit 1; fi
+          N=$(echo "$BB" | sed -E 's/^\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]$/\1 \2 \3 \4/')
+          echo "parsed: $N"
+          set -- $N
+          CX=$(( ($1 + $3) / 2 ))
+          CY=$(( ($2 + $4) / 2 ))
           echo "tapping ($CX,$CY)"
           timeout 20 adb -s $D shell "input tap $CX $CY" || true
           EOS
           chmod +x /tmp/dump.sh /tmp/tap.sh
 
-      - name: Launch QQ, accept privacy, reach login screen
+      - name: Launch QQ and walk past privacy
         run: |
           timeout 20 adb -s localhost:5555 shell "logcat -c" || true
-          timeout 40 adb -s localhost:5555 shell "am start -W -n com.tencent.mobileqq/com.tencent.mobileqq.activity.SplashActivity" 2>&1 | tail -3
+          timeout 40 adb -s localhost:5555 shell "am start -W -n com.tencent.mobileqq/com.tencent.mobileqq.activity.SplashActivity" 2>&1 | tail -2
           sleep 30
           /tmp/dump.sh qq1 || true
-          echo "=== dismiss privacy dialog ==="
-          /tmp/tap.sh qq1 '同意' || true
-          sleep 12
-          /tmp/dump.sh qq2 || true
-          /tmp/tap.sh qq2 '同意|允许|确定' || true
-          sleep 12
-          /tmp/dump.sh qq3 || true
-          /tmp/tap.sh qq3 '同意|允许|确定' || true
-          sleep 20
-          /tmp/dump.sh qq4 || true
-          echo "=== SCAN-LOGIN MARKER CHECK ==="
-          if grep -q -E '扫码|二维码' /tmp/qq4.xml 2>/dev/null; then echo "*** QR LOGIN AVAILABLE ***"; else echo "no qr text on screen"; fi
+          for round in 1 2 3 4; do
+            echo "########## QQ round $round ##########"
+            /tmp/tap.sh qq$round '同意|允许|确定|我知道了|进入' || true
+            sleep 12
+            NX=$(( round + 1 ))
+            /tmp/dump.sh qq$NX || true
+          done
+          echo "=== LOGIN OPTION SCAN ==="
+          for kw in 扫码 二维码 密码登录 手机号 验证码 其他方式 注册; do
+            if grep -q "$kw" /tmp/qq5.xml 2>/dev/null; then echo "FOUND: $kw"; fi
+          done
 
-      - name: Qidian -> QQ login with QQ logged-in state
+      - name: Screenshot the login screen too
         run: |
-          timeout 40 adb -s localhost:5555 shell "am start -W -n com.qidian.QDReader/com.qidian.QDReader.ui.activity.SplashActivity" 2>&1 | tail -2
-          sleep 20
-          timeout 20 adb -s localhost:5555 shell "input tap 539 1605" || true
-          sleep 20
-          timeout 20 adb -s localhost:5555 shell "input tap 84 2003" || true
-          sleep 4
-          /tmp/dump.sh qd_login || true
-          echo "=== TAP QQ LOGIN ==="
-          timeout 20 adb -s localhost:5555 shell "input tap 539 1840" || true
-          sleep 40
-          /tmp/dump.sh sso1 || true
-          grep -q -E '授权|允许|登录' /tmp/sso1.xml && echo "SSO PAGE TEXT PRESENT" || echo "no sso text"
+          timeout 30 adb -s localhost:5555 exec-out screencap -p > /tmp/qq_login_final.png 2>/dev/null || true
+          ls -l /tmp/qq_login_final.png || true
 
       - name: Logs
         if: always()
         run: |
           echo "=== crash ==="
-          timeout 30 adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -30 || true
-          echo "=== opensdk/mqq ==="
-          timeout 40 adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "openSdk|QQAuth|tauth|mqqapi|LoginActivity|wtlogin|sso" | tail -60 || true
+          timeout 30 adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -25 || true
+          echo "=== msf/wtlogin ==="
+          timeout 40 adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "wtlogin|MSF_|login success|kick|risk|安全|验证" | tail -40 || true
 
       - uses: actions/upload-artifact@v4
         if: always()
