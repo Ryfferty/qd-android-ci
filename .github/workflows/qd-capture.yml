@@ -175,9 +175,28 @@ jobs:
             adb -s localhost:5555 shell "cat /sdcard/uw.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -20
             echo "  --- capture 行数: $(wc -l < out/capture.txt 2>/dev/null) ---"
           done
-          echo "--- 尝试点登录页的入口（QQ / 微信 / 登录）---"
-          tap_text "QQ" || tap_text "QQ登录" || tap_text "微信" || tap_text "登录" || true
-          sleep 90
+          echo "--- ★ 关键：在 hook 生效后主动触发请求（填号+获取验证码）---"
+          # 1) 点手机号输入框并输入（用 adb input text，不依赖 IME）
+          tap_text "请输入手机号码" || true
+          sleep 3
+          adb -s localhost:5555 shell "input text 13800138000" || true
+          sleep 3
+          adb -s localhost:5555 shell "uiautomator dump /sdcard/u2.xml >/dev/null 2>&1"
+          adb -s localhost:5555 shell "cat /sdcard/u2.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -15
+          # 2) 勾协议 + 点获取验证码/登录
+          tap_text "我已阅读并接受《用户服务协议》及《隐私协议》" || true
+          sleep 2
+          echo "--- 点 获取验证码 ---"
+          tap_text "获取验证码" || true
+          sleep 25
+          echo "--- 点 登录 ---"
+          tap_text "登录" || true
+          sleep 30
+          echo "--- 触发后 capture 行数: $(wc -l < out/capture.txt) ---"
+          echo "--- QQ/微信入口（图标按钮，用坐标兜底 y=1840）---"
+          adb -s localhost:5555 shell "input tap 539 1840" || true
+          sleep 20
+          echo "--- 最终 capture 行数: $(wc -l < out/capture.txt) ---"
           adb -s localhost:5555 shell "dumpsys activity activities | grep -E 'ResumedActivity'" | tr -d '\r'
 
       - name: Keep capturing then dump
