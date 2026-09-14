@@ -165,12 +165,20 @@ jobs:
           echo "--- 界面文本 ---"
           adb -s localhost:5555 shell "uiautomator dump /sdcard/u0.xml >/dev/null 2>&1"
           adb -s localhost:5555 shell "cat /sdcard/u0.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -30
-          tap_text "同意并继续" || tap_text "同意" || tap_text "同意并接受" || true
-          sleep 25
-          echo "--- 同意后 activity ---"
-          adb -s localhost:5555 shell "dumpsys activity activities | grep -E 'ResumedActivity'"
-          adb -s localhost:5555 shell "uiautomator dump /sdcard/u1.xml >/dev/null 2>&1"
-          adb -s localhost:5555 shell "cat /sdcard/u1.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -30
+          tap_text "同意并继续" || tap_text "同意" || true
+          # ★ 这个 App 就是慢（文献记录：点完同意后需要 ~140s 才进 GuidanceActivity 登录页）
+          for w in 60 120 180 240; do
+            sleep 60
+            echo "--- T+${w}s activity ---"
+            adb -s localhost:5555 shell "dumpsys activity activities | grep -E 'ResumedActivity'" | tr -d '\r'
+            adb -s localhost:5555 shell "uiautomator dump /sdcard/uw.xml >/dev/null 2>&1"
+            adb -s localhost:5555 shell "cat /sdcard/uw.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -20
+            echo "  --- capture 行数: $(wc -l < out/capture.txt 2>/dev/null) ---"
+          done
+          echo "--- 尝试点登录页的入口（QQ / 微信 / 登录）---"
+          tap_text "QQ" || tap_text "QQ登录" || tap_text "微信" || tap_text "登录" || true
+          sleep 90
+          adb -s localhost:5555 shell "dumpsys activity activities | grep -E 'ResumedActivity'" | tr -d '\r'
 
       - name: Keep capturing then dump
         run: |
