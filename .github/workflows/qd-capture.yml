@@ -54,13 +54,32 @@ jobs:
 
       - name: Download APK + hook + frida-server(arm64)
         run: |
-          curl -sSL --max-time 900 -o /tmp/qd.apk "${{ inputs.apk_url }}" || echo APK_DL_FAIL
+          # ★ 带重试 + 校验，避免偶发下载失败把整轮跑废
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/qd.apk "${{ inputs.apk_url }}" || true
+            SZ=$(stat -c%s /tmp/qd.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"
+            [ "$SZ" -gt 10000000 ] && break
+            sleep 15
+          done
           ls -l /tmp/qd.apk
-          curl -sSL --max-time 120 -o /tmp/hook_net.js "${{ inputs.hook_url }}" || echo HOOK_DL_FAIL
-          wc -c /tmp/hook_net.js
-          curl -sSL --max-time 300 -o /tmp/fs.xz \
-            "https://github.com/frida/frida/releases/download/${FV}/frida-server-${FV}-android-arm64.xz" || echo FS_DL_FAIL
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 120 -o /tmp/hook_net.js "${{ inputs.hook_url }}" || true
+            SZ=$(stat -c%s /tmp/hook_net.js 2>/dev/null || echo 0)
+            echo "hook try $i size=$SZ"
+            [ "$SZ" -gt 2000 ] && break
+            sleep 10
+          done
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 600 -o /tmp/fs.xz \
+              "https://github.com/frida/frida/releases/download/${FV}/frida-server-${FV}-android-arm64.xz" || true
+            if xz -t /tmp/fs.xz 2>/dev/null; then echo "frida-server xz ok (try $i)"; break; fi
+            echo "frida-server try $i 无效，重试"
+            sleep 15
+          done
           unxz -f /tmp/fs.xz && chmod +x /tmp/fs && ls -l /tmp/fs
+          echo "=== 全部下载校验 ==="
+          ls -l /tmp/qd.apk /tmp/hook_net.js /tmp/fs
 
       - name: Install Qidian + start frida-server
         run: |
