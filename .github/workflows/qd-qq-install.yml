@@ -14,7 +14,7 @@ on:
 jobs:
   qq:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Setup binder and adb
         run: |
@@ -47,61 +47,58 @@ jobs:
           done
           timeout 20 adb -s localhost:5555 shell "df -h /data" 2>&1 || true
 
-      - name: Download QQ apk (release first, Tencent CDN fallback)
+      - name: Download QQ apk (retry until asset is live)
         run: |
-          set +e
-          curl -sSL --max-time 600 -o /tmp/qq.apk "${{ inputs.qq_url }}" 2>&1 | tail -2
-          SZ=$(stat -c%s /tmp/qq.apk 2>/dev/null || echo 0)
-          echo "release asset size = $SZ"
-          if [ "$SZ" -lt 150000000 ]; then
-            echo "=== fallback: scrape im.qq.com for official apk ==="
-            curl -sSL --max-time 60 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "https://im.qq.com/mobileqq/index.shtml" -o /tmp/im.html 2>&1 | tail -2
-            grep -o -E 'https://dldir1[^"]*\.apk' /tmp/im.html | head -3
-            QURL=$(grep -o -E 'https://dldir1[^"]*\.apk' /tmp/im.html | head -1)
-            echo "QURL=$QURL"
-            if [ -n "$QURL" ]; then curl -sSL --max-time 900 -o /tmp/qq.apk "$QURL"; fi
-          fi
+          ok=0
+          for i in $(seq 1 30); do
+            curl -sSL --max-time 900 -o /tmp/qq.apk "${{ inputs.qq_url }}" 2>/dev/null || true
+            SZ=$(stat -c%s /tmp/qq.apk 2>/dev/null || echo 0)
+            echo "attempt $i size=$SZ"
+            if [ "$SZ" -gt 150000000 ] 2>/dev/null; then ok=1; echo "GOT QQ APK"; break; fi
+            sleep 45
+          done
+          if [ "$ok" = "0" ]; then echo "COULD NOT GET QQ APK"; fi
           ls -l /tmp/qq.apk || true
-          echo "final size = $(stat -c%s /tmp/qq.apk 2>/dev/null || echo 0)"
 
       - name: Install QQ
         run: |
-          timeout 600 adb -s localhost:5555 install -r -t /tmp/qq.apk 2>&1 | tail -4
+          timeout 900 adb -s localhost:5555 install -r -t /tmp/qq.apk 2>&1 | tail -4
           echo "=== qq pkg ==="
           timeout 20 adb -s localhost:5555 shell "pm list packages | grep -i -E 'mobileqq|qqlite'" 2>&1 || true
           timeout 20 adb -s localhost:5555 shell "dumpsys package com.tencent.mobileqq | grep -E 'primaryCpuAbi|versionName'" 2>&1 || true
 
-      - name: Launch QQ and see login screen
+      - name: Launch QQ - what does the login screen offer
         run: |
           timeout 20 adb -s localhost:5555 shell "logcat -c" || true
           timeout 30 adb -s localhost:5555 shell "monkey -p com.tencent.mobileqq -c android.intent.category.LAUNCHER 1" 2>&1 | tail -3 || true
-          sleep 30
-          timeout 20 adb -s localhost:5555 shell "ps -A | grep -i -E 'mobileqq|qq'" 2>&1 || echo NO_QQ_PROCESS
+          sleep 35
+          timeout 20 adb -s localhost:5555 shell "ps -A | grep -i -E 'mobileqq'" 2>&1 || echo NO_QQ_PROCESS
           timeout 20 adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep mCurrentFocus" 2>&1 || true
-          timeout 30 adb -s localhost:5555 exec-out screencap -p > /tmp/qq_launch.png 2>/dev/null || true
-          timeout 30 adb -s localhost:5555 shell uiautomator dump /sdcard/qq1.xml >/dev/null 2>&1 || true
-          timeout 30 adb -s localhost:5555 pull /sdcard/qq1.xml /tmp/qq1.xml >/dev/null 2>&1 || true
-          sleep 25
+          timeout 30 adb -s localhost:5555 exec-out screencap -p > /tmp/qq_a.png 2>/dev/null || true
+          timeout 30 adb -s localhost:5555 shell uiautomator dump /sdcard/qqa.xml >/dev/null 2>&1 || true
+          timeout 30 adb -s localhost:5555 pull /sdcard/qqa.xml /tmp/qqa.xml >/dev/null 2>&1 || true
+          timeout 20 adb -s localhost:5555 shell "input tap 540 2000" || true
+          sleep 8
           timeout 20 adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep mCurrentFocus" 2>&1 || true
-          timeout 30 adb -s localhost:5555 exec-out screencap -p > /tmp/qq_launch2.png 2>/dev/null || true
-          timeout 30 adb -s localhost:5555 shell uiautomator dump /sdcard/qq2.xml >/dev/null 2>&1 || true
-          timeout 30 adb -s localhost:5555 pull /sdcard/qq2.xml /tmp/qq2.xml >/dev/null 2>&1 || true
+          timeout 30 adb -s localhost:5555 exec-out screencap -p > /tmp/qq_b.png 2>/dev/null || true
+          timeout 30 adb -s localhost:5555 shell uiautomator dump /sdcard/qqb.xml >/dev/null 2>&1 || true
+          timeout 30 adb -s localhost:5555 pull /sdcard/qqb.xml /tmp/qqb.xml >/dev/null 2>&1 || true
 
       - name: QQ logs
         if: always()
         run: |
           echo "=== crash ==="
-          timeout 30 adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -40 || true
+          timeout 30 adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -30 || true
           echo "=== qq log ==="
-          timeout 40 adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "mobileqq|QQ|MSF|wtlogin|emulator|root" | tail -80 || true
+          timeout 40 adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "mobileqq|MSF|wtlogin|emulator|root|detect" | tail -60 || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: qq-install-evidence
           path: |
-            /tmp/qq_launch.png
-            /tmp/qq_launch2.png
-            /tmp/qq1.xml
-            /tmp/qq2.xml
+            /tmp/qq_a.png
+            /tmp/qq_b.png
+            /tmp/qqa.xml
+            /tmp/qqb.xml
           if-no-files-found: warn
