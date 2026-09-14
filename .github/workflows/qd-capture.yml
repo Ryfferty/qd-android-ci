@@ -67,12 +67,18 @@ jobs:
           set +e
           timeout 600 adb -s localhost:5555 install -r -t /tmp/qd.apk 2>&1 | tail -3
           adb -s localhost:5555 shell pm list packages | grep qidian
+          # ★ 关键：frida-server 必须以 root 跑，否则无法 attach app 进程（shell uid 2000 无权限）
+          echo "===== adb root ====="
+          adb -s localhost:5555 root 2>&1 | tail -2
+          sleep 6
+          adb -s localhost:5555 wait-for-device 2>/dev/null || true
+          timeout 20 adb -s localhost:5555 shell id 2>&1 | head -2
           adb -s localhost:5555 push /tmp/fs /data/local/tmp/fs
           adb -s localhost:5555 push /tmp/hook_net.js /data/local/tmp/hook_net.js
           adb -s localhost:5555 shell chmod 755 /data/local/tmp/fs
           adb -s localhost:5555 shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
           sleep 12
-          adb -s localhost:5555 shell "ps -A | grep fs" || echo NO_FS_PROC
+          adb -s localhost:5555 shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
           # ★ 必须做端口转发，直接用 localhost:5555 连会 connection closed
           adb -s localhost:5555 forward tcp:27042 tcp:27042 || true
           adb -s localhost:5555 forward --list || true
