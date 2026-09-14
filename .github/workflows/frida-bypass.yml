@@ -1,0 +1,84 @@
+name: frida-bypass
+
+on:
+  workflow_dispatch:
+
+jobs:
+  frida:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo chmod 666 /dev/kvm
+
+      - name: Prepare
+        run: |
+          mkdir -p apks out
+          wget -q "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk" -O apks/qidian.apk
+          wget -q "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook.js" -O hook.js
+          ls -la hook.js
+          pip install -q frida-tools 2>&1 | tail -1
+          FV=$(frida --version)
+          echo "frida ver: $FV"
+          echo "FV=$FV" >> $GITHUB_ENV
+          wget -q "https://github.com/frida/frida/releases/download/${FV}/frida-server-${FV}-android-x86_64.xz" -O fs.xz
+          unxz -f fs.xz
+          chmod +x fs
+          ls -la fs
+
+      - name: Run
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_5
+          force-avd-creation: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -memory 4096 -cores 4
+          disable-animations: true
+          script: |
+            echo "=== root ==="
+            adb root 2>&1 | head -2
+            sleep 5
+            adb wait-for-device
+            echo "=== push frida-server ==="
+            adb push fs /data/local/tmp/fs
+            adb shell chmod 755 /data/local/tmp/fs
+            adb shell "ls -la /data/local/tmp/fs"
+            echo "=== install qidian ==="
+            adb install -r -t apks/qidian.apk 2>&1 | tail -1
+            echo "=== start frida-server ==="
+            adb shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &" || true
+            sleep 10
+            adb shell "ps -A | grep -E 'fs$|frida'" || echo "no frida proc"
+            echo "=== frida-ps ==="
+            timeout 30 frida-ps -U 2>&1 | head -10
+            echo "=== spawn with hook ==="
+            nohup timeout 200 frida -U -f com.qidian.QDReader -l hook.js --no-pause > out/frida_out.txt 2>&1 &
+            sleep 50
+            echo "=== ps ==="
+            adb shell ps -A | grep -i qidian
+            echo "=== activity ==="
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity
+            adb shell screencap -p /sdcard/g1.png && adb pull /sdcard/g1.png out/g1.png
+            sleep 25
+            adb shell screencap -p /sdcard/g2.png && adb pull /sdcard/g2.png out/g2.png
+            adb shell uiautomator dump /sdcard/g2.xml >/dev/null 2>&1; adb pull /sdcard/g2.xml out/g2.xml
+            adb shell dumpsys activity activities 2>/dev/null | grep mResumedActivity > out/act2.txt
+            adb shell ps -A | grep -i qidian
+            echo "=== frida output ==="
+            cat out/frida_out.txt | head -40
+            ls -la out/
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frida-out
+          path: out/
+          retention-days: 3
