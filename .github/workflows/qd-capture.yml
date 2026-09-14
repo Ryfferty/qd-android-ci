@@ -99,10 +99,21 @@ jobs:
             sleep 3
           done
           adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
-          echo "===== attach frida ====="
-          timeout 500 frida -H 127.0.0.1:27042 -n com.qidian.QDReader -l /tmp/hook_net.js -q \
-            > out/capture.txt 2>&1 &
+          echo "===== frida-ps 看它认的名字 ====="
+          frida-ps -H 127.0.0.1:27042 2>&1 | grep -i "qidian\|qdreader" || echo "(frida-ps 里没有 qidian)"
+          PID=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" 2>/dev/null | tr -d '\r')
+          echo "拿到 pid=$PID"
+          echo "===== attach frida（优先 PID）====="
+          if [ -n "$PID" ]; then
+            timeout 520 frida -H 127.0.0.1:27042 -p "$PID" -l /tmp/hook_net.js -q \
+              > out/capture.txt 2>&1 &
+          else
+            timeout 520 frida -H 127.0.0.1:27042 -n com.qidian.QDReader -l /tmp/hook_net.js -q \
+              > out/capture.txt 2>&1 &
+          fi
           sleep 45
+          echo "===== attach 后 capture 前 20 行 ====="
+          head -20 out/capture.txt
           echo "===== T+45s capture ====="
           wc -l out/capture.txt; head -70 out/capture.txt
           adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
