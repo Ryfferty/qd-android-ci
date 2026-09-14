@@ -18,7 +18,7 @@ on:
 jobs:
   agree:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 50
+    timeout-minutes: 45
     steps:
       - name: Setup binder and adb
         run: |
@@ -41,69 +41,79 @@ jobs:
           sleep 15
           sudo docker ps --format '{{.Names}} {{.Status}}'
 
-      - name: Boot + network probe
+      - name: Boot wait
         run: |
           adb start-server >/dev/null 2>&1 || true
-          adb connect localhost:5555 >/dev/null 2>&1 || true
-          for i in $(seq 1 40); do
-            B=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
-            if [ "$B" = "1" ]; then echo "booted on try $i"; break; fi
+          timeout 30 adb connect localhost:5555 2>&1 || true
+          for i in $(seq 1 30); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            echo "boot try $i = [$B]"
+            if [ "$B" = "1" ]; then break; fi
             sleep 8
           done
-          echo "=== HOST net ==="
-          curl -sS -o /dev/null -w "host->baidu http:%{http_code}\n" --max-time 15 https://www.baidu.com || echo host_net_fail
-          echo "=== container routes ==="
-          adb -s localhost:5555 shell "cat /proc/net/route" 2>&1 || true
-          echo "=== container dns props ==="
-          adb -s localhost:5555 shell "getprop | grep -i -E 'dns|net.eth0'" 2>&1 || true
-          echo "=== container tcp test ==="
-          adb -s localhost:5555 shell "toybox nc -w 5 223.5.5.5 443 < /dev/null && echo TCP_OK_223 || echo TCP_FAIL_223" 2>&1 || true
-          adb -s localhost:5555 shell "toybox nc -w 5 www.baidu.com 443 < /dev/null && echo TCP_OK_DNS || echo TCP_FAIL_DNS" 2>&1 || true
+          echo "ABI          = $(timeout 15 adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r')"
+          echo "NATIVEBRIDGE = $(timeout 15 adb -s localhost:5555 shell getprop ro.dalvik.vm.native.bridge | tr -d '\r')"
+
+      - name: Network probe (all bounded by timeout)
+        run: |
+          echo "=== host outbound ==="
+          curl -sS -o /dev/null -w "host->baidu http:%{http_code}\n" --max-time 15 https://www.baidu.com || echo "host net FAIL"
+          echo "=== guest ip route ==="
+          timeout 20 adb -s localhost:5555 shell "ip route" 2>&1 || echo "ip route FAILED"
+          echo "=== guest dns ==="
+          timeout 20 adb -s localhost:5555 shell "getprop | grep -i dns" 2>&1 || echo "dns prop FAILED"
+          echo "=== guest tcp connect test (bounded) ==="
+          timeout 25 adb -s localhost:5555 shell "toybox nc -w 3 223.5.5.5 443 < /dev/null; echo rc=\$?" 2>&1 || echo "nc FAILED/unsupported"
+          echo "=== guest http test via toybox wget (bounded) ==="
+          timeout 30 adb -s localhost:5555 shell "toybox wget -O /dev/null http://connect.rom.miui.com/generate_204; echo rc=\$?" 2>&1 || echo "wget FAILED/unsupported"
+          echo "=== guest established sockets ==="
+          timeout 20 adb -s localhost:5555 shell "cat /proc/net/tcp | head -12" 2>&1 || true
 
       - name: Install apk
         run: |
           curl -sSL --max-time 300 -o /tmp/qd.apk "${{ inputs.apk_url }}" || echo DL_FAILED
-          adb -s localhost:5555 install -r -t /tmp/qd.apk 2>&1 | tail -2
+          timeout 180 adb -s localhost:5555 install -r -t /tmp/qd.apk 2>&1 | tail -2
 
       - name: Launch and tap agree
         run: |
-          adb -s localhost:5555 shell "logcat -c" || true
-          adb -s localhost:5555 shell "am start -W -n ${{ inputs.activity }}" 2>&1 | tail -4
+          timeout 20 adb -s localhost:5555 shell "logcat -c" || true
+          timeout 40 adb -s localhost:5555 shell "am start -W -n ${{ inputs.activity }}" 2>&1 | tail -4
           sleep 20
-          echo "=== pre-tap ui (btnAgree expected) ==="
-          adb -s localhost:5555 shell uiautomator dump /sdcard/pre.xml >/dev/null 2>&1
-          adb -s localhost:5555 pull /sdcard/pre.xml /tmp/pre.xml >/dev/null 2>&1 || true
-          grep -o 'resource-id="com.qidian.QDReader:id/btnAgree"[^/]*' /tmp/pre.xml || echo "btnAgree not in pre dump"
-          echo "=== TAP 同意并继续 @ (539,1605) ==="
-          adb -s localhost:5555 shell "input tap 539 1605" || true
-          for t in 15 45 90 150; do
-            sleep 15
+          timeout 30 adb -s localhost:5555 shell uiautomator dump /sdcard/pre.xml >/dev/null 2>&1 || true
+          timeout 30 adb -s localhost:5555 pull /sdcard/pre.xml /tmp/pre.xml >/dev/null 2>&1 || true
+          echo "--- btnAgree present in pre-tap dump? ---"
+          grep -c 'btnAgree' /tmp/pre.xml || echo "0 (grep found none)"
+          echo "=== TAP agree @ (539,1605) ==="
+          timeout 20 adb -s localhost:5555 shell "input tap 539 1605" || true
+          for t in 20 50 90 140; do
+            sleep 20
             echo "----- T+${t}s -----"
-            adb -s localhost:5555 shell "ps -A | grep -i qidian" 2>&1 || echo "NO_QIDIAN_PROCESS"
-            adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep mCurrentFocus" 2>&1 || true
-            adb -s localhost:5555 exec-out screencap -p > /tmp/agree_${t}s.png 2>/dev/null || true
-            adb -s localhost:5555 shell uiautomator dump /sdcard/u${t}.xml >/dev/null 2>&1 || true
-            adb -s localhost:5555 pull /sdcard/u${t}.xml /tmp/u${t}.xml >/dev/null 2>&1 || true
+            timeout 20 adb -s localhost:5555 shell "ps -A | grep -i qidian" 2>&1 || echo "NO_QIDIAN_PROCESS"
+            timeout 20 adb -s localhost:5555 shell "dumpsys window 2>/dev/null | grep mCurrentFocus" 2>&1 || true
+            timeout 30 adb -s localhost:5555 exec-out screencap -p > /tmp/agree_${t}s.png 2>/dev/null || true
+            timeout 30 adb -s localhost:5555 shell uiautomator dump /sdcard/u${t}.xml >/dev/null 2>&1 || true
+            timeout 30 adb -s localhost:5555 pull /sdcard/u${t}.xml /tmp/u${t}.xml >/dev/null 2>&1 || true
           done
 
-      - name: Crash + native + app logs
+      - name: Logs and data dir
         if: always()
         run: |
           echo "=== crash buffer ==="
-          adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -80 || true
+          timeout 30 adb -s localhost:5555 shell "logcat -d -b crash -v time" 2>&1 | tail -60 || true
           echo "=== targeted log ==="
-          adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "UnsatisfiedLink|dlopen|miitmdid|pangle|tobEmbed|bytedance|FATAL|AndroidRuntime|QDReader|oaid" | tail -150 || true
-          echo "=== root data dir ==="
-          adb -s localhost:5555 root >/dev/null 2>&1 || true
-          sleep 3
-          adb -s localhost:5555 wait-for-device >/dev/null 2>&1 || true
-          adb -s localhost:5555 shell "id" 2>&1 || true
-          adb -s localhost:5555 shell "ls -la /data/data/com.qidian.QDReader/ 2>&1" || true
-          echo "=== files ==="
-          adb -s localhost:5555 shell "ls -la /data/data/com.qidian.QDReader/files/ 2>&1" || true
-          echo "=== downloaded pangle libs? ==="
-          adb -s localhost:5555 shell "find /data/data/com.qidian.QDReader -name '*.so' 2>/dev/null | head -40" || true
-          adb -s localhost:5555 shell "ls -laR /data/data/com.qidian.QDReader/files/pangle_p 2>&1 | head -40" || true
+          timeout 40 adb -s localhost:5555 shell "logcat -d -v time" 2>/dev/null | grep -i -E "UnsatisfiedLink|dlopen|miitmdid|pangle|tobEmbed|bytedance|FATAL|AndroidRuntime|QDReader|oaid|OAID" | tail -120 || true
+          echo "=== adb root ==="
+          timeout 30 adb -s localhost:5555 root 2>&1 || true
+          sleep 5
+          timeout 30 adb -s localhost:5555 wait-for-device 2>&1 || true
+          timeout 20 adb -s localhost:5555 shell "id" 2>&1 || true
+          timeout 20 adb -s localhost:5555 shell "ls -la /data/data/com.qidian.QDReader/ 2>&1" || true
+          echo "=== files dir ==="
+          timeout 20 adb -s localhost:5555 shell "ls -la /data/data/com.qidian.QDReader/files/ 2>&1" || true
+          echo "=== native libs present ==="
+          timeout 30 adb -s localhost:5555 shell "find /data/data/com.qidian.QDReader -name '*.so' 2>/dev/null | head -40" || true
+          echo "=== pangle dir ==="
+          timeout 30 adb -s localhost:5555 shell "ls -laR /data/data/com.qidian.QDReader/files/pangle_p 2>&1 | head -30" || true
 
       - uses: actions/upload-artifact@v4
         if: always()
