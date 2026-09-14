@@ -1,0 +1,37 @@
+name: kvm-probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  kvm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: KVM check fast
+        run: |
+          set +e
+          echo "===== /dev/kvm ====="
+          ls -la /dev/kvm 2>&1
+          test -e /dev/kvm && echo "KVM_DEV_EXISTS=YES" || echo "KVM_DEV_EXISTS=NO"
+          echo "===== virt flags ====="
+          echo "VIRT_FLAG_COUNT=$(egrep -c '(vmx|svm)' /proc/cpuinfo)"
+          echo "===== host ====="
+          echo "CPU_CORES=$(nproc)"
+          free -h | head -2
+          df -h / | tail -1
+          grep -m1 'model name' /proc/cpuinfo
+          echo "===== try open /dev/kvm via dd ====="
+          sudo chmod 666 /dev/kvm 2>/dev/null
+          dd if=/dev/kvm of=/dev/null bs=1 count=0 2>&1 && echo "KVM_OPEN=OK" || echo "KVM_OPEN=FAIL"
+          echo "===== kvm-ok ====="
+          sudo apt-get update -qq >/dev/null 2>&1
+          sudo apt-get install -y -qq cpu-checker >/dev/null 2>&1
+          kvm-ok 2>&1 || echo "kvm-ok-not-ok"
