@@ -1,0 +1,90 @@
+name: qd-control
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ctl:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Setup binder + adb
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils unzip || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+
+      - name: Boot
+        run: |
+          set +e
+          adb start-server >/dev/null 2>&1
+          timeout 30 adb connect localhost:5555
+          for i in $(seq 1 30); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi
+
+      - name: Install app + launch WITHOUT any frida
+        run: |
+          set +e
+          mkdir -p out
+          curl -sSL --max-time 900 -o /tmp/qd.apk \
+            "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          ls -l /tmp/qd.apk
+          timeout 600 adb -s localhost:5555 install -r -t /tmp/qd.apk 2>&1 | tail -2
+          adb -s localhost:5555 shell "logcat -c"
+          adb -s localhost:5555 shell "am start -W -n com.qidian.QDReader/com.qidian.QDReader.ui.activity.SplashActivity" 2>&1 | tail -4
+          sleep 40
+          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
+          adb -s localhost:5555 shell "uiautomator dump /sdcard/c0.xml >/dev/null 2>&1"
+          adb -s localhost:5555 shell "cat /sdcard/c0.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -20
+          # 点同意并继续
+          XML=$(adb -s localhost:5555 shell "cat /sdcard/c0.xml" 2>/dev/null | tr -d '\r')
+          BB=$(echo "$XML" | sed 's/></>\n</g' | grep -oE 'text="同意并继续"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]')
+          echo "agree bounds: $BB"
+          if [ -n "$BB" ]; then
+            N=$(echo "$BB" | sed -E 's/^\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]$/\1 \2 \3 \4/'); set -- $N
+            adb -s localhost:5555 shell "input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 ))"
+          fi
+
+      - name: ★ 观察无 hook 时 App 能否加载出内容（关键对照）
+        run: |
+          set +e
+          for t in 60 120 180 240; do
+            sleep 60
+            echo "########## T+${t}s ##########"
+            adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
+            adb -s localhost:5555 shell "uiautomator dump /sdcard/cw.xml >/dev/null 2>&1"
+            adb -s localhost:5555 shell "cat /sdcard/cw.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | sort -u | head -25
+            echo "--- TCP 连接（有内容加载就会有连接）---"
+            adb -s localhost:5555 shell "cat /proc/net/tcp /proc/net/tcp6 2>/dev/null" | tr -d '\r' | awk 'NR>1' | head -8
+            adb -s localhost:5555 exec-out screencap -p > out/shot_${t}.png 2>/dev/null
+            echo "screencap: $(stat -c%s out/shot_${t}.png 2>/dev/null)"
+          done
+
+      - name: logcat
+        run: |
+          set +e
+          adb -s localhost:5555 shell "logcat -d -v brief" 2>/dev/null | grep -iE "qidian|argus|okhttp|Exception|FATAL" | tail -60
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: control
+          path: out/
+          if-no-files-found: warn
