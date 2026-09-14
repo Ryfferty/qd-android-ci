@@ -1,0 +1,32 @@
+name: arm64-native-probe
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Arch and KVM
+        run: |
+          echo "=== uname ==="
+          uname -a
+          echo "=== cpu ==="
+          nproc
+          lscpu | head -20
+          echo "=== mem ==="
+          free -m
+          echo "=== disk ==="
+          df -h /
+          echo "=== kvm node ==="
+          ls -l /dev/kvm || echo "NO /dev/kvm"
+          echo "=== enable kvm ==="
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules || true
+          sudo udevadm control --reload-rules || true
+          sudo udevadm trigger --name-match=kvm || true
+          sudo chmod 666 /dev/kvm 2>/dev/null || echo "chmod failed"
+          ls -l /dev/kvm || echo "STILL NO /dev/kvm"
+          echo "=== kvm-ok ==="
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq cpu-checker >/dev/null 2>&1 || true
+          sudo kvm-ok 2>&1 || true
+          echo "PROBE_DONE"
