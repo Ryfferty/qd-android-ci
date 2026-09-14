@@ -8,8 +8,8 @@ on:
         default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk
         required: false
       hook_url:
-        description: frida hook
-        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_net.js
+        description: frida hook（★ 用 hook_ssl.js：纯原生透明旁听，不替换 Java 实现）
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_ssl.js
         required: false
 
 jobs:
