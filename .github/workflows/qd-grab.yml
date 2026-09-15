@@ -51,7 +51,7 @@ jobs:
           d=json.load(open('chapters.json'))
           print('章节总数', len(d['Chapters']))
           PY
-          python grab_ci.py
+          python .github/scripts/grab_ci.py
 
       - name: 上传分片 ${{ matrix.shard }}
         if: always()
