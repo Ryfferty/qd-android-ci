@@ -1,0 +1,65 @@
+name: qd-probe
+
+# 用 CI 的 IP 测：封禁是 IP 级还是会话级？顺便取一份新鲜密文
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: 恢复 cookies
+        run: |
+          echo "${{ secrets.QD_CK_B64 }}" | base64 -d > cookies.json
+          python -c "import json;d=json.load(open('cookies.json'));print('cookies',len(d))"
+      - name: 探测
+        run: |
+          python - <<'PY'
+          import json, urllib.request, gzip, re
+          CK=json.load(open('cookies.json'))
+          CKH='; '.join(f"{c['name']}={c['value']}" for c in CK if 'qidian' in c.get('domain','') or 'yuewen' in c.get('domain',''))
+          CSRF=next((c['value'] for c in CK if c['name']=='_csrfToken'),'')
+          UA=('Mozilla/5.0 (Linux; Android 13; V2329A Build/TP1A.220624.014) AppleWebKit/537.36 '
+              '(KHTML, like Gecko) Version/4.0 Chrome/119.0.6045.66 Mobile Safari/537.36 QDReaderAndroid/7.9.472')
+          def get(url, lbl):
+              h={'User-Agent':UA,'Cookie':CKH,'Accept-Encoding':'gzip','Referer':'https://m.qidian.com/','X-Requested-With':'XMLHttpRequest'}
+              try:
+                  r=urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=25)
+                  raw=r.read()
+                  try: raw=gzip.decompress(raw)
+                  except Exception: pass
+                  t=raw.decode('utf-8','ignore')
+                  print(f"  [{lbl:22s}] HTTP {r.status} len={len(t)}  {t[:150]}")
+                  return t
+              except urllib.error.HTTPError as e:
+                  raw=e.read()
+                  try: raw=gzip.decompress(raw)
+                  except Exception: pass
+                  print(f"  [{lbl:22s}] HTTP {e.code}  {raw.decode('utf-8','ignore')[:200]}")
+              except Exception as e:
+                  print(f"  [{lbl:22s}] ERR {str(e)[:120]}")
+              return None
+          print("=== ① IP 级别测试（匿名访问 m.qidian.com）===")
+          get('https://m.qidian.com/', '匿名m.qidian')
+          print("\n=== ② 带 cookie 测同一路径 ===")
+          b = get(f'https://m.qidian.com/webcommon/chapter/getMChapterInfo?bookId=1040025277&chapterId=794290414&_csrfToken={CSRF}', 'getMChapterInfo')
+          if b:
+              try:
+                  d=json.loads(b); ci=(d.get('data') or {}).get('chapterInfo') or {}
+                  c=ci.get('content','')
+                  print(f"\n  ★ content len={len(c)}  fkp={'有' if ci.get('fkp') else '无'}")
+                  open('cipher.json','w').write(json.dumps({'content':c,'fkp':ci.get('fkp'),'chapterId':'794290414'}))
+                  print("  ★ 已存 cipher.json")
+              except Exception as e: print("  解析失败", str(e)[:100])
+          print("\n=== ③ 评论接口 ===")
+          get(f'https://m.qidian.com/webcommon/chapterreview/reviewsummary4m?bookId=1040025277&chapterId=794290414&_csrfToken={CSRF}', 'reviewsummary')
+          PY
+      - name: 上传密文
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cipher
+          path: cipher.json
+          if-no-files-found: warn
