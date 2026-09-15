@@ -182,6 +182,24 @@ jobs:
 
 
       - name: ★ 拉起登录页 + 立刻截图
+          # ★★★ 关键：先点掉【系统全屏提示弹窗】（它抢焦点，不点掉所有操作都无效）
+          for k in 1 2 3 4 5; do
+            adb -s localhost:5555 shell "uiautomator dump /sdcard/d.xml >/dev/null 2>&1"
+            adb -s localhost:5555 shell "cat /sdcard/d.xml" 2>/dev/null | tr -d '\r' > d.xml
+            GOT=$(cat d.xml 2>/dev/null | sed 's/></>\n</g' | grep -E 'text="GOT IT"' | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -1)
+            echo "  [dismiss $k] GOT IT bounds: ${GOT:-无}"
+            if [ -n "$GOT" ]; then
+              N=$(echo "$GOT" | sed -E 's/^bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"$/\1 \2 \3 \4/')
+              set -- $N
+              adb -s localhost:5555 shell "input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 ))"
+              echo "  已点掉 GOT IT"
+              sleep 4
+            else
+              break
+            fi
+          done
+          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
+
         run: |
           set +e
           adb -s localhost:5555 shell "am start -a android.intent.action.VIEW -d 'QDReader://login'" 2>&1 | tail -3
@@ -202,29 +220,6 @@ jobs:
           name: qr
           path: qr/
           if-no-files-found: warn
-
-      - name: ★★ 点QQ图标出二维码
-        run: |
-          set +e
-          echo "===== 第三方登录图标 ====="
-          adb -s localhost:5555 shell "uiautomator dump /sdcard/tp.xml >/dev/null 2>&1"
-          adb -s localhost:5555 shell "cat /sdcard/tp.xml" 2>/dev/null | tr -d '\r' > out/thirdparty.xml
-          echo "xml=$(stat -c%s out/thirdparty.xml 2>/dev/null)"
-          W=$(adb -s localhost:5555 shell "wm size" 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1 | cut -dx -f1 | tr -d '\r')
-          H=$(adb -s localhost:5555 shell "wm size" 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1 | cut -dx -f2 | tr -d '\r')
-          echo "屏幕 ${W}x${H}"
-          for YR in 0.74 0.77 0.80 0.83 0.86; do
-            Y=$(awk -v h="$H" -v r="$YR" 'BEGIN{printf "%d", h*r}')
-            X=$(awk -v w="$W" 'BEGIN{printf "%d", w/2}')
-            echo ">>> tap ($X,$Y) ratio=$YR"
-            adb -s localhost:5555 shell "input tap $X $Y"
-            sleep 10
-            adb -s localhost:5555 exec-out screencap -p > out/qq_$YR.png 2>/dev/null
-            echo "   qq_$YR size=$(stat -c%s out/qq_$YR.png 2>/dev/null)"
-            adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
-          done
-          echo "===== QQ 点击后挂钩 ====="
-          grep -E "★★|QIMEI|ibex|OLA|NIB" out/capture.txt 2>/dev/null | head -30
 
       - name: ★ 保持会话等你扫码（25 分钟）
         run: |
