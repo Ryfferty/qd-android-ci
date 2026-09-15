@@ -111,10 +111,34 @@ jobs:
           echo "=== 关键行 ==="
           grep -E "★★★|★ mmr|MEM |lk\(\)|hav\(\)|找到 NativeWrapper|没有 com" cap/capture.txt 2>/dev/null | head -30
 
-      - name: Upload
+      - name: 上传 artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nib-key-capture
           path: dl/cap/
           if-no-files-found: warn
+
+      - name: ★ 把结果 commit 进仓库（永久保存）
+        if: always()
+        run: |
+          mkdir -p results
+          TS=$(date -u +%Y%m%d_%H%M%S)
+          cp dl/cap/capture.txt "results/nib_key_${TS}.txt" 2>/dev/null || echo "(无 capture)" > "results/nib_key_${TS}.txt"
+          {
+            echo "# App 端 hook 结果 ${TS}"
+            echo ""
+            echo "## 关键行"
+            echo '```'
+            grep -E "★★★|★ mmr|MEM |lk\(\)|hav\(\)|找到 NativeWrapper|没有 com|script loaded" "results/nib_key_${TS}.txt" 2>/dev/null | head -60
+            echo '```'
+            echo ""
+            echo "## 统计"
+            echo "- 总行数: $(wc -l < "results/nib_key_${TS}.txt" 2>/dev/null || echo 0)"
+            echo "- lk 调用: $(grep -c 'lk()' "results/nib_key_${TS}.txt" 2>/dev/null || echo 0)"
+            echo "- 内存命中: $(grep -c 'MEM ' "results/nib_key_${TS}.txt" 2>/dev/null || echo 0)"
+          } > "results/nib_key_${TS}.md"
+          git config user.email "ci@local"; git config user.name "ci"
+          git add results/
+          git commit -q -m "ci: app-side nib hook results ${TS}" && echo "✓ committed" || echo "(无变化)"
+          git push -q origin HEAD && echo "✓ pushed" || echo "✗ push 失败" 
