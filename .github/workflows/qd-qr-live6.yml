@@ -1,5 +1,5 @@
 name: qd-qr-live
-true:
+on:
   workflow_dispatch:
     inputs:
       apk_url:
