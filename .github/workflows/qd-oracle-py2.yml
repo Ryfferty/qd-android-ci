@@ -150,8 +150,8 @@ jobs:
               sleep 0.4
             done ) &
           echo "===== am start ====="
-          adb -s localhost:5555 shell "am start -W -n com.qidian.QDReader/com.qidian.QDReader.ui.activity.SplashActivity" 2>&1 | tail -5
-          sleep 12
+          adb -s localhost:5555 shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -5
+          sleep 25
           cat out/race.log 2>/dev/null || echo "(race 未触发)" 
           adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
           echo "===== 等 attach 生效 ====="
