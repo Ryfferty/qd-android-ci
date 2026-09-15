@@ -182,6 +182,7 @@ jobs:
 
 
       - name: ★ 拉起登录页 + 立刻截图
+        run: |
           # ★★★ 关键：先点掉【系统全屏提示弹窗】（它抢焦点，不点掉所有操作都无效）
           for k in 1 2 3 4 5; do
             adb -s localhost:5555 shell "uiautomator dump /sdcard/d.xml >/dev/null 2>&1"
@@ -200,7 +201,6 @@ jobs:
           done
           adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
 
-        run: |
           set +e
           adb -s localhost:5555 shell "am start -a android.intent.action.VIEW -d 'QDReader://login'" 2>&1 | tail -3
           sleep 30
