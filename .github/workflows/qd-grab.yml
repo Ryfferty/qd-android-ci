@@ -1,0 +1,62 @@
+name: qd-grab
+
+# 在 GitHub CI 上抓起点章节正文 —— 不占本地内存，矩阵并行分片
+on:
+  workflow_dispatch:
+    inputs:
+      book_id:   { description: 'bookId',        default: '1040025277' }
+      ch_file:   { description: '章节清单 json',  default: 'chapters_1040025277.json' }
+      shards:    { description: '分片数(并行job)', default: '20' }
+      tabs:      { description: '每job标签数',    default: '4' }
+      maxpar:    { description: '最大并行job数',  default: '20' }
+
+jobs:
+  grab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 装 playwright + firefox
+        run: |
+          pip install -q playwright
+          python -m playwright install --with-deps firefox
+
+      - name: 写出 cookies（来自 secret）
+        run: |
+          echo "${{ secrets.QD_CK_B64 }}" | base64 -d > cookies.json
+          python -c "import json;d=json.load(open('cookies.json'));print('cookies',len(d))"
+
+      - name: 抓分片 ${{ matrix.shard }}
+        env:
+          BOOK_ID: ${{ inputs.book_id }}
+          CH_FILE: ${{ inputs.ch_file }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ inputs.shards }}
+          TABS: ${{ inputs.tabs }}
+          SKIP_TAIL: '0'
+        run: |
+          cp "$CH_FILE" chapters.json
+          python - <<'PY'
+          import json
+          d=json.load(open('chapters.json'))
+          print('章节总数', len(d['Chapters']))
+          PY
+          python grab_ci.py
+
+      - name: 上传分片 ${{ matrix.shard }}
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: novel-shard-${{ matrix.shard }}
+          path: out/
+          if-no-files-found: warn
