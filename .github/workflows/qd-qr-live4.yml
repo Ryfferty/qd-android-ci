@@ -203,9 +203,10 @@ jobs:
           path: qr/
           if-no-files-found: warn
 
-
-          # ★★ 点【QQ】第三方登录图标 → 出二维码
-          echo "===== 找第三方登录图标 ====="
+      - name: ★★ 点QQ图标出二维码
+        run: |
+          set +e
+          echo "===== 第三方登录图标 ====="
           adb -s localhost:5555 shell "uiautomator dump /sdcard/tp.xml >/dev/null 2>&1"
           adb -s localhost:5555 shell "cat /sdcard/tp.xml" 2>/dev/null | tr -d '\r' > out/thirdparty.xml
           echo "xml=$(stat -c%s out/thirdparty.xml 2>/dev/null)"
