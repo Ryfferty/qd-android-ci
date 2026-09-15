@@ -23,26 +23,26 @@ jobs:
           sudo apt-get install -y -qq android-tools-adb python3-pip curl unzip
           pip install -q "frida==16.7.19" "frida-tools<14"
 
-      - name: Start redroid (arm64 Android 11)
+      - name: Start redroid (x86_64 Android 11 · 带 libndk arm 翻译)
         run: |
-          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) || true
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
-          docker run -d --privileged --name redroid \
-            -p 5555:5555 \
-            -v /dev/binderfs:/dev/binderfs \
-            redroid/redroid:11.0.0_arm64-latest \
-            androidboot.hardware=redroid androidboot.redroid_gpu_mode=guest \
-            androidboot.redroid_width=1080 androidboot.redroid_height=2214 \
-            androidboot.redroid_dpi=420 androidboot.use_memfd=true 2>&1 | tail -3
-          sleep 30
-          adb connect localhost:5555
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 25
+          adb connect localhost:5555 || true
           for i in $(seq 1 40); do
             B=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             echo "boot=$B"
             [ "$B" = "1" ] && break
-            sleep 15
+            sleep 10
           done
-          adb -s localhost:5555 shell getprop ro.product.cpu.abi
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+          adb -s localhost:5555 shell getprop ro.product.cpu.abilist | tr -d '\r'
 
       - name: Download APK + hook + frida-server
         run: |
