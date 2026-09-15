@@ -1,0 +1,120 @@
+name: qd-nib-key
+
+# App 端解密：redroid + 起点 App + frida hook NativeWrapper(libnib)
+# 用户方案一(抓 lk/mmr 进出数据) + 方案二(扫内存找 AES key/IV)
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
+      hook_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_nib_key.js'
+
+jobs:
+  hook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup binder + adb + frida-tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb python3-pip curl unzip
+          pip install -q "frida==16.7.19" "frida-tools<14"
+
+      - name: Start redroid (arm64 Android 11)
+        run: |
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) || true
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" || true
+          docker run -d --privileged --name redroid \
+            -p 5555:5555 \
+            -v /dev/binderfs:/dev/binderfs \
+            redroid/redroid:11.0.0_arm64-latest \
+            androidboot.hardware=redroid androidboot.redroid_gpu_mode=guest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2214 \
+            androidboot.redroid_dpi=420 androidboot.use_memfd=true 2>&1 | tail -3
+          sleep 30
+          adb connect localhost:5555
+          for i in $(seq 1 40); do
+            B=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "boot=$B"
+            [ "$B" = "1" ] && break
+            sleep 15
+          done
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi
+
+      - name: Download APK + hook + frida-server
+        run: |
+          mkdir -p dl && cd dl
+          for i in 1 2 3; do
+            curl -sL -o qidian.apk "${{ inputs.apk_url }}" && [ -s qidian.apk ] && break || sleep 5
+          done
+          curl -sL -o hook.js "${{ inputs.hook_url }}"
+          curl -sL -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz
+          xz -d fs.xz 2>/dev/null || true
+          ls -lh
+          echo "apk=$(stat -c%s qidian.apk)  hook=$(stat -c%s hook.js)"
+
+      - name: Install Qidian + start frida-server
+        run: |
+          cd dl
+          adb -s localhost:5555 install -r -g qidian.apk 2>&1 | tail -3
+          adb -s localhost:5555 shell pm list packages | grep qidian || true
+          adb -s localhost:5555 push fs /data/local/tmp/fs
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs"
+          adb -s localhost:5555 shell "su 0 /data/local/tmp/fs -D &" 2>/dev/null || adb -s localhost:5555 shell "/data/local/tmp/fs -D &"
+          sleep 8
+          adb -s localhost:5555 shell "ps -A | grep -i frida" | tr -d '\r'
+
+      - name: 启动 App + attach frida 抓 lk/mmr
+        run: |
+          cd dl
+          # 清掉系统全屏弹窗（App 会进 immersive）
+          adb -s localhost:5555 shell "am start -a android.intent.action.VIEW -d 'QDReader://main'" 2>&1 | tail -2
+          sleep 20
+          adb -s localhost:5555 shell "uiautomator dump /sdcard/d.xml >/dev/null 2>&1; cat /sdcard/d.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | head -10
+          mkdir -p cap
+          python3 - <<'PY'
+          import frida, sys, time, json, subprocess
+          dev = frida.get_device_manager().add_remote_device('localhost:5555')
+          # 找 App 进程
+          pid = None
+          for i in range(20):
+              for p in dev.enumerate_processes():
+                  if 'qidian' in p.name.lower():
+                      pid = p.pid; break
+              if pid: break
+              time.sleep(3)
+          print('pid =', pid, flush=True)
+          if not pid:
+              print('✗ 没找到 App 进程'); sys.exit(0)
+          sess = dev.attach(pid)
+          msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False)
+                  msgs.append(line); print('[JS]', line[:300], flush=True)
+              else:
+                  print('[ERR]', str(m)[:200], flush=True)
+          script = sess.create_script(open('hook.js').read())
+          script.on('message', on_msg)
+          script.load()
+          print('[PY] script loaded OK', flush=True)
+          # 等 4 分钟收集
+          for i in range(48):
+              time.sleep(5)
+              if i % 6 == 0: print(f'[PY] alive t+{i*5}s  msgs={len(msgs)}', flush=True)
+          open('cap/capture.txt', 'w').write('\n'.join(msgs))
+          print(f'[PY] 完成 共 {len(msgs)} 条', flush=True)
+          PY
+          echo "=== 关键行 ==="
+          grep -E "★★★|★ mmr|MEM |lk\(\)|hav\(\)|找到 NativeWrapper|没有 com" cap/capture.txt 2>/dev/null | head -30
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nib-key-capture
+          path: dl/cap/
+          if-no-files-found: warn
