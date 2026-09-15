@@ -183,35 +183,41 @@ jobs:
 
       - name: ★ 拉起登录页 + 立刻截图
         run: |
-          # ★★★ 关键：先点掉【系统全屏提示弹窗】（它抢焦点，不点掉所有操作都无效）
+          set +e
+          # ★ 一气呵成：拉起登录页 → 清弹窗 → 立即 dump → 找QQ → 点 → 截图（中间不留间隔）
+          adb -s localhost:5555 shell "am start -a android.intent.action.VIEW -d 'QDReader://login'" 2>&1 | tail -2
+          sleep 25
           for k in 1 2 3 4 5; do
             adb -s localhost:5555 shell "uiautomator dump /sdcard/d.xml >/dev/null 2>&1"
             adb -s localhost:5555 shell "cat /sdcard/d.xml" 2>/dev/null | tr -d '\r' > d.xml
             GOT=$(cat d.xml 2>/dev/null | sed 's/></>\n</g' | grep -E 'text="GOT IT"' | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -1)
-            echo "  [dismiss $k] GOT IT bounds: ${GOT:-无}"
+            echo "[dismiss $k] ${GOT:-无}"
             if [ -n "$GOT" ]; then
-              N=$(echo "$GOT" | sed -E 's/^bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"$/\1 \2 \3 \4/')
-              set -- $N
-              adb -s localhost:5555 shell "input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 ))"
-              echo "  已点掉 GOT IT"
-              sleep 4
-            else
-              break
-            fi
+              N=$(echo "$GOT" | sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/')
+              set -- $N; adb -s localhost:5555 shell "input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 ))"; sleep 3
+            else break; fi
+          done
+          echo "===== 立即 dump 登录页节点 ====="
+          adb -s localhost:5555 shell "uiautomator dump /sdcard/p.xml >/dev/null 2>&1"
+          adb -s localhost:5555 shell "cat /sdcard/p.xml" 2>/dev/null | tr -d '\r' > out/login_now.xml
+          echo "xml=$(stat -c%s out/login_now.xml 2>/dev/null)"
+          cat out/login_now.xml | sed 's/></>\n</g' | grep -oE '(text|content-desc|resource-id)="[^"]*"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -30
+          adb -s localhost:5555 exec-out screencap -p > out/login_before_tap.png 2>/dev/null
+          echo "before_tap=$(stat -c%s out/login_before_tap.png 2>/dev/null)"
+          # 立即试 9 个位置（尽量快，每个只等 5 秒）
+          W=$(adb -s localhost:5555 shell "wm size" 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1 | cut -dx -f1 | tr -d '\r')
+          H=$(adb -s localhost:5555 shell "wm size" 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1 | cut -dx -f2 | tr -d '\r')
+          for YR in 0.70 0.74 0.78 0.82; do
+            for XX in 0.33 0.50 0.67; do
+              X=$(awk -v w="$W" -v r="$XX" 'BEGIN{printf "%d", w*r}')
+              Y=$(awk -v h="$H" -v r="$YR" 'BEGIN{printf "%d", h*r}')
+              adb -s localhost:5555 shell "input tap $X $Y"
+              sleep 5
+              adb -s localhost:5555 exec-out screencap -p > out/tt_${XX}_${YR}.png 2>/dev/null
+              echo "tap($X,$Y) x=$XX y=$YR size=$(stat -c%s out/tt_${XX}_${YR}.png 2>/dev/null)"
+            done
           done
           adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
-
-          set +e
-          adb -s localhost:5555 shell "am start -a android.intent.action.VIEW -d 'QDReader://login'" 2>&1 | tail -3
-          sleep 30
-          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity"
-          mkdir -p qr
-          for i in 1 2 3 4 5; do
-            adb -s localhost:5555 exec-out screencap -p > qr/qr_$i.png 2>/dev/null
-            echo "qr_$i size=$(stat -c%s qr/qr_$i.png 2>/dev/null || echo 0)"
-            sleep 12
-          done
-          ls -la qr/
 
       - name: ★★ 立刻上传二维码（这一条先传，好让你马上扫）
         uses: actions/upload-artifact@v4
@@ -220,41 +226,6 @@ jobs:
           name: qr
           path: qr/
           if-no-files-found: warn
-
-      - name: ★★ 点QQ图标出二维码（先清弹窗）
-        run: |
-          set +e
-          for k in 1 2 3 4 5; do
-            adb -s localhost:5555 shell "uiautomator dump /sdcard/d.xml >/dev/null 2>&1"
-            adb -s localhost:5555 shell "cat /sdcard/d.xml" 2>/dev/null | tr -d '\r' > d.xml
-            GOT=$(cat d.xml 2>/dev/null | sed 's/></>\n</g' | grep -E 'text="GOT IT"' | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -1)
-            echo "  [dismiss $k] ${GOT:-无}"
-            if [ -n "$GOT" ]; then
-              N=$(echo "$GOT" | sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/')
-              set -- $N; adb -s localhost:5555 shell "input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 ))"; sleep 4
-            else break; fi
-          done
-          echo "===== 当前页面节点 ====="
-          adb -s localhost:5555 shell "uiautomator dump /sdcard/p.xml >/dev/null 2>&1"
-          adb -s localhost:5555 shell "cat /sdcard/p.xml" 2>/dev/null | tr -d '\r' > out/login_page.xml
-          cat out/login_page.xml | sed 's/></>\n</g' | grep -E 'clickable="true"' | grep -oE '(text|content-desc)="[^"]*"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -20
-          W=$(adb -s localhost:5555 shell "wm size" 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1 | cut -dx -f1 | tr -d '\r')
-          H=$(adb -s localhost:5555 shell "wm size" 2>/dev/null | grep -oE '[0-9]+x[0-9]+' | head -1 | cut -dx -f2 | tr -d '\r')
-          echo "屏幕 ${W}x${H}"
-          for XX in 0.42 0.50 0.58; do
-            for YR in 0.72 0.76 0.80; do
-              X=$(awk -v w="$W" -v r="$XX" 'BEGIN{printf "%d", w*r}')
-              Y=$(awk -v h="$H" -v r="$YR" 'BEGIN{printf "%d", h*r}')
-              echo ">>> tap ($X,$Y) x=$XX y=$YR"
-              adb -s localhost:5555 shell "input tap $X $Y"
-              sleep 8
-              adb -s localhost:5555 exec-out screencap -p > out/tap_${XX}_${YR}.png 2>/dev/null
-              SZ=$(stat -c%s out/tap_${XX}_${YR}.png 2>/dev/null || echo 0)
-              echo "   size=$SZ"
-            done
-          done
-          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
-
 
       - name: ★ 保持会话等你扫码（25 分钟）
         run: |
