@@ -14,6 +14,21 @@ public class Harness3 {
 
     static void log(String s) { System.out.println("[H] " + s); }
 
+    static String causes(Throwable t) {
+        StringBuilder sb = new StringBuilder();
+        Throwable c = t;
+        int n = 0;
+        while (c != null && n < 6) {
+            sb.append(" << ").append(c.getClass().getName());
+            String m = c.getMessage();
+            if (m != null) sb.append(": ").append(m.length() > 240 ? m.substring(0, 240) : m);
+            c = c.getCause();
+            n++;
+        }
+        return sb.toString();
+    }
+
+
     static String readFile(String p) {
         try {
             FileInputStream fis = new FileInputStream(p);
@@ -148,6 +163,9 @@ public class Harness3 {
             else if (n.equals("urk")) urk = m;
             else if (n.equals("sn")) sn = m;
         }
+        // ★ 关键：private native 必须 setAccessible(true)
+        Method[] all = { setupS, addKeypool, it, ak, uk, unlock3, unlock4, addedVer, curUser, av, urk, sn };
+        for (Method m : all) if (m != null) { try { m.setAccessible(true); } catch (Throwable t) { } }
         log("定位: setupS=" + (setupS != null) + " addKeypool=" + (addKeypool != null)
                 + " it=" + (it != null) + " ak=" + (ak != null) + " uk=" + (uk != null)
                 + " unlock3=" + (unlock3 != null) + " unlock4=" + (unlock4 != null));
@@ -159,10 +177,10 @@ public class Harness3 {
                 if (u == null || u.isEmpty()) continue;
                 try {
                     if (setupS != null) { setupS.invoke(null, u); log("① setup(\"" + (u.length() > 24 ? u.substring(0, 24) + "…" : u) + "\") OK len=" + u.length()); }
-                } catch (Throwable t) { log("① setup 异常 " + String.valueOf(t).substring(0, Math.min(120, String.valueOf(t).length()))); }
+                } catch (Throwable t) { log("① setup 异常" + causes(t)); }
                 if (it != null) {
                     byte[] b = u.getBytes(StandardCharsets.UTF_8);
-                    try { log("① it(字节) ret=" + it.invoke(null, b, b.length)); } catch (Throwable t) { log("① it 异常"); }
+                    try { log("① it(字节) ret=" + it.invoke(null, b, b.length)); } catch (Throwable t) { log("① it 异常" + causes(t)); }
                 }
                 break;
             }
@@ -173,11 +191,11 @@ public class Harness3 {
             // ---- step 2: 装密钥池 ----
             if (addKeypool != null && keyA != null && !keyA.isEmpty()) {
                 try { addKeypool.invoke(null, keyA, ver); log("② addKeypool(KeyA, " + ver + ") OK"); }
-                catch (Throwable t) { log("② addKeypool(KeyA) 异常 " + String.valueOf(t).substring(0, Math.min(120, String.valueOf(t).length()))); }
+                catch (Throwable t) { log("② addKeypool(KeyA) 异常" + causes(t)); }
             }
             if (addKeypool != null && keyB != null && !keyB.isEmpty()) {
                 try { addKeypool.invoke(null, keyB, ver); log("② addKeypool(KeyB, " + ver + ") OK"); }
-                catch (Throwable t) { log("② addKeypool(KeyB) 异常"); }
+                catch (Throwable t) { log("② addKeypool(KeyB) 异常" + causes(t)); }
             }
             if (ak != null && keyA != null && !keyA.isEmpty()) {
                 try {
@@ -185,7 +203,7 @@ public class Harness3 {
                     byte[] vb = ver.getBytes(StandardCharsets.UTF_8);
                     ak.invoke(null, kb, kb.length, vb);
                     log("② ak(KeyA " + kb.length + "B, ver) OK");
-                } catch (Throwable t) { log("② ak 异常 " + String.valueOf(t).substring(0, Math.min(120, String.valueOf(t).length()))); }
+                } catch (Throwable t) { log("② ak 异常" + causes(t)); }
             }
             try { if (addedVer != null) log("② addedKeyVersions()=" + java.util.Arrays.toString((Object[]) addedVer.invoke(null))); } catch (Throwable t) { log("② addedKeyVersions 异常 " + t); }
 
@@ -217,7 +235,7 @@ public class Harness3 {
                             log("③ uk[" + sp[0] + "/ak=" + labels[a] + "]");
                             dumpResult("   →", r);
                             if (isSuccess(r)) return;
-                        } catch (Throwable t) { log("③ uk[" + sp[0] + "/" + labels[a] + "] 异常 " + String.valueOf(t).substring(0, Math.min(110, String.valueOf(t).length()))); }
+                        } catch (Throwable t) { log("③ uk[" + sp[0] + "/" + labels[a] + "] 异常" + causes(t)); }
                     }
                     // unlock(String, String, String, ErrorLogHandler)
                     if (unlock3 != null) {
@@ -226,7 +244,7 @@ public class Harness3 {
                             log("③ unlock(密文,ak=" + labels[a] + ",ywguid)");
                             dumpResult("   →", r);
                             if (isSuccess(r)) return;
-                        } catch (Throwable t) { log("③ unlock/" + labels[a] + " 异常 " + String.valueOf(t).substring(0, Math.min(110, String.valueOf(t).length()))); }
+                        } catch (Throwable t) { log("③ unlock/" + labels[a] + " 异常" + causes(t)); }
                     }
                 }
             }
