@@ -7,7 +7,9 @@ on:
       per_hook_sec:
         default: '240'
       hook:
-        default: 'hook_v36_userkey.js'
+        default: 'hook_v42_matrix.js'
+      acct:
+        default: '900069660351'
 
 permissions:
   contents: write
@@ -76,10 +78,18 @@ jobs:
 
       - name: argus keys and cipher
         env:
-          QD_SESSION_COOKIES: ${{ secrets.QD_SESSION_COOKIES }}
+          S_A: ${{ secrets.QD_SESS_3264757074 }}
+          S_B: ${{ secrets.QD_SESS_2719559418 }}
+          S_C: ${{ secrets.QD_SESS_900069660351 }}
+          ACCT: ${{ inputs.acct }}
         run: |
           set +e
-          printf '%s' "$QD_SESSION_COOKIES" > /tmp/sess.json
+          case "$ACCT" in
+            3264757074) printf '%s' "$S_A" > /tmp/sess.json ;;
+            2719559418) printf '%s' "$S_B" > /tmp/sess.json ;;
+            *) printf '%s' "$S_C" > /tmp/sess.json ;;
+          esac
+          echo argus-acct=$ACCT
           BOOK=1049120379 CID=903350205 python3 argus_fetch.py
           python3 merge_params.py 1049120379 903350205
           adb -s localhost:5555 push /tmp/params.json /data/local/tmp/params.json
@@ -98,11 +108,19 @@ jobs:
 
       - name: Two-stage run (App stays alive)
         env:
-          QD_SESSION_COOKIES: ${{ secrets.QD_SESSION_COOKIES }}
+          S_A: ${{ secrets.QD_SESS_3264757074 }}
+          S_B: ${{ secrets.QD_SESS_2719559418 }}
+          S_C: ${{ secrets.QD_SESS_900069660351 }}
+          ACCT: ${{ inputs.acct }}
         run: |
           set +e
           B=localhost:5555
-          printf '%s' "$QD_SESSION_COOKIES" > /tmp/sess.json
+          case "$ACCT" in
+            3264757074) printf '%s' "$S_A" > /tmp/sess.json ;;
+            2719559418) printf '%s' "$S_B" > /tmp/sess.json ;;
+            *) printf '%s' "$S_C" > /tmp/sess.json ;;
+          esac
+          echo run-acct=$ACCT sess=$(stat -c%s /tmp/sess.json)B
           adb -s $B push /tmp/sess.json /data/local/tmp/sess.json
           adb -s $B shell chmod 644 /data/local/tmp/sess.json
           echo "--- 启动 App（只启动一次，之后不再重启）---"
@@ -128,19 +146,19 @@ jobs:
           echo "段2 PID=[$PID2]"
           [ -z "$PID2" ] && { echo APP_DIED_AFTER_A; exit 0; }
           echo "--- 段2: add + unlock ---"
-          timeout 120 frida -H 127.0.0.1:27042 -p "$PID2" -l hook_v41b.js -q > /tmp/b.txt 2>&1 || echo "b exit $?"
+          timeout 150 frida -H 127.0.0.1:27042 -p "$PID2" -l "${{ inputs.hook }}" -q > /tmp/b.txt 2>&1 || echo "b exit $?"
           cat /tmp/b.txt | head -60
           echo
           echo "########## v41b 结果文件 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v41b_result.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v41b_result.txt /tmp/v41b_result.txt 2>&1 | tail -1
-          cat /tmp/v41b_result.txt 2>/dev/null | head -60
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v42_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v42_result.txt /tmp/v42_result.txt 2>&1 | tail -1
+          cat /tmp/v42_result.txt 2>/dev/null | head -60
           echo
           echo "########## 明文 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v41b_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v41b_plaintext.txt /tmp/v41b_plaintext.txt 2>&1 | tail -1
-          wc -c /tmp/v41b_plaintext.txt 2>/dev/null
-          head -c 2500 /tmp/v41b_plaintext.txt 2>/dev/null
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v42_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v42_plaintext.txt /tmp/v42_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v42_plaintext.txt 2>/dev/null
+          head -c 2500 /tmp/v42_plaintext.txt 2>/dev/null
           exit 0
 
       - name: Re-dump MMKV after hook
