@@ -1,0 +1,114 @@
+name: qd-app-storage
+
+# 选项 B：dump App 的登录态存储位置（shared_prefs / MMKV / databases）
+on:
+  workflow_dispatch:
+    inputs:
+      book_id:
+        default: '1040025277'
+      chapter_id:
+        default: '794290414'
+
+jobs:
+  storage:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install APK
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          exit 0
+
+      - name: Launch app (reach login page)
+        run: |
+          set +e
+          B=localhost:5555
+          for i in $(seq 1 10); do
+            adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
+            sleep 12
+            P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            [ -n "$P" ] && { echo "pid=$P try=$i"; break; }
+          done
+          echo "--- 当前 Activity（看是不是登录页）---"
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity' | head -3"
+          adb -s $B shell "dumpsys window 2>/dev/null | grep -E 'mCurrentFocus|mFocusedApp' | head -3"
+          sleep 20
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity' | head -2"
+          exit 0
+
+      - name: Dump storage
+        run: |
+          set +e
+          B=localhost:5555
+          PKG=/data/data/com.qidian.QDReader
+          echo "########## ① shared_prefs 文件列表 ##########"
+          adb -s $B shell "ls -la $PKG/shared_prefs/ 2>/dev/null"
+          echo
+          echo "########## ② shared_prefs 全部内容（找登录字段）##########"
+          for f in $(adb -s $B shell "ls $PKG/shared_prefs/ 2>/dev/null" | tr -d '\r'); do
+            echo "===== $f ====="
+            adb -s $B shell "cat $PKG/shared_prefs/$f 2>/dev/null" | head -60
+            echo
+          done
+          echo
+          echo "########## ③ files/ 目录结构 ##########"
+          adb -s $B shell "ls -la $PKG/files/ 2>/dev/null"
+          echo
+          echo "########## ④ mmkv 目录 ##########"
+          adb -s $B shell "ls -la $PKG/files/mmkv/ 2>/dev/null"
+          echo
+          echo "########## ⑤ databases ##########"
+          adb -s $B shell "ls -la $PKG/databases/ 2>/dev/null"
+          echo
+          echo "########## ⑥ 全部存储里出现 ywguid/ywkey/alk 的地方 ##########"
+          adb -s $B shell "grep -rl 'ywguid\|ywkey\|ywopenid' $PKG/shared_prefs/ $PKG/files/ 2>/dev/null | head -20"
+          echo
+          echo "########## ⑦ 含 yw 值的文件内容片段 ##########"
+          for f in $(adb -s $B shell "grep -rl 'ywguid' $PKG/shared_prefs/ $PKG/files/ 2>/dev/null | head -5" | tr -d '\r'); do
+            echo "===== $f ====="
+            adb -s $B shell "cat '$f' 2>/dev/null" | head -40
+          done
+          echo
+          echo "########## ⑧ App 的 data 目录全貌（两层） ##########"
+          adb -s $B shell "find $PKG -maxdepth 2 -type f 2>/dev/null | head -60"
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-storage
+          path: README.md
+          if-no-files-found: warn
