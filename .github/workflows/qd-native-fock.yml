@@ -167,6 +167,17 @@ jobs:
             done
           fi
           ls -la dex/
+          echo "--- dex magic/版本 ---"
+          for d in dex/*.dex; do
+            printf "  %s  " "$d"; od -A n -t x1 -N 8 "$d" | tr -d '\n'; echo ""
+          done
+          echo "--- 所有含 fock 的 dex ---"
+          mkdir -p alldex; unzip -o -j qd.apk 'classes*.dex' -d alldex >/dev/null 2>&1
+          for d in alldex/*.dex; do
+            if strings -n 10 "$d" 2>/dev/null | grep -q 'yuewen/fock'; then
+              echo "  ★ $d  $(stat -c%s $d)B  $(strings -n 10 $d | grep -m2 'yuewen/fock')"
+            fi
+          done
 
       - name: ③ 编译 harness → dex
         run: |
@@ -199,18 +210,26 @@ jobs:
           set +e
           B=localhost:5555
           cd work
-          adb -s $B push so32/libfock.so /data/local/tmp/libfock.so
+          # ★ redroid 是 arm64 ⇒ 推 64 位
+          adb -s $B push so64/libfock.so /data/local/tmp/libfock.so
+          adb -s $B push so32/libfock.so /data/local/tmp/libfock32.so
           adb -s $B push dex/classes8.dex /data/local/tmp/classes8.dex
           [ -f outdex/classes.dex ] && adb -s $B push outdex/classes.dex /data/local/tmp/harness.dex
           adb -s $B shell chmod 644 /data/local/tmp/libfock.so /data/local/tmp/classes8.dex /data/local/tmp/harness.dex 2>/dev/null
           adb -s $B shell "ls -l /data/local/tmp/" | head -12
           echo
-          echo "===== 运行 harness（极简 Android 进程，不启动起点 App）====="
-          adb -s $B shell "CLASSPATH=/data/local/tmp/harness.dex:/data/local/tmp/classes8.dex app_process /data/local/tmp com.fock.Harness /data/local/tmp/params.json" 2>&1 | head -120
+          echo "===== dex 校验 ====="
+          adb -s $B shell "od -A d -t x1 -N 16 /data/local/tmp/classes8.dex | head -2"
+          adb -s $B shell "od -A d -t x1 -N 16 /data/local/tmp/harness.dex | head -2"
           echo
-          echo "===== 再试 arm64 版 .so（如果 32 位不行）====="
-          adb -s $B push so64/libfock.so /data/local/tmp/libfock64.so >/dev/null
-          adb -s $B shell "CLASSPATH=/data/local/tmp/harness.dex:/data/local/tmp/classes8.dex app_process /data/local/tmp com.fock.Harness /data/local/tmp/params.json" 2>&1 | head -60
+          echo "===== 运行 harness（-Djava.class.path 方式）====="
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/harness.dex:/data/local/tmp/classes8.dex /data/local/tmp com.fock.Harness /data/local/tmp/params.json" 2>&1 | head -120
+          echo
+          echo "===== 备用：只挂 classes8.dex 看类可见性 ====="
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/classes8.dex /data/local/tmp com.fock.Harness /data/local/tmp/params.json" 2>&1 | head -25
+          echo
+          echo "===== 备用2：CLASSPATH 环境变量方式 ====="
+          adb -s $B shell "CLASSPATH=/data/local/tmp/harness.dex:/data/local/tmp/classes8.dex app_process /data/local/tmp com.fock.Harness /data/local/tmp/params.json" 2>&1 | head -25
 
       - name: 上传产物
         if: always()
