@@ -202,7 +202,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          for H in hook_v23_pool hook_v22_http hook_v16_inject_session; do
+          for H in hook_v24_webview hook_v23_pool hook_v16_inject_session; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
@@ -486,6 +486,30 @@ jobs:
               if 'ResumedActivity' in line:
                   print(f'[{hname}] UI驱动后 {line.strip()[:120]}', flush=True)
                   break
+          # ★★★ 抓取 UI dump 的全文（WebView 渲染的章节正文就在里面）
+          try:
+              import re as _re2, os as _os2
+              full = []
+              for _k in range(4):
+                  sh(['adb','-s','localhost:5555','shell','uiautomator','dump','/sdcard/u.xml'], 40)
+                  ux = sh(['adb','-s','localhost:5555','shell','cat','/sdcard/u.xml'], 40)
+                  txts = _re2.findall(r'text="([^"]+)"', ux)
+                  # 只要像正文的（长中文行）
+                  body = [t for t in txts if len(t) > 12 and _re2.search(r'[\u4e00-\u9fff]', t)]
+                  if len(body) > len(full):
+                      full = body
+                  if len(full) >= 12:
+                      break
+                  time.sleep(5)
+              _os2.makedirs('out', exist_ok=True)
+              with open('out/UI_TEXT_%s.txt' % hname, 'w') as f:
+                  f.write('\n'.join(full))
+              total_cn = sum(len(t) for t in full)
+              print(f'[{hname}] ★★ UI dump 正文行数={len(full)} 中文字数={total_cn}', flush=True)
+              for line in full[:12]:
+                  print(f'[{hname}]   正文| {line[:90]}', flush=True)
+          except Exception as e:
+              print(f'[{hname}] UI 正文提取失败 {e}', flush=True)
           for i in range(max(1, secs // 5)):
               time.sleep(5)
               if i % 6 == 0: print(f'[{hname}] alive t+{i*5}s msgs={len(msgs)}', flush=True)
