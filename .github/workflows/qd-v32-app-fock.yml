@@ -96,47 +96,59 @@ jobs:
           ls -la /tmp/pref_utils.bin
           python3 mmkv_dump.py /tmp/pref_utils.bin
 
-      - name: Inject hook into App process
+      - name: Phase A - inject session cookies
+        env:
+          QD_SESSION_COOKIES: ${{ secrets.QD_SESSION_COOKIES }}
+        run: |
+          set +e
+          B=localhost:5555
+          printf '%s' "$QD_SESSION_COOKIES" > /tmp/sess.json
+          adb -s $B push /tmp/sess.json /data/local/tmp/sess.json
+          adb -s $B shell chmod 644 /data/local/tmp/sess.json
+          adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -1
+          sleep 22
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "phaseA pid=[$PID]"
+          adb -s $B push hook_v16_inject_session.js /data/local/tmp/inj.js
+          timeout 90 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v16_inject_session.js -q > /tmp/inj_out.txt 2>&1 || echo "inj exit $?"
+          grep -E "CookieManager|载入 sess|NONEMPTY|注入" /tmp/inj_out.txt | head -12
+          echo "--- 重启 App 让登录态生效 ---"
+          adb -s $B shell "am force-stop com.qidian.QDReader"
+          sleep 5
+          adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -1
+          sleep 25
+          echo "--- 打开免费章（触发 App 自己解密）---"
+          adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -1
+          sleep 12
+
+      - name: Phase B - observe and drive
         env:
           PER: ${{ inputs.per_hook_sec }}
           HOOK: ${{ inputs.hook }}
         run: |
           set +e
           B=localhost:5555
-          echo "=== 启动 App（仅作加密容器）==="
-          adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -2
-          sleep 22
           PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-          echo "App pid=[$PID]"
-          if [ -z "$PID" ]; then
-            adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -2
-            sleep 22
-            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-            echo "retry App pid=[$PID]"
-          fi
-          echo "--- push hook ($HOOK) ---"
-          for SRC in "$HOOK" "./$HOOK"; do
-            [ -f "$SRC" ] && adb -s $B push "$SRC" /data/local/tmp/hook.js && echo "  pushed from $SRC" && break
-          done
+          echo "phaseB pid=[$PID]"
           LOCALHOOK="$HOOK"
           [ -f "$LOCALHOOK" ] || LOCALHOOK="./$HOOK"
-          echo "frida script: $LOCALHOOK"
-          ( sleep 25; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -1 ) &
+          echo "hook: $LOCALHOOK"
+          ( sleep 20; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -1 ) &
           timeout ${PER:-240} frida -H 127.0.0.1:27042 -p "$PID" -l "$LOCALHOOK" -q > /tmp/frida_out.txt 2>&1 || echo "frida exit $?"
           wc -l /tmp/frida_out.txt
           echo "=== 关键行 ==="
-          grep -E "unlock|明文|正文|status|add\[|候选|Fock" /tmp/frida_out.txt | head -60
+          grep -E "██|unlock|明文|正文|status|add\[|requestKey|候选" /tmp/frida_out.txt | head -70
           echo
           echo "########## 设备端结果文件 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v37_result.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v37_result.txt /tmp/v37_result.txt 2>&1 | tail -1
-          cat /tmp/v37_result.txt 2>/dev/null | head -80
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v38_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v38_result.txt /tmp/v38_result.txt 2>&1 | tail -1
+          cat /tmp/v38_result.txt 2>/dev/null | head -80
           echo
           echo "########## 明文文件 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v37_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v37_plaintext.txt /tmp/v37_plaintext.txt 2>&1 | tail -1
-          wc -c /tmp/v37_plaintext.txt 2>/dev/null
-          head -c 2000 /tmp/v37_plaintext.txt 2>/dev/null
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v38_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v38_plaintext.txt /tmp/v38_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v38_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v38_plaintext.txt 2>/dev/null
 
       - name: Re-dump MMKV after hook
         if: always()
@@ -162,6 +174,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v36-app-out
+          name: v38-app-out
           path: results/
           if-no-files-found: warn
