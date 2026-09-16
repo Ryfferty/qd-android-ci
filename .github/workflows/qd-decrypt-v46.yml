@@ -121,10 +121,8 @@ jobs:
             echo "  步骤后 PID=[$P2]"
           }
 
-          run_step preuser
-          run_step save
-          run_step keymap
-          run_step add
+          run_step saveunlock
+          run_step saveunlock
           run_step unlock
 
           echo
