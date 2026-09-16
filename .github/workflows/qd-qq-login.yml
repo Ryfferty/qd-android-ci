@@ -72,7 +72,7 @@ jobs:
           adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
           exit 0
 
-      - name: Inject QQ cookies
+      - name: Inject QQ cookies (keep session alive, no restart)
         env:
           QQ: ${{ secrets.QD_QQ_COOKIES }}
         run: |
@@ -85,18 +85,11 @@ jobs:
           PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "PID=[$PID]"
           [ -z "$PID" ] && { echo APP_NOT_RUNNING; exit 0; }
-          timeout 100 frida -H 127.0.0.1:27042 -p "$PID" -l hook_qq_inject.js -q 2>&1 | grep -E '✓|✗|载入|NONEMPTY|EMPTY|拦截' | head -12
-          echo "--- 重启让 CookieManager 生效 ---"
-          adb -s $B shell "am force-stop com.qidian.QDReader"
-          sleep 5
-          for i in 1 2 3 4 5 6 7 8; do
-            adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
-            sleep 12
-            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-            [ -n "$PID" ] && { echo "重启后 PID=[$PID] (try $i)"; break; }
-          done
-          sleep 10
-          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          echo "--- 后台保持 frida 会话（注入 + getCookie 拦截常驻）---"
+          nohup timeout 420 frida -H 127.0.0.1:27042 -p "$PID" -l hook_qq_inject.js -q > /tmp/inj.txt 2>&1 &
+          sleep 12
+          grep -E '载入|CookieManager 写入|NONEMPTY|已 hook' /tmp/inj.txt | head -10
+          echo "--- 保持会话，立刻去点协议 + QQ ---"
           exit 0
 
       - name: Tick agreement and tap QQ
