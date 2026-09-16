@@ -9,7 +9,7 @@ on:
       per_hook_sec:
         default: '300'
       hook:
-        default: 'hook_v32_fock_public.js'
+        default: 'hook_v33_capture.js'
 
 permissions:
   contents: write
@@ -56,7 +56,7 @@ jobs:
           B=localhost:5555
           REL=https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1
           OK=0
-          for A in qidian_7.9.464_slim.apk q464_slim_signed.apk qidian_7.9.200.apk; do
+          for A in qidian_7.9.200.apk qidian_7.9.464_slim.apk q464_slim_signed.apk; do
             echo "--- try $A ---"
             curl -sSL --max-time 900 -o qd.apk "$REL/$A"
             echo "  downloaded $(stat -c%s qd.apk 2>/dev/null)B"
@@ -105,10 +105,18 @@ jobs:
             PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             echo "retry App pid=[$PID]"
           fi
-          adb -s $B push "$HOOK" /data/local/tmp/hook.js
-          adb -s $B shell ls -l /data/local/tmp/
+          echo "--- push hook ($HOOK) ---"
+          ls -la "$HOOK" 2>/dev/null || echo "  源文件不存在！"
+          for SRC in "$HOOK" "./$HOOK" "/home/runner/work/qd-android-ci/qd-android-ci/$HOOK"; do
+            if [ -f "$SRC" ]; then
+              adb -s $B push "$SRC" /data/local/tmp/hook.js && echo "  ✓ 已推送自 $SRC" && break
+            fi
+          done
+          echo "--- 验证 ---"
+          adb -s $B shell "ls -l /data/local/tmp/hook.js || echo HOOK_MISSING"
           echo "=== attach frida ==="
-          timeout ${PER:-300} frida -H 127.0.0.1:27042 -p "$PID" -l /data/local/tmp/hook.js -q 2>&1 | tee /tmp/frida_out.txt | head -150
+          ( sleep 25; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -1 ) &
+          timeout ${PER:-300} frida -H 127.0.0.1:27042 -p "$PID" -l /data/local/tmp/hook.js -q 2>&1 | tee /tmp/frida_out.txt | head -200
           echo
           echo "=== 关键行 ==="
           grep -E '★★★★|明文|正文|status|方法数|params keys|① |② |③ |====' /tmp/frida_out.txt | head -70
