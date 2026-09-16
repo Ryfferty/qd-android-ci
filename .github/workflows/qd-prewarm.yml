@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   prewarm:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     outputs:
       img_ok: ${{ steps.chk.outputs.ok }}
