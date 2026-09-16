@@ -1,0 +1,81 @@
+name: qd-app-crash
+
+# 诊断：App 为什么启动后立刻退出（抓 logcat）
+on:
+  workflow_dispatch: {}
+
+jobs:
+  crash:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install and launch with logcat
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          adb -s $B logcat -c
+          echo "=== 第一次启动 ==="
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -2
+          sleep 25
+          echo "--- 当前前台 ---"
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -2"
+          echo "--- pid ---"
+          adb -s $B shell "pidof com.qidian.QDReader"
+          echo
+          echo "=== 第二次：monkey 启动 ==="
+          adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -2
+          sleep 25
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -2"
+          adb -s $B shell "pidof com.qidian.QDReader"
+          echo
+          echo "########## logcat：App 相关（过滤噪声）##########"
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'qidian|QDReader|AndroidRuntime|FATAL|crash|abort|SIGSEGV|jiagu|shell|dobby|frida|root|emulator|detect' | tail -80
+          echo
+          echo "########## logcat：崩溃堆栈 ##########"
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -A25 'FATAL EXCEPTION' | head -60
+          echo
+          echo "########## logcat：ActivityManager 关于本 App ##########"
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'ActivityManager.*qidian|Process.*qidian|died|ANR|kill' | tail -30
+          echo
+          echo "########## 设备属性（供判断检测点）##########"
+          adb -s $B shell "getprop | grep -iE 'ro.build.tags|ro.debuggable|ro.secure|ro.build.type|ro.product.model|ro.build.version.sdk'"
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-crash
+          path: README.md
+          if-no-files-found: warn
