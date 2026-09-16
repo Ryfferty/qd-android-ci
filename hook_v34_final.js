@@ -2,7 +2,7 @@
 // App 实测格式：FockUtil.add(argusKey, argusVersion) → FockUtil.unlock(base64密文串, chapterId)
 function S(o) { try { send(o); } catch (e) { } }
 
-var OUT = '/data/local/tmp/v34_result.txt';
+var OUT = '/data/data/com.qidian.QDReader/files/v34_result.txt';
 function W(line) {
   try {
     var F = Java.use('java.io.FileOutputStream');
@@ -31,10 +31,10 @@ function describeResult(r) {
           W('★★★ 正文前2500字: ' + s2.slice(0, 2500));
           try {
             var FOS = Java.use('java.io.FileOutputStream');
-            var f2 = FOS.$new('/data/local/tmp/v34_plaintext.txt', false);
+            var f2 = FOS.$new('/data/data/com.qidian.QDReader/files/v34_plaintext.txt', false);
             f2.write(Java.use('java.lang.String').$new(s2).getBytes('UTF-8'));
             f2.close();
-            W('★ 明文已写入 /data/local/tmp/v34_plaintext.txt');
+            W('★ 明文已写入 /data/data/com.qidian.QDReader/files/v34_plaintext.txt');
           } catch (e) { W('写明文失败 ' + e); }
         }
       } else o[fs[i].getName()] = String(v);
