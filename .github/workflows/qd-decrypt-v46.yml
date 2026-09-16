@@ -1,4 +1,4 @@
-name: qd-decrypt-v46
+name: qd-decrypt-v47
 
 # 按 App 反编译代码复现：e.L() 取 userKey → init → save → add → unlock
 on:
@@ -95,35 +95,35 @@ jobs:
           python3 doit.py text /tmp/u.xml
           exit 0
 
-      - name: Run v46 (按 App 代码复现)
+      - name: Run v47 (按 App 代码复现)
         run: |
           set +e
           B=localhost:5555
           PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "PID=[$PID]"
           [ -z "$PID" ] && { echo APP_NOT_RUNNING; exit 0; }
-          timeout 150 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v46_qimei.js -q > /tmp/v46.txt 2>&1 || echo "v46 exit $?"
-          cat /tmp/v46.txt | head -60
+          timeout 150 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v47_final.js -q > /tmp/v47.txt 2>&1 || echo "v46 exit $?"
+          cat /tmp/v47.txt | head -60
           echo
-          echo "########## 结果文件 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v46_result.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v46_result.txt /tmp/v46_result.txt 2>&1 | tail -1
-          cat /tmp/v46_result.txt 2>/dev/null | head -80
+          echo "########## v47 结果 ##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v47_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v47_result.txt /tmp/v47_result.txt 2>&1 | tail -1
+          cat /tmp/v47_result.txt 2>/dev/null | head -80
           echo
           echo "########## 明文 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v46_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v46_plaintext.txt /tmp/v46_plaintext.txt 2>&1 | tail -1
-          wc -c /tmp/v46_plaintext.txt 2>/dev/null
-          head -c 2000 /tmp/v46_plaintext.txt 2>/dev/null
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v47_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v47_plaintext.txt /tmp/v47_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v47_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v47_plaintext.txt 2>/dev/null
           exit 0
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v46
+          name: v47
           path: |
-            /tmp/v46.txt
-            /tmp/v46_result.txt
+            /tmp/v47.txt
+            /tmp/v47_result.txt
             /tmp/params.json
           if-no-files-found: warn
