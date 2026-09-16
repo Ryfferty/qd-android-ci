@@ -5,7 +5,7 @@ import json, base64, hashlib, time, urllib.request, urllib.parse, gzip, os
 from Crypto.Cipher import DES3
 
 try:
-    S = json.load(open('/tmp/sess.json'))
+    S = json.load(open(os.environ.get('SESS','/tmp/sess.json')))
 except Exception:
     S = {}
 YW = S.get('ywguid') or '0'
@@ -84,9 +84,14 @@ raw = aget('/argus/api/v3/bookcontent/getkey', {'bookId': BOOK, 'ui': '1'}, 'get
 if raw and raw.startswith(b'{'):
     try:
         dd = json.loads(raw).get('Data') or {}
-        if dd.get('Key') and dd['Key'] != out.get('Key'):
-            out['key_b'] = dd['Key']
-            print('   keyB len=%s' % len(dd['Key']))
+        if dd.get('Key'):
+            out['key_ui1'] = dd['Key']
+            print('   key_ui1 len=%s head=%s' % (len(dd['Key']), dd['Key'][:32]))
+            if dd['Key'] != out.get('Key'):
+                out['key_b'] = dd['Key']
+                print('   （与 ui=0 不同 ✓）')
+            else:
+                print('   （与 ui=0 相同）')
     except Exception:
         pass
 
