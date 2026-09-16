@@ -1,0 +1,109 @@
+name: qd-storage-full
+
+# 选项 B 第一步：App 运行起来后，完整 dump 它的存储，找登录态位置
+on:
+  workflow_dispatch: {}
+
+jobs:
+  dump:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install, consent, reach login page
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -1
+          sleep 25
+          for attempt in 1 2 3; do
+            adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            XY=$(python3 tap_consent.py /tmp/u.xml)
+            echo "attempt=$attempt tap=[$XY]"
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; sleep 10; } || break
+          done
+          sleep 20
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          exit 0
+
+      - name: Dump ALL storage
+        run: |
+          set +e
+          B=localhost:5555
+          PKG=/data/data/com.qidian.QDReader
+          echo "########## ① 顶层目录 ##########"
+          adb -s $B shell "ls -la $PKG/ 2>/dev/null"
+          echo
+          echo "########## ② shared_prefs 全部文件 + 内容 ##########"
+          adb -s $B shell "ls -la $PKG/shared_prefs/ 2>/dev/null"
+          for f in $(adb -s $B shell "ls $PKG/shared_prefs/ 2>/dev/null" | tr -d '\r'); do
+            echo "===== $f ====="
+            adb -s $B shell "cat $PKG/shared_prefs/$f 2>/dev/null"
+            echo
+          done
+          echo "########## ③ files/ ##########"
+          adb -s $B shell "ls -laR $PKG/files/ 2>/dev/null | head -80"
+          echo
+          echo "########## ④ mmkv ##########"
+          adb -s $B shell "ls -la $PKG/files/mmkv/ 2>/dev/null"
+          echo
+          echo "########## ⑤ databases ##########"
+          adb -s $B shell "ls -la $PKG/databases/ 2>/dev/null"
+          echo
+          echo "########## ⑥ 全库搜索登录关键字 ##########"
+          for kw in ywguid ywkey ywopenid autoLogin ticket accesstoken cmfu isLogin login_type; do
+            echo "--- 关键字 $kw ---"
+            adb -s $B shell "grep -rl '$kw' $PKG/shared_prefs/ $PKG/files/ $PKG/databases/ 2>/dev/null | head -8"
+          done
+          echo
+          echo "########## ⑦ files 下所有文件名 ##########"
+          adb -s $B shell "find $PKG/files -type f 2>/dev/null | head -60"
+          echo
+          echo "########## ⑧ databases 表结构 ##########"
+          for db in $(adb -s $B shell "ls $PKG/databases/ 2>/dev/null | grep -v journal" | tr -d '\r'); do
+            echo "===== $db ====="
+            adb -s $B shell "sqlite3 $PKG/databases/$db '.tables' 2>/dev/null" | head -5
+          done
+          echo
+          echo "########## ⑨ App 日志（登录页阶段） ##########"
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'qidian|login|token|user|account|ywguid' | tail -40
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-full
+          path: README.md
+          if-no-files-found: warn
