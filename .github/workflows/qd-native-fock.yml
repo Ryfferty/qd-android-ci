@@ -96,6 +96,9 @@ jobs:
           for SRC in ../Harness4.java ../Harness4.java.txt; do
             [ -f "$SRC" ] && cp "$SRC" hz/com/fock/Harness4.java && echo "Harness4 来源: $SRC" && break
           done
+          for SRC in ../Harness5.java ../Harness5.java.txt; do
+            [ -f "$SRC" ] && cp "$SRC" hz/com/fock/Harness5.java && echo "Harness5 来源: $SRC" && break
+          done
           for SRC in ../stub_com_stub_StubApp.java ../stub_com_stub_StubApp.java.txt; do
             [ -f "$SRC" ] && cp "$SRC" hz/com/stub/StubApp.java && echo "StubApp 来源: $SRC" && break
           done
@@ -106,10 +109,10 @@ jobs:
           echo "--- 源码就位 ---"
           ls -la hz/com/fock/ hz/com/stub/
           head -3 hz/com/stub/StubApp.java
-          (cd hz && javac -nowarn com/fock/Harness4.java com/stub/StubApp.java 2>&1 | head -10)
+          (cd hz && javac -nowarn com/fock/Harness4.java com/fock/Harness5.java com/stub/StubApp.java 2>&1 | head -10)
           echo "class 文件数: $(find hz -name '*.class' | wc -l)"
           find hz -name '*.class'
-          (cd hz && javac -nowarn com/fock/Harness4.java com/stub/StubApp.java 2>&1 | head -10)
+          (cd hz && javac -nowarn com/fock/Harness4.java com/fock/Harness5.java com/stub/StubApp.java 2>&1 | head -10)
           echo "class 文件: $(find hz -name '*.class' | wc -l)"
           find hz -name '*.class' | head -5
           mkdir -p outdex
@@ -139,12 +142,20 @@ jobs:
           echo "########## 阶段1: 状态自检（不碰 uk）##########"
           adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness4 /data/local/tmp/params.json /data/local/tmp/libfock.so -1" 2>&1 | head -40
           echo
-          echo "########## 阶段2: 崩溃隔离扫描（每个组合单独进程）##########"
-          for C in 0 1 2 3 4 5 6 7 8; do
+          echo "########## 阶段2: 崩溃隔离扫描 + logcat 抓 abort 原因 ##########"
+          for C in 0 6 8; do
             echo "----- cfg#$C -----"
-            adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness4 /data/local/tmp/params.json /data/local/tmp/libfock.so $C" 2>&1 | head -30
+            adb -s $B logcat -c 2>/dev/null || true
+            adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness4 /data/local/tmp/params.json /data/local/tmp/libfock.so $C" 2>&1 | head -20
+            echo "   --- logcat 中的崩溃原因 ---"
+            adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'fock|abort|assert|trait|jit|hook|root|debug|signal|DEBUG|libc' | head -40
             echo
           done
+          echo "########## 阶段3: 库健康自检（checkEnvTraits / sign / sn）##########"
+          adb -s $B logcat -c 2>/dev/null || true
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness5 /data/local/tmp/params.json /data/local/tmp/libfock.so" 2>&1 | head -60
+          echo "   --- logcat ---"
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'fock|abort|assert|trait|signal' | head -20
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
