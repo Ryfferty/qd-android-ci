@@ -2,6 +2,9 @@ name: qd-nib-key
 
 # App 端解密：redroid + 起点 App + frida hook NativeWrapper(libnib)
 # 用户方案一(抓 lk/mmr 进出数据) + 方案二(扫内存找 AES key/IV)
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
     inputs:
@@ -25,6 +28,9 @@ jobs:
 
       - name: Start redroid (x86_64 Android 11 · 带 libndk arm 翻译)
         run: |
+          # ★ 先 pull（这一步最慢，~7分钟），再 run（即时）
+          echo "=== 预拉镜像 ==="
+          sudo docker pull redroid/redroid:11.0.0-latest 2>&1 | tail -3
           sudo docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
@@ -33,16 +39,19 @@ jobs:
             androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
             androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
             androidboot.redroid_adb=5555 || echo DOCKER_FAILED
-          sleep 25
-          adb connect localhost:5555 || true
-          for i in $(seq 1 40); do
-            B=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            echo "boot=$B"
-            [ "$B" = "1" ] && break
-            sleep 10
+          sleep 20
+          echo "=== 等 adb 上线（最多 15 分钟）==="
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 60); do
+            adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 10 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "[$i] boot=$B"
+            [ "$B" = "1" ] && { echo "✓ booted"; break; }
+            sleep 15
           done
           adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
           adb -s localhost:5555 shell getprop ro.product.cpu.abilist | tr -d '\r'
+          adb -s localhost:5555 shell getprop ro.product.cpu.abilist32 | tr -d '\r'
 
       - name: Download APK + hook + frida-server
         run: |
@@ -51,7 +60,7 @@ jobs:
             curl -sL -o qidian.apk "${{ inputs.apk_url }}" && [ -s qidian.apk ] && break || sleep 5
           done
           curl -sL -o hook.js "${{ inputs.hook_url }}"
-          curl -sL -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz
+          curl -sL -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-x86_64.xz
           xz -d fs.xz 2>/dev/null || true
           ls -lh
           echo "apk=$(stat -c%s qidian.apk)  hook=$(stat -c%s hook.js)"
@@ -59,8 +68,9 @@ jobs:
       - name: Install Qidian + start frida-server
         run: |
           cd dl
-          adb -s localhost:5555 install -r -g qidian.apk 2>&1 | tail -3
+          for i in 1 2 3; do timeout 300 adb -s localhost:5555 install -r -g qidian.apk 2>&1 | tail -3 && break || { echo "重试 $i"; sleep 20; }; done
           adb -s localhost:5555 shell pm list packages | grep qidian || true
+          adb -s localhost:5555 wait-for-device 2>/dev/null || true
           adb -s localhost:5555 push fs /data/local/tmp/fs
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs"
           adb -s localhost:5555 shell "su 0 /data/local/tmp/fs -D &" 2>/dev/null || adb -s localhost:5555 shell "/data/local/tmp/fs -D &"
