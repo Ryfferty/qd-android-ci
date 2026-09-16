@@ -1,0 +1,175 @@
+name: qd-worker
+
+# ★★ 常驻热 worker：启动 redroid 后不退出，监听任务队列
+#   用的时候只要往 tasks/ 推一个 json，worker 1 分钟内执行
+#   （GitHub runner 单 job 上限 6 小时，所以最长驻留 ~5.5h）
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: '驻留小时数（最多 5.5，GitHub 单 job 上限 6h）'
+        default: '5.5'
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
+      image_mode:
+        description: 'pull / cache'
+        default: 'pull'
+
+permissions:
+  contents: write
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350          # 5h50m，留余量
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb python3-pip unzip curl
+          pip install -q "frida==16.7.19" "frida-tools<14"
+
+      - name: 准备镜像（cache 优先）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          if [ "${{ inputs.image_mode }}" = "cache" ]; then
+            AID=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+                  --jq '[.artifacts[] | select(.name=="redroid-image")][0].id' 2>/dev/null)
+            if [ -n "$AID" ] && [ "$AID" != "null" ]; then
+              gh api "repos/${{ github.repository }}/actions/artifacts/$AID/zip" > /tmp/img.zip 2>/dev/null
+              unzip -o -q /tmp/img.zip -d /tmp/img 2>/dev/null && ls -lh /tmp/img/
+              sudo docker load -i /tmp/img/*.tar.gz </dev/null 2>&1 | tail -2
+            fi
+          fi
+          if ! sudo docker images | grep -q redroid; then
+            time sudo docker pull redroid/redroid:11.0.0-latest 2>&1 | tail -3
+          fi
+          sudo docker images | grep redroid
+
+      - name: 启动 redroid + boot
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 60); do
+            adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 10 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "[$i] boot=$B"
+            [ "$B" = "1" ] && break
+            sleep 15
+          done
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+
+      - name: 装包 + frida-server + 端口转发（一次性）
+        run: |
+          set +e
+          mkdir -p dl && cd dl
+          curl -sSL --max-time 900 -o qidian.apk "${{ inputs.apk_url }}"; echo "apk=$(stat -c%s qidian.apk)"
+          curl -sSL --max-time 600 -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-x86_64.xz
+          unxz -f fs.xz && chmod +x fs
+          timeout 900 adb -s localhost:5555 install -r -t qidian.apk 2>&1 | tail -3
+          adb -s localhost:5555 shell pm list packages | grep qidian || echo NOT_INSTALLED
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8; adb -s localhost:5555 wait-for-device 2>/dev/null || true
+          adb -s localhost:5555 shell id | head -1
+          adb -s localhost:5555 push fs /data/local/tmp/fs
+          adb -s localhost:5555 shell chmod 755 /data/local/tmp/fs
+          adb -s localhost:5555 shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
+          sleep 12
+          adb -s localhost:5555 shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
+          adb -s localhost:5555 forward tcp:27042 tcp:27042 || true
+          frida-ps -H 127.0.0.1:27042 2>&1 | head -5
+          echo "READY" > /tmp/ready
+
+      - name: 启动 App（一次）
+        run: |
+          set +e
+          adb -s localhost:5555 shell "settings put global policy_control null*" 2>/dev/null
+          A=$(adb -s localhost:5555 shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          echo "主 Activity: $A"
+          [ -n "$A" ] && adb -s localhost:5555 shell "am start -n $A" 2>&1 | tail -2
+          sleep 25
+
+      - name: 🔥 监听任务队列（驻留 N 小时）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOURS: ${{ inputs.hours }}
+        run: |
+          set +e
+          END=$(( $(date +%s) + $(python3 -c "print(int(float('$HOURS')*3600))") ))
+          echo "worker 将驻留到 $(date -d @$END '+%H:%M:%S')"
+          N=0
+          while [ "$(date +%s)" -lt "$END" ]; do
+            N=$((N+1))
+            # 拉最新任务队列
+            git pull -q --rebase origin HEAD 2>/dev/null || true
+            TASKS=$(ls tasks/*.json 2>/dev/null)
+            if [ -z "$TASKS" ]; then
+              [ $((N % 10)) -eq 0 ] && echo "[$N] 无任务，等待中… $(date '+%H:%M:%S')"
+              sleep 60; continue
+            fi
+            for T in $TASKS; do
+              echo "########## 执行任务 $T ##########"
+              cat "$T"
+              HNAME=$(python3 -c "import json;print(json.load(open('$T')).get('hook','hook_all_key'))" 2>/dev/null)
+              SECS=$(python3 -c "import json;print(json.load(open('$T')).get('secs',180))" 2>/dev/null)
+              mkdir -p out results
+              curl -sSL -o "out/$HNAME.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$HNAME.js"
+              H="$HNAME" SEC="$SECS" python3 - <<'PY'
+          import frida, time, json, os, sys
+          hname = os.environ['H']; secs = int(os.environ.get('SEC','180'))
+          try:
+              dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
+          except Exception as e:
+              print('连 frida 失败', e); sys.exit(0)
+          pid = None
+          for i in range(8):
+              for p in dev.enumerate_processes():
+                  if 'qidian' in p.name.lower(): pid = p.pid; break
+              if pid: break
+              time.sleep(3)
+          print(f'[{hname}] pid={pid}', flush=True)
+          if not pid:
+              open(f'out/{hname}.txt','w').write('APP_NOT_RUNNING'); sys.exit(0)
+          sess = dev.attach(pid); msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False); msgs.append(line); print('[JS]', line[:400], flush=True)
+              else: print('[ERR]', str(m)[:150], flush=True)
+          sc = sess.create_script(open(f'out/{hname}.js').read())
+          sc.on('message', on_msg); sc.load()
+          for i in range(secs//5):
+              time.sleep(5)
+              if i % 6 == 0: print(f'[{hname}] alive t+{i*5}s msgs={len(msgs)}', flush=True)
+          open(f'out/{hname}.txt','w').write('\n'.join(msgs))
+          print(f'[{hname}] 完成 {len(msgs)} 条', flush=True)
+          try: sess.detach()
+          except Exception: pass
+          PY
+              TS=$(date -u +%Y%m%d_%H%M%S)
+              cp "out/$HNAME.txt" "results/${HNAME}_${TS}.txt" 2>/dev/null
+              {
+                echo "# worker 任务结果 $HNAME @ $TS"; echo ""
+                echo '```'
+                grep -E "★★★|★ mmr|★ Fock|MEM |lk\\(\\)|hav\\(\\)|status=|明文|FockUtil" "out/$HNAME.txt" 2>/dev/null | head -80
+                echo '```'
+              } > "results/${HNAME}_${TS}.md"
+              git add -f results/
+              git config user.email ci@local; git config user.name ci
+              git commit -q -m "worker: $HNAME $TS" && git push -q origin HEAD && echo "✓ 已提交结果"
+              mv "$T" "tasks/done_$(basename $T)" 2>/dev/null
+            done
+            sleep 30
+          done
+          echo "worker 驻留结束"
