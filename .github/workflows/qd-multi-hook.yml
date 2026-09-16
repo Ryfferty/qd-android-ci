@@ -260,7 +260,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          for H in hook_v28_setup hook_v27_add_then_unlock hook_v16_inject_session; do
+          for H in hook_v29_public_api hook_v28_setup hook_v16_inject_session; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
