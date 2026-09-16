@@ -15,7 +15,7 @@ on:
 
 jobs:
   hook:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
           sudo apt-get install -y -qq android-tools-adb python3-pip curl unzip
           pip install -q "frida==16.7.19" "frida-tools<14"
 
-      - name: Start redroid (x86_64 Android 11 · 带 libndk arm 翻译)
+      - name: Start redroid (arm64 Android 11 · 带 libndk arm 翻译)
         run: |
           # ★ 先 pull（这一步最慢，~7分钟），再 run（即时）
           echo "=== 预拉镜像 ==="
@@ -60,7 +60,7 @@ jobs:
             curl -sL -o qidian.apk "${{ inputs.apk_url }}" && [ -s qidian.apk ] && break || sleep 5
           done
           curl -sL -o hook.js "${{ inputs.hook_url }}"
-          curl -sL -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-x86_64.xz
+          curl -sL -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz
           xz -d fs.xz 2>/dev/null || true
           ls -lh
           echo "apk=$(stat -c%s qidian.apk)  hook=$(stat -c%s hook.js)"
