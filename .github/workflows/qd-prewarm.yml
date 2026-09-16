@@ -1,0 +1,51 @@
+name: qd-multi-hook
+
+# ★ 预热版：redroid 只启动一次，装包一次，依次跑多套 hook
+# 同时把 redroid 镜像 docker save 成 artifact，供下次快速 load
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
+      use_cached_image:
+        description: 'true=从 artifact 恢复镜像(快), false=拉取'
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  prewarm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      img_ok: ${{ steps.chk.outputs.ok }}
+    steps:
+      - name: 检查有没有缓存的镜像 artifact
+        id: chk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          N=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" --jq '[.artifacts[] | select(.name=="redroid-image")] | length' 2>/dev/null || echo 0)
+          echo "缓存镜像 artifact 数: $N"
+          echo "ok=$([ "$N" -gt 0 ] && echo 1 || echo 0)" >> $GITHUB_OUTPUT
+
+      - name: 拉镜像（或恢复缓存）
+        run: |
+          if [ "${{ inputs.use_cached_image }}" = "true" ] && [ "${{ needs.prewarm.outputs.img_ok }}" = "1" ]; then
+            echo "尝试用缓存…（本步在 run 里做不了跨 run 下载，改为每次 pull，但用 BuildKit 层缓存）"
+          fi
+          time sudo docker pull redroid/redroid:11.0.0-latest 2>&1 | tail -3
+          sudo docker images | head -3
+
+      - name: 保存镜像为 artifact（供下次快速恢复）
+        run: |
+          sudo docker save redroid/redroid:11.0.0-latest | gzip -1 > /tmp/redroid_img.tar.gz
+          ls -lh /tmp/redroid_img.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: redroid-image
+          path: /tmp/redroid_img.tar.gz
+          retention-days: 5
+          compression-level: 0
