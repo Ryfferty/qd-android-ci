@@ -1,0 +1,22 @@
+{"m": "=== v20 实例捕获 ===", "ver": "11"}
+{"m": "✓ FockUtil"}
+{"m": "FockUtil 构造器数量: 1"}
+{"m": "  构造器[0] 参数: "}
+{"m": "✓ hooked $init()"}
+{"m": "✓ hooked getKey"}
+{"m": "✓ hooked isHasKey"}
+{"m": "✓ hooked getPreUserKey"}
+{"m": "✓ hooked init"}
+{"m": "✓ hooked requestKey"}
+{"m": "✓ hooked requestKey"}
+{"m": "✓ hooked loadLocalKey"}
+{"m": "✓ hooked getKeyMap"}
+{"m": "✓ hooked add"}
+{"m": "✓ hooked save"}
+{"m": "✓ hooked setPreUserKey"}
+{"m": "✓ hooked unlock"}
+{"m": "v20 等待 go"}
+{"m": "=== v20 装载完毕 ==="}
+{"m": "v20 setImmediate"}
+{"m": "--- v20 主动流程 ---"}
+{"m": "✗ 还没拿到实例（App 未创建 FockUtil）"}
