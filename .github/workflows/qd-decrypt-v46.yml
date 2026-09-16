@@ -121,9 +121,7 @@ jobs:
             echo "  步骤后 PID=[$P2]"
           }
 
-          run_step saveunlock
-          run_step saveunlock
-          run_step unlock
+          run_step mapdump
 
           echo
           echo "########## 明文 ##########"
