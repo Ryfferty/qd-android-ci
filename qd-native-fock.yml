@@ -92,11 +92,22 @@ jobs:
             curl -sSL --max-time 300 -o r8.jar "$U" && SZ=$(stat -c%s r8.jar 2>/dev/null || echo 0) && \
               [ "$SZ" -gt 1000000 ] && { echo "r8 OK $SZ"; break; }
           done
-          mkdir -p hz/com/fock && cp ../Harness2.java hz/com/fock/Harness2.java
-          (cd hz && javac -nowarn com/fock/Harness2.java 2>&1 | head -10)
+          mkdir -p hz/com/fock hz/com/stub
+          cp ../Harness3.java hz/com/fock/Harness3.java
+          cp ../stub/com/stub/StubApp.java hz/com/stub/StubApp.java
+          (cd hz && javac -nowarn com/fock/Harness3.java com/stub/StubApp.java 2>&1 | head -10)
+          echo "class 文件: $(find hz -name '*.class' | wc -l)"
+          find hz -name '*.class' | head -5
           mkdir -p outdex
-          java -cp r8.jar com.android.tools.r8.D8 --min-api 29 --output outdex/ $(find hz -name '*.class' | tr '\n' ' ') 2>&1 | head -12
+          echo "--- 合并 dex（Harness3 + 桩StubApp + Fock 类）---"
+          java -cp r8.jar com.android.tools.r8.D8 --min-api 29 --output outdex/ $(find hz -name '*.class' | tr '\n' ' ') fock.dex 2>&1 | head -20
           ls -la outdex/
+          echo "--- 确认合并后的 dex 含 Fock 类 ---"
+          strings -n 12 outdex/classes.dex 2>/dev/null | grep -c 'Lcom/yuewen/fock/Fock;' || true
+          echo "--- 单独 dex（备用）---"
+          mkdir -p outsole
+          java -cp r8.jar com.android.tools.r8.D8 --min-api 29 --output outsole/ $(find hz -name '*.class' | tr '\n' ' ') 2>&1 | head -5
+          ls -la outsole/
 
       - name: Step4 run harness
         run: |
@@ -105,17 +116,19 @@ jobs:
           cd work
           adb -s $B push so64/libfock.so /data/local/tmp/libfock.so
           adb -s $B push fock.dex /data/local/tmp/fock.dex
-          adb -s $B push outdex/classes.dex /data/local/tmp/harness2.dex
-          adb -s $B shell chmod 644 /data/local/tmp/libfock.so /data/local/tmp/fock.dex /data/local/tmp/harness2.dex
-          adb -s $B shell "ls -l /data/local/tmp/ | head -12"
+          adb -s $B push outsole/classes.dex /data/local/tmp/harness3.dex
+          adb -s $B push outdex/classes.dex /data/local/tmp/merged.dex
+          adb -s $B shell chmod 644 /data/local/tmp/libfock.so /data/local/tmp/fock.dex /data/local/tmp/harness2.dex /data/local/tmp/merged.dex
+          adb -s $B shell "ls -l /data/local/tmp/ | head -14"
           echo
-          echo "########## RUN Harness2 arm64 ##########"
-          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/harness2.dex:/data/local/tmp/fock.dex /data/local/tmp com.fock.Harness2 /data/local/tmp/params.json /data/local/tmp/libfock.so" 2>&1 | head -160
+          echo "########## A: Harness3 + 合并 dex（推荐）##########"
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness3 /data/local/tmp/params.json /data/local/tmp/libfock.so" 2>&1 | head -200
           echo
-          echo "########## RUN Harness2 arm32 fallback ##########"
-          adb -s $B push so32/libfock.so /data/local/tmp/libfock32.so >/dev/null 2>&1
-          adb -s $B shell chmod 644 /data/local/tmp/libfock32.so
-          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/harness2.dex:/data/local/tmp/fock.dex /data/local/tmp com.fock.Harness2 /data/local/tmp/params.json /data/local/tmp/libfock32.so" 2>&1 | head -50
+          echo "########## B: 合并 dex + 显式 fock.dex 作 DexClassLoader 源 ##########"
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness3 /data/local/tmp/params.json /data/local/tmp/libfock.so /data/local/tmp/fock.dex" 2>&1 | head -60
+          echo
+          echo "########## C: 分开挂 ##########"
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/harness3.dex:/data/local/tmp/fock.dex:/data/local/tmp/stub.dex /data/local/tmp com.fock.Harness3 /data/local/tmp/params.json /data/local/tmp/libfock.so" 2>&1 | head -50
 
       - name: Upload artifacts
         if: always()
