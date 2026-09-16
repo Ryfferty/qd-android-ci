@@ -120,16 +120,19 @@ jobs:
           [ -f "$LOCALHOOK" ] || LOCALHOOK="./$HOOK"
           [ -f "$LOCALHOOK" ] || LOCALHOOK="/home/runner/work/qd-android-ci/qd-android-ci/$HOOK"
           echo "frida 本地脚本路径: $LOCALHOOK"
-          timeout ${PER:-300} frida -H 127.0.0.1:27042 -p "$PID" -l "$LOCALHOOK" -q 2>&1 | tee /tmp/frida_out.txt | head -200
+          timeout ${PER:-300} frida -H 127.0.0.1:27042 -p "$PID" -l "$LOCALHOOK" -q > /tmp/frida_out.txt 2>&1 || echo "frida 退出码 $?"
+          wc -l /tmp/frida_out.txt
           echo
           echo "=== 关键行 ==="
           grep -E '★★★★|明文|正文|status|方法数|params keys|① |② |③ |====' /tmp/frida_out.txt | head -70
           echo
           echo "########## 设备端结果文件（不受管道截断）##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v34_result.txt /data/local/tmp/ 2>/dev/null" || true
           adb -s $B pull /data/local/tmp/v34_result.txt /tmp/v34_result.txt 2>&1 | tail -1
           cat /tmp/v34_result.txt 2>/dev/null | head -80 || echo "(无结果文件)"
           echo
           echo "########## 明文文件 ##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v34_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
           adb -s $B pull /data/local/tmp/v34_plaintext.txt /tmp/v34_plaintext.txt 2>&1 | tail -1
           wc -c /tmp/v34_plaintext.txt 2>/dev/null
           head -c 2000 /tmp/v34_plaintext.txt 2>/dev/null
