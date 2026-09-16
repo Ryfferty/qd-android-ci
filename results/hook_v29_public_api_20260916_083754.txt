@@ -1,0 +1,49 @@
+{"m": "=== v29 公开 API ==="}
+{"m": "INST=OK"}
+{"m": "密文=12528B  pool=128  qimei=  sess keys=20"}
+{"m": "v29 等待 go"}
+{"m": "=== v29 装载完毕 ==="}
+{"m": "--- v29 主流程 ---"}
+{"m": "b64 密文 len=16704"}
+{"m": "★★★ Fock.unlock(b64, pool) 5ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.unlock(b64, ywkey) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.unlock(b64, ywguid) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.unlock(b64, alk) 2ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.unlock(b64, ywopenid) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.unlock(b64, ywnickname) 2ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.unlock(b64, borgus) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.unlock(b64, empty) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ FockUtil.unlock(b64, pool) 2ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ FockUtil.unlock(b64, ywkey) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ FockUtil.unlock(b64, ywguid) 2ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ FockUtil.unlock(b64, alk) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ FockUtil.unlock(b64, ywopenid) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ FockUtil.unlock(b64, ywnickname) 2ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ FockUtil.unlock(b64, borgus) 1ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ FockUtil.unlock(b64, empty) 2ms status=-2", "fields": {"data": {"hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "--- 组合：setup + addKeys + unlock ---"}
+{"m": "setup(pool) OK"}
+{"m": "  addKeys(pool,2) OK"}
+{"m": "  addKeys(pool,0) OK"}
+{"m": "  addKeys(pool,1) OK"}
+{"m": "  ★ unlock after setup(pool) userKey=pool status=-2"}
+{"m": "  ★ unlock after setup(pool) userKey=ywkey status=-2"}
+{"m": "  ★ unlock after setup(pool) userKey=ywguid status=-2"}
+{"m": "  ★ unlock after setup(pool) userKey=alk status=-2"}
+{"m": "  ★ unlock after setup(pool) userKey=ywopenid status=-2"}
+{"m": "  ★ unlock after setup(pool) userKey=ywnickname status=-2"}
+{"m": "  ★ unlock after setup(pool) userKey=borgus status=-2"}
+{"m": "  ★ unlock after setup(pool) userKey=empty status=-2"}
+{"m": "setup(borgus) OK"}
+{"m": "  addKeys(pool,2) OK"}
+{"m": "  addKeys(pool,0) OK"}
+{"m": "  addKeys(pool,1) OK"}
+{"m": "  ★ unlock after setup(borgus) userKey=pool status=-2"}
+{"m": "  ★ unlock after setup(borgus) userKey=ywkey status=-2"}
+{"m": "  ★ unlock after setup(borgus) userKey=ywguid status=-2"}
+{"m": "  ★ unlock after setup(borgus) userKey=alk status=-2"}
+{"m": "  ★ unlock after setup(borgus) userKey=ywopenid status=-2"}
+{"m": "  ★ unlock after setup(borgus) userKey=ywnickname status=-2"}
+{"m": "  ★ unlock after setup(borgus) userKey=borgus status=-2"}
+{"m": "  ★ unlock after setup(borgus) userKey=empty status=-2"}
+{"m": "--- v29 结束 ---"}
