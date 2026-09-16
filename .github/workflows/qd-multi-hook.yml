@@ -133,7 +133,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          for H in hook_all_key hook_nib_key hook_fock_key; do
+          for H in hook_v12_precise hook_all_key hook_fock_key; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
