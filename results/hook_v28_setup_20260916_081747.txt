@@ -1,0 +1,38 @@
+{"m": "=== v28 setup→uk ===", "ver": "11"}
+{"m": "★★★ 实例 OK"}
+{"m": "Fock 方法数=10"}
+{"m": "  F| public static void com.yuewen.fock.Fock.addKeys(java.lang.String,java.lang.String)"}
+{"m": "  F| private static native void com.yuewen.fock.Fock.ak(byte[],int,byte[])"}
+{"m": "  F| private static native int com.yuewen.fock.Fock.it(byte[],int)"}
+{"m": "  F| public static void com.yuewen.fock.Fock.setup(java.lang.String)"}
+{"m": "  F| private static native com.yuewen.fock.Fock$FockResult com.yuewen.fock.Fock.uk(byte[],int,byte[],int)"}
+{"m": "  F| public static com.yuewen.fock.Fock$FockResult com.yuewen.fock.Fock.unlock(java.lang.String,java.lang.String)"}
+{"m": "密文=12528B  pool=128B  qimei="}
+{"m": "v28 等待 go"}
+{"m": "=== v28 装载完毕 ==="}
+{"m": "--- v28 主流程 ---"}
+{"m": "① isHasKey=true"}
+{"m": "① getKey=borgus"}
+{"m": "① uk(BEFORE) = {\"data\":{\"utf8\":null,\"hex\":\"\"},\"status\":\"-2\",\"STATUS_BAD_DATA\":\"-1\",\"STATUS_EMPTY_USER_KEY\":\"-3\",\"STATUS_MISSING_KEY_POOL\":\"-2\",\"STATUS_SUCCESS\":\"0\"}"}
+{"m": "=== ② 试 appKey=pool ==="}
+{"m": "   setup(String) OK"}
+{"m": "   addKeys(java.lang.String,java.lang.String) OK"}
+{"m": "   ak(0) 异常 Error: expected an integer"}
+{"m": "   ★ uk(pool→pool) 2ms status=-2", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "   ★ uk(pool→borgus) 1ms status=-2", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "   ★ uk(pool→empty) 1ms status=-2", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "=== ② 试 appKey=borgus ==="}
+{"m": "   setup(String) OK"}
+{"m": "   addKeys(java.lang.String,java.lang.String) OK"}
+{"m": "   ak(0) 异常 Error: expected an integer"}
+{"m": "   ★ uk(borgus→pool) 1ms status=-2", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "   ★ uk(borgus→borgus) 1ms status=-2", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "   ★ uk(borgus→empty) 1ms status=-2", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "=== ② 试 appKey=empty ==="}
+{"m": "   setup(String) OK"}
+{"m": "   addKeys(java.lang.String,java.lang.String) OK"}
+{"m": "   ak(0) 异常 Error: expected an integer"}
+{"m": "   ★ uk(empty→pool) 1ms status=-3", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-3", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "   ★ uk(empty→borgus) 2ms status=-3", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-3", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "   ★ uk(empty→empty) 1ms status=-3", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-3", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "--- v28 结束 ---"}
