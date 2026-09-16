@@ -202,7 +202,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          for H in hook_v20_instance hook_v19_keypool hook_v16_inject_session; do
+          for H in hook_v21_diagnose hook_v20_instance hook_v16_inject_session; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
@@ -404,9 +404,38 @@ jobs:
               # 崩了就重拉，让下一个深链能继续试
               if not sh(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'], 20):
                   ensure_app()
-          # 点一下屏幕中央（有些阅读器需要交互才请求正文）
-          subprocess.call(['adb','-s','localhost:5555','shell','input','tap','540','1200'],
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+          # ★ UI 驱动：点底部导航 + 滑动，逼 App 发请求 / 创建 FockUtil
+          print(f'[{hname}] UI 驱动开始（点底部导航栏）', flush=True)
+          for (x, y, tag) in [(135, 2225, '书城'), (405, 2225, '书架'), (675, 2225, '发现'),
+                              (945, 2225, '我的'), (540, 1200, '中央'), (540, 800, '上部')]:
+              try:
+                  subprocess.call(['adb','-s','localhost:5555','shell','input','tap',str(x),str(y)],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+                  print(f'[{hname}]   tap {tag} ({x},{y})', flush=True)
+                  time.sleep(3)
+              except Exception: pass
+          for k in range(3):
+              try:
+                  subprocess.call(['adb','-s','localhost:5555','shell','input','swipe','540','1800','540','900','300'],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+                  time.sleep(2)
+              except Exception: pass
+          # dump 当前页面看在哪
+          try:
+              sh(['adb','-s','localhost:5555','shell','uiautomator','dump','/sdcard/u.xml'], 30)
+              ux = sh(['adb','-s','localhost:5555','shell','cat','/sdcard/u.xml'], 30)
+              import re as _re
+              txts = _re.findall(r'text="([^"]{2,20})"', ux)[:20]
+              print(f'[{hname}] 页面文字: {txts}', flush=True)
+              for line in ux.split('</'):
+                  if 'ResumedActivity' in line: pass
+          except Exception as e:
+              print(f'[{hname}] dump 失败 {e}', flush=True)
+          act2 = sh(['adb','-s','localhost:5555','shell','dumpsys','activity','activities'], 30)
+          for line in act2.splitlines():
+              if 'ResumedActivity' in line:
+                  print(f'[{hname}] UI驱动后 {line.strip()[:120]}', flush=True)
+                  break
           for i in range(max(1, secs // 5)):
               time.sleep(5)
               if i % 6 == 0: print(f'[{hname}] alive t+{i*5}s msgs={len(msgs)}', flush=True)
