@@ -121,7 +121,8 @@ jobs:
             echo "  步骤后 PID=[$P2]"
           }
 
-          run_step mapdump
+          run_step saveformats
+          run_step saveformats
 
           echo
           echo "########## 明文 ##########"
