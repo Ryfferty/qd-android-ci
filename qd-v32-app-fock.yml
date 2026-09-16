@@ -1,0 +1,155 @@
+name: qd-v32-app-fock
+
+# 路径 D：App 当「加密容器」——数据仍走 argus（零网页），算法由 App 内已初始化的 libfock.so 提供
+#   理由：极简进程里 sign/setup/addKeypool/unlock 都是 UnsatisfiedLinkError（加固壳运行时才释放实现），
+#         且 uk/sn 会 SIGABRT；而在真 App 进程里（v27/v30 实测）uk 正常返回状态码。
+on:
+  workflow_dispatch:
+    inputs:
+      per_hook_sec:
+        default: '300'
+      hook:
+        default: 'hook_v34_final.js'
+
+permissions:
+  contents: write
+
+jobs:
+  app:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb python3-pip curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+          python3 -c "from Crypto.Cipher import DES3; print('pycryptodome OK')"
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install APK and frida-server
+        run: |
+          set +e
+          B=localhost:5555
+          REL=https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1
+          OK=0
+          for A in qidian_7.9.200.apk qidian_7.9.464_slim.apk q464_slim_signed.apk; do
+            echo "--- try $A ---"
+            curl -sSL --max-time 900 -o qd.apk "$REL/$A"
+            echo "  downloaded $(stat -c%s qd.apk 2>/dev/null)B"
+            if adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2 | grep -q Success; then
+              echo "  ✓ INSTALLED $A"; OK=1; break
+            fi
+          done
+          echo "install_ok=$OK"
+          adb -s $B shell pm list packages | grep -i qidian
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz && mv fs fs-server && chmod +x fs-server
+          adb -s $B push fs-server /data/local/tmp/frida-server
+          adb -s $B shell chmod 755 /data/local/tmp/frida-server
+          adb -s $B shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
+          sleep 6
+          adb -s $B forward tcp:27042 tcp:27042
+          frida-ps -H 127.0.0.1:27042 2>&1 | head -6
+
+      - name: argus keys and cipher
+        env:
+          QD_SESSION_COOKIES: ${{ secrets.QD_SESSION_COOKIES }}
+        run: |
+          set +e
+          printf '%s' "$QD_SESSION_COOKIES" > /tmp/sess.json
+          BOOK=1049120379 CID=903350205 python3 argus_fetch.py
+          python3 merge_params.py 1049120379 903350205
+          adb -s localhost:5555 push /tmp/params.json /data/local/tmp/params.json
+          adb -s localhost:5555 shell chmod 644 /data/local/tmp/params.json
+
+      - name: Inject hook into App process
+        env:
+          PER: ${{ inputs.per_hook_sec }}
+          HOOK: ${{ inputs.hook }}
+        run: |
+          set +e
+          B=localhost:5555
+          echo "=== 启动 App（仅作加密容器，不碰登录/UI）==="
+          adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -2
+          sleep 22
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "App pid=[$PID]"
+          if [ -z "$PID" ]; then
+            adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -2
+            sleep 22
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            echo "retry App pid=[$PID]"
+          fi
+          echo "--- push hook ($HOOK) ---"
+          ls -la "$HOOK" 2>/dev/null || echo "  源文件不存在！"
+          for SRC in "$HOOK" "./$HOOK" "/home/runner/work/qd-android-ci/qd-android-ci/$HOOK"; do
+            if [ -f "$SRC" ]; then
+              adb -s $B push "$SRC" /data/local/tmp/hook.js && echo "  ✓ 已推送自 $SRC" && break
+            fi
+          done
+          echo "--- 验证 ---"
+          adb -s $B shell "ls -l /data/local/tmp/hook.js || echo HOOK_MISSING"
+          echo "=== attach frida ==="
+          ( sleep 25; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -1 ) &
+          LOCALHOOK="$HOOK"
+          [ -f "$LOCALHOOK" ] || LOCALHOOK="./$HOOK"
+          [ -f "$LOCALHOOK" ] || LOCALHOOK="/home/runner/work/qd-android-ci/qd-android-ci/$HOOK"
+          echo "frida 本地脚本路径: $LOCALHOOK"
+          timeout ${PER:-300} frida -H 127.0.0.1:27042 -p "$PID" -l "$LOCALHOOK" -q > /tmp/frida_out.txt 2>&1 || echo "frida 退出码 $?"
+          wc -l /tmp/frida_out.txt
+          echo
+          echo "=== 关键行 ==="
+          grep -E '★★★★|明文|正文|status|方法数|params keys|① |② |③ |====' /tmp/frida_out.txt | head -70
+          echo
+          echo "########## 设备端结果文件（不受管道截断）##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v34_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v34_result.txt /tmp/v34_result.txt 2>&1 | tail -1
+          cat /tmp/v34_result.txt 2>/dev/null | head -80 || echo "(无结果文件)"
+          echo
+          echo "########## 明文文件 ##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v34_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v34_plaintext.txt /tmp/v34_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v34_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v34_plaintext.txt 2>/dev/null
+
+      - name: Collect app logs
+        if: always()
+        run: |
+          set +e
+          adb -s localhost:5555 logcat -d -v brief 2>/dev/null | grep -iE 'fock|unlock|keypool|abort|assert' | head -40
+          mkdir -p results
+          cp /tmp/frida_out.txt results/ 2>/dev/null || true
+          cp /tmp/params.json results/ 2>/dev/null || true
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v32-app-out
+          path: results/
+          if-no-files-found: warn
