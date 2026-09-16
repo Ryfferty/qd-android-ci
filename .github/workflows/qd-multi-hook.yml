@@ -165,21 +165,16 @@ jobs:
             if grep -q "splash_layout" /tmp/w.xml; then echo "  [$k] 还在启动页"; sleep 6
             else echo "  [$k] ★ 已离开启动页"; break; fi
           done
-          echo "=== ★★★ 深链打开免费章（触发 Fock.unlock）==="
-          for DL in 'QDReader://OpenBook/1049120379/903350205' 'QDReader://OpenBook/1040025277/790923799'; do
-            echo "--- deeplink: $DL ---"
-            adb -s localhost:5555 shell "am start -a android.intent.action.VIEW -d '$DL'" 2>&1 | tail -2
-            sleep 12
-          done
           adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
           echo "=== 当前进程 ==="
           adb -s localhost:5555 shell "ps -A -o PID,NAME | grep -i qidian" | tr -d '\r'
+          echo "(深链不在这里发 —— 改到每套 hook 挂载后触发，否则 hook 还没挂上就解完密了)"
 
       - name: ★★ 依次挂 3 套 hook
         run: |
           set +e
           mkdir -p out
-          for H in hook_v12_precise hook_all_key hook_fock_key; do
+          for H in hook_v13_fockutil hook_v12_precise hook_fock_key; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
@@ -228,7 +223,21 @@ jobs:
           sc = sess.create_script(open(f'out/{hname}.js').read())
           sc.on('message', on_msg); sc.load()
           print(f'[{hname}] script loaded', flush=True)
-          for i in range(secs // 5):
+          time.sleep(3)
+          # ★★★ hook 已挂载完毕 → 现在才发深链，触发正文解密
+          DLS = ['QDReader://OpenBook/1049120379/903350205',
+                 'QDReader://OpenBook/1040025277/790923799',
+                 'QDReader://OpenBook/1040025277/794290252']
+          for dl in DLS:
+              print(f'[{hname}] >>> deeplink {dl}', flush=True)
+              subprocess.call(['adb','-s','localhost:5555','shell','am','start','-a',
+                               'android.intent.action.VIEW','-d',dl],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+              time.sleep(8)
+          # 再点一下屏幕中央（有些阅读器需要交互才请求正文）
+          subprocess.call(['adb','-s','localhost:5555','shell','input','tap','540','1200'],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+          for i in range(max(1, secs // 5)):
               time.sleep(5)
               if i % 6 == 0: print(f'[{hname}] alive t+{i*5}s msgs={len(msgs)}', flush=True)
           open(f'out/{hname}.txt','w').write('\n'.join(msgs))
