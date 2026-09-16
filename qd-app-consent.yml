@@ -1,0 +1,106 @@
+name: qd-app-consent
+
+# 点掉首启隐私弹窗 → 看 App 接下来到哪 → dump 存储
+on:
+  workflow_dispatch:
+    inputs:
+      book_id:
+        default: '1040025277'
+      chapter_id:
+        default: '794290414'
+
+jobs:
+  consent:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install and dismiss consent dialog
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          adb -s $B logcat -c
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -1
+          sleep 25
+          echo "=== 点隐私弹窗 ==="
+          for attempt in 1 2 3 4 5; do
+            adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            XY=$(python3 tap_consent.py /tmp/u.xml)
+            echo "  attempt=$attempt 目标=[$XY]"
+            if [ -n "$XY" ]; then
+              adb -s $B shell "input tap $XY"
+              sleep 10
+            else
+              echo "  (无按钮，可能已通过)"
+              break
+            fi
+          done
+          sleep 20
+          echo
+          echo "=== 点击后的前台 ==="
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          adb -s $B shell "pidof com.qidian.QDReader"
+          echo
+          echo "=== 再 dump UI ==="
+          adb -s $B shell "uiautomator dump /sdcard/u2.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/u2.xml /tmp/u2.xml >/dev/null 2>&1
+          python3 uitext.py /tmp/u2.xml
+          echo
+          echo "########## 存储 ##########"
+          PKG=/data/data/com.qidian.QDReader
+          echo "--- shared_prefs 列表 ---"
+          adb -s $B shell "ls -la $PKG/shared_prefs/ 2>/dev/null"
+          echo "--- shared_prefs 内容 ---"
+          for f in $(adb -s $B shell "ls $PKG/shared_prefs/ 2>/dev/null" | tr -d '\r'); do
+            echo "===== $f ====="
+            adb -s $B shell "cat $PKG/shared_prefs/$f 2>/dev/null" | head -40
+          done
+          echo "--- files/ ---"
+          adb -s $B shell "ls -la $PKG/files/ 2>/dev/null"
+          echo "--- mmkv ---"
+          adb -s $B shell "ls -la $PKG/files/mmkv/ 2>/dev/null"
+          echo "--- databases ---"
+          adb -s $B shell "ls -la $PKG/databases/ 2>/dev/null"
+          echo
+          echo "########## App 日志 ##########"
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'qidian|ConfigLoader|login|token|http|Net|user' | tail -50
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-consent
+          path: README.md
+          if-no-files-found: warn
