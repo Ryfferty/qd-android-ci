@@ -81,6 +81,8 @@ jobs:
           adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
 
       - name: 装 APK + adb root + frida-server + 端口转发
+        env:
+          QD_SESSION_COOKIES: ${{ secrets.QD_SESSION_COOKIES }}
         run: |
           set +e
           adb devices
@@ -109,6 +111,13 @@ jobs:
           adb -s localhost:5555 shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
           sleep 12
           adb -s localhost:5555 shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
+          echo "=== ★ 写入登录态 sess.json 并 push 进设备（从 Secret，不进仓库）==="
+          python3 -c "import os,io; p='/tmp/sess.json'; io.open(p,'w').write(os.environ.get('QD_SESSION_COOKIES','{}'))" 2>/dev/null || printf '%s' "$QD_SESSION_COOKIES" > /tmp/sess.json
+          echo "sess.json 大小: $(stat -c%s /tmp/sess.json 2>/dev/null || echo 0)B"
+          adb -s localhost:5555 push /tmp/sess.json /data/local/tmp/sess.json || echo PUSH_SESS_FAILED
+          adb -s localhost:5555 shell "ls -l /data/local/tmp/sess.json"
+          adb -s localhost:5555 shell "chmod 644 /data/local/tmp/sess.json"
+
           echo "=== push 密文样本（供 hook 主动调 unlock）==="
           curl -sSL --max-time 120 -o blob.bin "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/blob_903350205.bin" || true
           ls -l blob.bin || true
@@ -193,7 +202,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          for H in hook_v15_direct_decrypt hook_v14_unlock_invoke hook_v13_fockutil; do
+          for H in hook_v16_inject_session hook_v15_direct_decrypt hook_v13_fockutil; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
