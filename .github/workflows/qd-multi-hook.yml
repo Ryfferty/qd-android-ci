@@ -134,12 +134,46 @@ jobs:
             sleep 3
           done
           echo "=== 动态解析主 Activity ==="
-          A=$(adb -s localhost:5555 shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          A=$(adb -s localhost:5555 shell "cmd package resolve-activity --brief -c android.intent.category.LAUNCHER com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
           echo "主 Activity: $A"
-          if [ -n "$A" ]; then adb -s localhost:5555 shell "am start -n $A" 2>&1 | tail -2; fi
-          sleep 25
+          if [ -n "$A" ] && [ "$A" != "No activity found" ]; then
+            adb -s localhost:5555 shell "am start -W -n $A" 2>&1 | tail -3
+          else
+            echo ">>> resolve 失败，改用 monkey 兜底"
+            adb -s localhost:5555 shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -3
+          fi
+          sleep 20
+          echo "=== 点掉可能的系统弹窗/隐私弹窗 ==="
+          for k in 1 2 3 4 5 6; do
+            adb -s localhost:5555 shell "uiautomator dump /sdcard/w.xml >/dev/null 2>&1"
+            adb -s localhost:5555 shell "cat /sdcard/w.xml" 2>/dev/null | tr -d '\r' > /tmp/w.xml
+            GOT=$(cat /tmp/w.xml | sed 's/></>\n</g' | grep -oE 'text="(GOT IT|同意并继续|同意|允许|我知道了)"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -1)
+            if [ -n "$GOT" ]; then
+              N=$(echo "$GOT" | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/')
+              set -- $N
+              echo "  点击: $(echo $GOT | grep -oE 'text="[^"]*"') 中心 $(( ($1+$3)/2 )),$(( ($2+$4)/2 ))"
+              adb -s localhost:5555 shell "input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 ))"
+              sleep 4
+            else
+              echo "  无弹窗（第 $k 轮）"; break
+            fi
+          done
+          echo "=== 等 App 过启动页（轮询 splash_layout 消失）==="
+          for k in $(seq 1 40); do
+            adb -s localhost:5555 shell "uiautomator dump /sdcard/w.xml >/dev/null 2>&1"
+            adb -s localhost:5555 shell "cat /sdcard/w.xml" 2>/dev/null | tr -d '\r' > /tmp/w.xml
+            if grep -q "splash_layout" /tmp/w.xml; then echo "  [$k] 还在启动页"; sleep 6
+            else echo "  [$k] ★ 已离开启动页"; break; fi
+          done
+          echo "=== ★★★ 深链打开免费章（触发 Fock.unlock）==="
+          for DL in 'QDReader://OpenBook/1049120379/903350205' 'QDReader://OpenBook/1040025277/790923799'; do
+            echo "--- deeplink: $DL ---"
+            adb -s localhost:5555 shell "am start -a android.intent.action.VIEW -d '$DL'" 2>&1 | tail -2
+            sleep 12
+          done
           adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
-          adb -s localhost:5555 shell "ps -A | grep qidian" | tr -d '\r' | head -3
+          echo "=== 当前进程 ==="
+          adb -s localhost:5555 shell "ps -A -o PID,NAME | grep -i qidian" | tr -d '\r'
 
       - name: ★★ 依次挂 3 套 hook
         run: |
@@ -238,5 +272,6 @@ jobs:
           done
           git config user.email "ci@local"; git config user.name "ci"
           git add -f results/
-          git commit -q -m "ci: multi-hook results $TS" && echo committed
-          git push -q origin HEAD && echo pushed
+          git commit -q -m "ci: multi-hook results $TS" && echo committed || echo "nothing to commit"
+          git pull -q --rebase origin HEAD 2>/dev/null || true
+          git push -q origin HEAD 2>&1 && echo pushed || { git push -q origin HEAD 2>&1 | tail -2; echo PUSH_FAILED; }
