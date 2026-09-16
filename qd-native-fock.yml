@@ -1,0 +1,126 @@
+name: qd-native-fock
+
+# 路径 C：App 真实组件 + 极简 Android 进程（不跑 App、不碰网页）
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464_slim.apk'
+      book_id:
+        default: '1040025277'
+      chapter_id:
+        default: '794290414'
+
+permissions:
+  contents: write
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb python3-pip curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+          python3 -c "from Crypto.Cipher import DES3; print('pycryptodome OK')"
+          javac -version 2>&1 | head -1
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Step1 argus keys and cipher
+        env:
+          QD_SESSION_COOKIES: ${{ secrets.QD_SESSION_COOKIES }}
+        run: |
+          set +e
+          printf '%s' "$QD_SESSION_COOKIES" > /tmp/sess.json
+          echo "sess.json $(stat -c%s /tmp/sess.json)B"
+          BOOK="${{ inputs.book_id }}" CID="${{ inputs.chapter_id }}" python3 argus_fetch.py
+          cat /tmp/params.json 2>/dev/null | head -c 300
+          echo
+          adb -s localhost:5555 push /tmp/params.json /data/local/tmp/params.json || echo PUSH_FAILED
+
+      - name: Step2 extract components by class definition
+        run: |
+          set +e
+          mkdir -p work && cd work
+          curl -sSL --max-time 900 -o qd.apk "${{ inputs.apk_url }}"
+          echo "apk $(stat -c%s qd.apk)B"
+          unzip -o -j qd.apk 'lib/arm64-v8a/libfock*.so' -d so64 | tail -2
+          unzip -o -j qd.apk 'lib/armeabi-v7a/libfock*.so' -d so32 | tail -2
+          unzip -o -j qd.apk 'classes*.dex' -d alldex | tail -1
+          ls -la so64 so32 | head -12
+          cp ../defscan.py .
+          echo "--- who defines Lcom/yuewen/fock/Fock; ---"
+          python3 defscan.py 'Lcom/yuewen/fock/Fock;'
+          DEF=$(python3 defscan.py 'Lcom/yuewen/fock/Fock;' | grep 'class_data' | head -1 | cut -d'|' -f1)
+          if [ -z "$DEF" ]; then DEF=$(python3 defscan.py 'Lcom/yuewen/fock/Fock;' | head -1 | cut -d'|' -f1); fi
+          echo "selected dex: $DEF"
+          cp "alldex/$DEF" fock.dex
+          ls -la fock.dex
+
+      - name: Step3 build harness dex
+        run: |
+          set +e
+          cd work
+          for U in "https://maven.google.com/com/android/tools/r8/8.2.42/r8-8.2.42.jar" \
+                   "https://repo1.maven.org/maven2/com/android/tools/r8/8.2.42/r8-8.2.42.jar"; do
+            curl -sSL --max-time 300 -o r8.jar "$U" && SZ=$(stat -c%s r8.jar 2>/dev/null || echo 0) && \
+              [ "$SZ" -gt 1000000 ] && { echo "r8 OK $SZ"; break; }
+          done
+          mkdir -p hz/com/fock && cp ../Harness2.java hz/com/fock/Harness2.java
+          (cd hz && javac -nowarn com/fock/Harness2.java 2>&1 | head -10)
+          mkdir -p outdex
+          java -cp r8.jar com.android.tools.r8.D8 --min-api 29 --output outdex/ $(find hz -name '*.class' | tr '\n' ' ') 2>&1 | head -12
+          ls -la outdex/
+
+      - name: Step4 run harness
+        run: |
+          set +e
+          B=localhost:5555
+          cd work
+          adb -s $B push so64/libfock.so /data/local/tmp/libfock.so
+          adb -s $B push fock.dex /data/local/tmp/fock.dex
+          adb -s $B push outdex/classes.dex /data/local/tmp/harness2.dex
+          adb -s $B shell chmod 644 /data/local/tmp/libfock.so /data/local/tmp/fock.dex /data/local/tmp/harness2.dex
+          adb -s $B shell "ls -l /data/local/tmp/ | head -12"
+          echo
+          echo "########## RUN Harness2 arm64 ##########"
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/harness2.dex:/data/local/tmp/fock.dex /data/local/tmp com.fock.Harness2 /data/local/tmp/params.json /data/local/tmp/libfock.so" 2>&1 | head -160
+          echo
+          echo "########## RUN Harness2 arm32 fallback ##########"
+          adb -s $B push so32/libfock.so /data/local/tmp/libfock32.so >/dev/null 2>&1
+          adb -s $B shell chmod 644 /data/local/tmp/libfock32.so
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/harness2.dex:/data/local/tmp/fock.dex /data/local/tmp com.fock.Harness2 /data/local/tmp/params.json /data/local/tmp/libfock32.so" 2>&1 | head -50
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-fock-out
+          path: work/
+          if-no-files-found: warn
