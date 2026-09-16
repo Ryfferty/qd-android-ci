@@ -1,0 +1,112 @@
+name: qd-login-check
+
+# 登录页：勾协议 → 点 QQ 登录 → 观察结果
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        default: 'qq'    # qq | phone
+
+jobs:
+  login:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install and reach login page
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -1
+          sleep 25
+          for a in 1 2 3; do
+            adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            XY=$(python3 tap_consent.py /tmp/u.xml)
+            echo "consent $a tap=[$XY]"
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; sleep 10; } || break
+          done
+          sleep 15
+          echo "=== 完整登录页 UI XML 结构（找协议复选框）==="
+          adb -s $B shell "uiautomator dump /sdcard/ulogin.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/ulogin.xml /tmp/ulogin.xml >/dev/null 2>&1
+          python3 doit.py dump /tmp/ulogin.xml
+          exit 0
+
+      - name: Tick agreement then tap login
+        run: |
+          set +e
+          B=localhost:5555
+          MODE="${{ inputs.mode }}"
+          for round in 1 2 3; do
+            echo "===== round $round ====="
+            adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            PY=$(python3 doit.py find_agree /tmp/u.xml)
+            echo "协议复选框坐标=[$PY]"
+            if [ -n "$PY" ]; then
+              adb -s $B shell "input tap $PY"
+              sleep 6
+            fi
+            XY=$(python3 doit.py find_id /tmp/u.xml tvQQ)
+            echo "tvQQ 坐标=[$XY]"
+            if [ -n "$XY" ]; then
+              adb -s $B logcat -c
+              adb -s $B shell "input tap $XY"
+              sleep 15
+            fi
+            adb -s $B shell "uiautomator dump /sdcard/u2.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u2.xml /tmp/u2.xml >/dev/null 2>&1
+            python3 doit.py text /tmp/u2.xml
+            adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          done
+          echo
+          echo "=== 后续 Activity / WebView ==="
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep -iE 'ActivityRecord' | head -8"
+          echo
+          echo "=== 截图 ==="
+          adb -s $B shell "screencap -p /sdcard/l.png"
+          adb -s $B pull /sdcard/l.png /tmp/l.png 2>&1 | tail -1
+          mkdir -p results && cp /tmp/l.png results/ && cp /tmp/u2.xml results/ 2>/dev/null
+          echo
+          echo "=== 日志 ==="
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'qq|tencent|auth|oauth|login|webview|sso|openid' | tail -40
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: login-check
+          path: results/
+          if-no-files-found: warn
