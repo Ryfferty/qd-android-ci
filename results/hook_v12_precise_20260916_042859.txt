@@ -1,0 +1,22 @@
+{"m": "[v12] ===== Java bridge OK =====", "ver": "11"}
+{"m": "[v12] hooked Fock.use"}
+{"m": "[v12] hooked Fock.uk"}
+{"m": "[v12] MISS Fock.uksf :: TypeError: cannot read property 'overload' of undefined"}
+{"m": "[v12] MISS Fock.unlockData :: TypeError: cannot read property 'overload' of undefined"}
+{"m": "[v12] MISS Fock.unlock3 :: Error: unlock(): specified argument types do not match any of:\n\t.overload('java.lang.String', 'java.lang.String')"}
+{"m": "[v12] MISS Fock.unlock4 :: Error: unlock(): specified argument types do not match any of:\n\t.overload('java.lang.String', 'java.lang.String')"}
+{"m": "[v12] MISS Fock.setupCtxStr :: Error: setup(): specified argument types do not match any of:\n\t.overload('java.lang.String')"}
+{"m": "[v12] hooked Fock.setupStr"}
+{"m": "[v12] MISS Fock.urk :: TypeError: cannot read property 'overload' of undefined"}
+{"m": "[v12] hooked Fock.sign"}
+{"m": "[v12] hooked Fock.it"}
+{"m": "[v12] hooked Fock.sn"}
+{"m": "[v12] MISS Fock.rmdk :: TypeError: cannot read property 'overload' of undefined"}
+{"m": "[v12] MISS Fock.resf :: TypeError: cannot read property 'overload' of undefined"}
+{"m": "[v12] MISS Fock.tsf :: TypeError: cannot read property 'overload' of undefined"}
+{"m": "[v12] MISS nib.NativeWrapper :: Error: java.lang.ClassNotFoundException: Didn't find class \"com.yuewen.nib.NativeWrapper\" on path: DexPathList[[zip file \"/data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/base.apk\"],nativeLibraryDirectories=[/data/user/0/com.qidian.QDReader/libpag, /data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/lib/arm64, /data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/base.apk!/lib/arm64-v8a, /system/lib64]]"}
+{"m": "[v12] MISS nib.StringArmor :: Error: java.lang.ClassNotFoundException: Didn't find class \"com.yuewen.nib.StringArmor\" on path: DexPathList[[zip file \"/data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/base.apk\"],nativeLibraryDirectories=[/data/user/0/com.qidian.QDReader/libpag, /data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/lib/arm64, /data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/base.apk!/lib/arm64-v8a, /system/lib64]]"}
+{"m": "[v12] MISS knobs.NativeWrapper :: Error: java.lang.ClassNotFoundException: Didn't find class \"com.yuewen.knobs.core.NativeWrapper\" on path: DexPathList[[zip file \"/data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/base.apk\"],nativeLibraryDirectories=[/data/user/0/com.qidian.QDReader/libpag, /data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/lib/arm64, /data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/base.apk!/lib/arm64-v8a, /system/lib64]]"}
+{"m": "[v12] MISS FockRT.Result :: Error: java.lang.ClassNotFoundException: Didn't find class \"com.yuewen.fockrt.FockRT\" on path: DexPathList[[zip file \"/data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/base.apk\"],nativeLibraryDirectories=[/data/user/0/com.qidian.QDReader/libpag, /data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/lib/arm64, /data/app/~~0PXi86rHn20GiSeTPX25nw==/com.qidian.QDReader-Zwx0W3CQxVRLLbT3jqRpTQ==/base.apk!/lib/arm64-v8a, /system/lib64]]"}
+{"m": "[v12] ===== 全部 hook 装载完毕 ====="}
+{"m": "[v12] RegisterNatives symbol not found"}
