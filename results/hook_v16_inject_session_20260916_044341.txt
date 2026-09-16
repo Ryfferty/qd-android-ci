@@ -1,0 +1,7 @@
+{"m": "=== v16 注入登录态 ===", "ver": "11"}
+{"m": "★ 载入 sess.json", "count": 20, "names": "newstatisticUUID,rednovel10,ywguid,ywkey,ywlt,alk,ywopenid,ywtab,newstatisticSID,ywnickname,fu,x-waf-captcha-referer,pageOps,qdrs,navWelfareTime,lrbc,w_tsfp,abPolicies,e1,e2"}
+{"m": "✓ CookieManager 已写入", "cookie": "NONEMPTY"}
+{"m": "✓ CookieJar.loadForRequest hooked"}
+{"m": "✓ BridgeInterceptor hooked"}
+{"m": "✓ FockUtil 关键方法 hooked"}
+{"m": "=== v16 装载完毕（会话已注入）==="}
