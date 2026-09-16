@@ -1,0 +1,5 @@
+{"m": "=== v15 直调 native 解密 ===", "ver": "11"}
+{"m": "✓ FockUtil"}
+{"m": "✓ com.yuewen.fock.Fock"}
+{"m": "★ 载入密文 /data/local/tmp/blob.bin len=12528", "head": "00000000d8300000050c984c398048597730afdcc5d66928411e01018f5cab5d...12528B"}
+{"m": "=== v15 装载完毕（主动解密已排程）==="}
