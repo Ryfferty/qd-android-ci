@@ -180,12 +180,68 @@ jobs:
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
             H="$H" SEC="${{ inputs.per_hook_sec }}" python3 - <<'PY'
           import frida, time, json, os, sys, subprocess
+
+          def sh(cmd, t=30):
+              try:
+                  return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=t).decode().strip()
+              except Exception:
+                  return ''
+
+          def ensure_system():
+              """system_server 偶发崩溃会带走所有 app；先确认系统服务在"""
+              for _ in range(20):
+                  r = sh(['adb','-s','localhost:5555','shell','service','check','activity'], 20)
+                  if 'found' in r:
+                      return True
+                  time.sleep(4)
+              return False
+
+          def ensure_app():
+              """确保 App 进程存在，不在就拉起（含点隐私弹窗）"""
+              for attempt in range(6):
+                  o = sh(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'], 20)
+                  if o:
+                      return int(o.split()[0])
+                  print(f'  [ensure_app] 第{attempt+1}次拉起 App', flush=True)
+                  A = sh(['adb','-s','localhost:5555','shell','cmd','package','resolve-activity',
+                          '--brief','-c','android.intent.category.LAUNCHER','com.qidian.QDReader'], 25)
+                  A = A.splitlines()[-1].strip() if A else ''
+                  if A and 'No activity found' not in A:
+                      sh(['adb','-s','localhost:5555','shell','am','start','-n',A], 40)
+                  else:
+                      sh(['adb','-s','localhost:5555','shell','monkey','-p','com.qidian.QDReader',
+                          '-c','android.intent.category.LAUNCHER','1'], 40)
+                  time.sleep(10)
+                  # 点掉隐私/系统弹窗
+                  for _k in range(4):
+                      sh(['adb','-s','localhost:5555','shell','uiautomator','dump','/sdcard/w.xml'], 30)
+                      x = sh(['adb','-s','localhost:5555','shell','cat','/sdcard/w.xml'], 30)
+                      if '同意并继续' in x:
+                          sh(['adb','-s','localhost:5555','shell','input','tap','538','1605'], 20)
+                          time.sleep(5)
+                      elif 'GOT IT' in x:
+                          sh(['adb','-s','localhost:5555','shell','input','tap','859','527'], 20)
+                          time.sleep(3)
+                      else:
+                          break
+                  time.sleep(8)
+              return None
+
           hname = os.environ['H']; secs = int(os.environ.get('SEC','180'))
+          print(f'[{hname}] 检查系统服务…', flush=True)
+          if not ensure_system():
+              print(f'[{hname}] ✗ system_server 一直不在，跳过', flush=True)
+              open(f'out/{hname}.txt','w').write('SYSTEM_SERVER_DOWN'); sys.exit(0)
+          print(f'[{hname}] 确保 App 在跑…', flush=True)
+          ensure_app()
           dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
           # ★ 用 adb pidof 拿 pid（frida 的 p.name 是应用显示名如「起点读书」，不是包名，
           #   所以按包名过滤 enumerate_processes() 恒为 None）
           pid = None
-          for attempt in range(15):
+          for attempt in range(20):
+              if attempt in (5, 10, 15):
+                  print(f'[{hname}] 第{attempt}轮仍无 pid → 重新拉起 App', flush=True)
+                  ensure_app()
               try:
                   o = subprocess.check_output(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'],
                                               stderr=subprocess.DEVNULL, timeout=15).decode().strip()
@@ -240,6 +296,18 @@ jobs:
           for i in range(max(1, secs // 5)):
               time.sleep(5)
               if i % 6 == 0: print(f'[{hname}] alive t+{i*5}s msgs={len(msgs)}', flush=True)
+              # 每 60 秒确认 App 还在；不在就重拉并重发深链
+              if i > 0 and i % 12 == 0:
+                  o = sh(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'], 20)
+                  if not o:
+                      print(f'[{hname}] App 掉了 → 重拉', flush=True)
+                      ensure_app()
+                  p2 = o.split()[0] if o else ''
+                  if not p2:
+                      continue
+                  print(f'[{hname}] 重发深链 (pid={p2})', flush=True)
+                  sh(['adb','-s','localhost:5555','shell','am','start','-a','android.intent.action.VIEW',
+                      '-d','QDReader://OpenBook/1049120379/903350205'], 30)
           open(f'out/{hname}.txt','w').write('\n'.join(msgs))
           print(f'[{hname}] 完成 {len(msgs)} 条', flush=True)
           try: sess.detach()
