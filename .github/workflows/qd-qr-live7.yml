@@ -300,7 +300,8 @@ jobs:
           path: qr/
           if-no-files-found: warn
 
-
+      - name: ★★ 点 QQ 第三方登录 + 探测二维码
+        run: |
           # ★★ 点【QQ】第三方登录图标 → 出二维码
           echo "===== 找第三方登录图标（微信/QQ/更多）====="
           adb -s localhost:5555 shell "uiautomator dump /sdcard/tp.xml >/dev/null 2>&1"
