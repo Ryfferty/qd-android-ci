@@ -95,35 +95,35 @@ jobs:
           python3 doit.py text /tmp/u.xml
           exit 0
 
-      - name: Run v47 (按 App 代码复现)
+      - name: Run v48 (按 App 代码复现)
         run: |
           set +e
           B=localhost:5555
           PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "PID=[$PID]"
           [ -z "$PID" ] && { echo APP_NOT_RUNNING; exit 0; }
-          timeout 150 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v47_final.js -q > /tmp/v47.txt 2>&1 || echo "v46 exit $?"
-          cat /tmp/v47.txt | head -60
+          timeout 150 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v48_noinit.js -q > /tmp/v48.txt 2>&1 || echo "v46 exit $?"
+          cat /tmp/v48.txt | head -60
           echo
           echo "########## v47 结果 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v47_result.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v47_result.txt /tmp/v47_result.txt 2>&1 | tail -1
-          cat /tmp/v47_result.txt 2>/dev/null | head -80
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v48_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v48_result.txt /tmp/v48_result.txt 2>&1 | tail -1
+          cat /tmp/v48_result.txt 2>/dev/null | head -80
           echo
           echo "########## 明文 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v47_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v47_plaintext.txt /tmp/v47_plaintext.txt 2>&1 | tail -1
-          wc -c /tmp/v47_plaintext.txt 2>/dev/null
-          head -c 2000 /tmp/v47_plaintext.txt 2>/dev/null
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v48_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v48_plaintext.txt /tmp/v48_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v48_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v48_plaintext.txt 2>/dev/null
           exit 0
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v47
+          name: v48
           path: |
-            /tmp/v47.txt
-            /tmp/v47_result.txt
+            /tmp/v48.txt
+            /tmp/v48_result.txt
             /tmp/params.json
           if-no-files-found: warn
