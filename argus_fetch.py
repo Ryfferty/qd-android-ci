@@ -97,6 +97,9 @@ if raw and not raw.startswith(b'{'):
     out['blob_b64'] = base64.b64encode(raw).decode()
 
 out.setdefault('qimei16', 'b3b295be58644158')
+out['ywguid'] = YW
+out['ywkey'] = S.get('ywkey') or ''
+out['ywopenid'] = S.get('ywopenid') or ''
 json.dump(out, open('/tmp/params.json', 'w'))
 print('params keys=%s' % list(out.keys()))
 for k in ('Key', 'key_b', 'blob_b64'):
