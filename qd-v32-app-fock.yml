@@ -128,15 +128,25 @@ jobs:
           grep -E "unlock|明文|正文|status|add\[|候选|Fock" /tmp/frida_out.txt | head -60
           echo
           echo "########## 设备端结果文件 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v36_result.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v36_result.txt /tmp/v36_result.txt 2>&1 | tail -1
-          cat /tmp/v36_result.txt 2>/dev/null | head -80
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v37_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v37_result.txt /tmp/v37_result.txt 2>&1 | tail -1
+          cat /tmp/v37_result.txt 2>/dev/null | head -80
           echo
           echo "########## 明文文件 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v36_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v36_plaintext.txt /tmp/v36_plaintext.txt 2>&1 | tail -1
-          wc -c /tmp/v36_plaintext.txt 2>/dev/null
-          head -c 2000 /tmp/v36_plaintext.txt 2>/dev/null
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v37_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v37_plaintext.txt /tmp/v37_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v37_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v37_plaintext.txt 2>/dev/null
+
+      - name: Re-dump MMKV after hook
+        if: always()
+        run: |
+          set +e
+          B=localhost:5555
+          adb -s $B shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/ 2>/dev/null"
+          adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" > /tmp/pref_utils2.bin
+          ls -la /tmp/pref_utils2.bin
+          python3 mmkv_dump.py /tmp/pref_utils2.bin
 
       - name: Collect logs
         if: always()
@@ -145,7 +155,7 @@ jobs:
           adb -s localhost:5555 logcat -d -v brief 2>/dev/null | grep -iE 'fock|unlock|keypool|abort' | head -30
           mkdir -p results
           cp /tmp/frida_out.txt results/ 2>/dev/null || true
-          cp /tmp/v36_result.txt results/ 2>/dev/null || true
+          cp /tmp/v37_result.txt results/ 2>/dev/null || true
           cp /tmp/pref_utils.bin results/ 2>/dev/null || true
 
       - name: Upload
