@@ -109,6 +109,12 @@ jobs:
           adb -s localhost:5555 shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
           sleep 12
           adb -s localhost:5555 shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
+          echo "=== push 密文样本（供 hook 主动调 unlock）==="
+          curl -sSL --max-time 120 -o blob.bin "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/blob_903350205.bin" || true
+          ls -l blob.bin || true
+          adb -s localhost:5555 push blob.bin /data/local/tmp/blob.bin || echo PUSH_BLOB_FAILED
+          adb -s localhost:5555 shell "ls -l /data/local/tmp/blob.bin"
+
           echo "=== 端口转发 ==="
           adb -s localhost:5555 forward tcp:27042 tcp:27042 || true
           adb -s localhost:5555 forward --list
@@ -158,6 +164,19 @@ jobs:
               echo "  无弹窗（第 $k 轮）"; break
             fi
           done
+          echo "=== ★ GuidanceActivity 引导页：dump 全部可点节点 ==="
+          adb -s localhost:5555 shell "uiautomator dump /sdcard/g.xml >/dev/null 2>&1"
+          adb -s localhost:5555 shell "cat /sdcard/g.xml" 2>/dev/null | tr -d '\r' > /tmp/g.xml
+          echo "--- 可点节点 ---"
+          cat /tmp/g.xml | sed 's/></>\n</g' | grep -oE '(text|content-desc)="[^"]+"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -25
+          for W in 跳过 随便看看 暂不登录 以后再说 我知道了 暂不 关闭 取消; do
+            L=$(cat /tmp/g.xml | sed 's/></>\n</g' | grep -E "text=\"$W\"|content-desc=\"$W\"" | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -1)
+            if [ -n "$L" ]; then
+              N=$(echo "$L" | sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/'); set -- $N
+              echo "  点「$W」→ $(( ($1+$3)/2 )),$(( ($2+$4)/2 ))"
+              adb -s localhost:5555 shell "input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 ))"; sleep 4
+            fi
+          done
           echo "=== 等 App 过启动页（轮询 splash_layout 消失）==="
           for k in $(seq 1 40); do
             adb -s localhost:5555 shell "uiautomator dump /sdcard/w.xml >/dev/null 2>&1"
@@ -174,7 +193,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          for H in hook_v13_fockutil hook_v12_precise hook_fock_key; do
+          for H in hook_v14_unlock_invoke hook_v13_fockutil hook_v12_precise; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
