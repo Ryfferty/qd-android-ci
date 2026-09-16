@@ -1,0 +1,207 @@
+name: qd-multi-hook
+
+# ★★ 一次启动，跑完所有 hook（消除 3 倍启动成本）
+#   docker pull → boot → 装 APK → adb root → frida-server → 启动App
+#   → 依次挂 3 套 hook（nib / fock / 合并），每套跑 3 分钟
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
+      per_hook_sec:
+        description: 每套 hook 观察秒数
+        default: '180'
+      image_mode:
+        description: 'pull=在线拉 / cache=用 artifact 缓存'
+        default: 'pull'
+
+permissions:
+  contents: write
+
+jobs:
+  multihook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup adb + python
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq android-tools-adb python3-pip unzip curl
+          pip install -q "frida==16.7.19" "frida-tools<14"
+
+      - name: 准备 redroid 镜像（缓存优先）
+        run: |
+          set +e
+          if [ "${{ inputs.image_mode }}" = "cache" ]; then
+            echo "=== 尝试从 artifact 恢复镜像 ==="
+            AID=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+                  --jq '[.artifacts[] | select(.name=="redroid-image")][0].id' 2>/dev/null)
+            echo "artifact id=$AID"
+            if [ -n "$AID" ] && [ "$AID" != "null" ]; then
+              gh api "repos/${{ github.repository }}/actions/artifacts/$AID/zip" > /tmp/img.zip 2>/dev/null
+              unzip -o -q /tmp/img.zip -d /tmp/img 2>/dev/null
+              ls -lh /tmp/img/
+              sudo docker load -i /tmp/img/*.tar.gz </dev/null 2>&1 | tail -2 || sudo docker load -i /tmp/img/*.tar </dev/null 2>&1 | tail -2
+            fi
+          fi
+          if ! sudo docker images | grep -q redroid; then
+            echo "=== 在线拉取 ==="
+            time sudo docker pull redroid/redroid:11.0.0-latest 2>&1 | tail -3
+          fi
+          sudo docker images | grep redroid
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 启动 redroid + 等 boot
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 60); do
+            adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 10 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            echo "[$i] boot=$B"
+            [ "$B" = "1" ] && break
+            sleep 15
+          done
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+
+      - name: 装 APK + adb root + frida-server + 端口转发
+        run: |
+          set +e
+          mkdir -p dl && cd dl
+          curl -sSL --max-time 900 -o qidian.apk "${{ inputs.apk_url }}"
+          echo "apk=$(stat -c%s qidian.apk)"
+          curl -sSL --max-time 600 -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-x86_64.xz
+          unxz -f fs.xz && chmod +x fs && ls -lh fs
+          echo "=== 装 APK（给足 15 分钟）==="
+          timeout 900 adb -s localhost:5555 install -r -t qidian.apk 2>&1 | tail -3
+          adb -s localhost:5555 shell pm list packages | grep qidian || echo NOT_INSTALLED
+          echo "=== adb root ==="
+          adb -s localhost:5555 root 2>&1 | tail -2
+          sleep 8
+          adb -s localhost:5555 wait-for-device 2>/dev/null || true
+          timeout 20 adb -s localhost:5555 shell id | head -2
+          echo "=== 推 frida-server ==="
+          adb -s localhost:5555 push fs /data/local/tmp/fs
+          adb -s localhost:5555 shell chmod 755 /data/local/tmp/fs
+          adb -s localhost:5555 shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
+          sleep 12
+          adb -s localhost:5555 shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
+          echo "=== 端口转发 ==="
+          adb -s localhost:5555 forward tcp:27042 tcp:27042 || true
+          adb -s localhost:5555 forward --list
+          for i in 1 2 3; do
+            frida-ps -H 127.0.0.1:27042 2>&1 | head -5 && break
+            sleep 5
+          done
+
+      - name: ★ 启动 App（一次）
+        run: |
+          set +e
+          # 清系统全屏弹窗
+          adb -s localhost:5555 shell "settings put global policy_control null*" 2>/dev/null
+          # 尝试多种拉起方式
+          for i in 1 2 3 4 5; do
+            adb -s localhost:5555 shell "uiautomator dump /sdcard/d.xml >/dev/null 2>&1"
+            adb -s localhost:5555 shell "cat /sdcard/d.xml" 2>/dev/null | tr -d '\r' > /tmp/d.xml
+            GOT=$(cat /tmp/d.xml 2>/dev/null | sed 's/></>\n</g' | grep -E 'text="GOT IT"' | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -1)
+            if [ -n "$GOT" ]; then
+              N=$(echo "$GOT" | sed -E 's/bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"/\1 \2 \3 \4/')
+              set -- $N; adb -s localhost:5555 shell "input tap $(( ($1+$3)/2 )) $(( ($2+$4)/2 ))" && echo "清了 GOT IT"
+            else break; fi
+            sleep 3
+          done
+          echo "=== 动态解析主 Activity ==="
+          A=$(adb -s localhost:5555 shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          echo "主 Activity: $A"
+          if [ -n "$A" ]; then adb -s localhost:5555 shell "am start -n $A" 2>&1 | tail -2; fi
+          sleep 25
+          adb -s localhost:5555 shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r'
+          adb -s localhost:5555 shell "ps -A | grep qidian" | tr -d '\r' | head -3
+
+      - name: ★★ 依次挂 3 套 hook
+        run: |
+          set +e
+          mkdir -p out
+          for H in hook_all_key hook_nib_key hook_fock_key; do
+            echo "########## 挂载 $H ##########"
+            curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
+            [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
+            H="$H" SEC="${{ inputs.per_hook_sec }}" python3 - <<'PY'
+          import frida, time, json, os, sys
+          hname = os.environ['H']; secs = int(os.environ.get('SEC','180'))
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
+          pid = None
+          for i in range(10):
+              for p in dev.enumerate_processes():
+                  if 'qidian' in p.name.lower(): pid = p.pid; break
+              if pid: break
+              time.sleep(3)
+          print(f'[{hname}] pid={pid}', flush=True)
+          if not pid:
+              open(f'out/{hname}.txt','w').write('APP_NOT_RUNNING'); sys.exit(0)
+          sess = dev.attach(pid); msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False)
+                  msgs.append(line); print('[JS]', line[:400], flush=True)
+              else: print('[ERR]', str(m)[:150], flush=True)
+          sc = sess.create_script(open(f'out/{hname}.js').read())
+          sc.on('message', on_msg); sc.load()
+          print(f'[{hname}] script loaded', flush=True)
+          for i in range(secs // 5):
+              time.sleep(5)
+              if i % 6 == 0: print(f'[{hname}] alive t+{i*5}s msgs={len(msgs)}', flush=True)
+          open(f'out/{hname}.txt','w').write('\n'.join(msgs))
+          print(f'[{hname}] 完成 {len(msgs)} 条', flush=True)
+          try: sess.detach()
+          except Exception: pass
+          PY
+            echo "########## $H 结束 ##########"
+            sleep 5
+          done
+          echo "=== 汇总 ==="
+          for f in out/*.txt; do echo "--- $f ($(wc -l < $f) 行) ---"; done
+
+      - name: 上传全部结果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multihook-out
+          path: out/
+          if-no-files-found: warn
+
+      - name: ★ commit 进仓库
+        if: always()
+        run: |
+          set +e
+          mkdir -p results && TS=$(date -u +%Y%m%d_%H%M%S)
+          for f in out/*.txt; do
+            [ -s "$f" ] || continue
+            B=$(basename "$f" .txt)
+            {
+              echo "# App hook 结果 $B @ $TS"; echo ""
+              echo "## 关键行"; echo '```'
+              grep -E "★★★|★ mmr|★ Fock|MEM |lk\\(\\)|hav\\(\\)|status=|明文|addedKeyVersions|FockUtil" "$f" | head -80
+              echo '```'; echo ""
+              echo "## 统计"; echo "- 总行数: $(wc -l < $f)"
+              echo "- lk 调用: $(grep -c 'lk()' $f)"
+              echo "- Fock.unlock: $(grep -c 'Fock.unlock' $f)"
+              echo "- 内存命中: $(grep -c 'MEM ' $f)"
+            } > "results/${B}_${TS}.md"
+            cp "$f" "results/${B}_${TS}.txt"
+          done
+          git config user.email "ci@local"; git config user.name "ci"
+          git add -f results/
+          git commit -q -m "ci: multi-hook results $TS" && echo committed
+          git push -q origin HEAD && echo pushed
