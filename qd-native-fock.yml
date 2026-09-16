@@ -93,8 +93,8 @@ jobs:
               [ "$SZ" -gt 1000000 ] && { echo "r8 OK $SZ"; break; }
           done
           mkdir -p hz/com/fock hz/com/stub
-          for SRC in ../Harness3.java ../Harness3.java.txt; do
-            [ -f "$SRC" ] && cp "$SRC" hz/com/fock/Harness3.java && echo "Harness3 来源: $SRC" && break
+          for SRC in ../Harness4.java ../Harness4.java.txt; do
+            [ -f "$SRC" ] && cp "$SRC" hz/com/fock/Harness4.java && echo "Harness4 来源: $SRC" && break
           done
           for SRC in ../stub_com_stub_StubApp.java ../stub_com_stub_StubApp.java.txt; do
             [ -f "$SRC" ] && cp "$SRC" hz/com/stub/StubApp.java && echo "StubApp 来源: $SRC" && break
@@ -106,14 +106,14 @@ jobs:
           echo "--- 源码就位 ---"
           ls -la hz/com/fock/ hz/com/stub/
           head -3 hz/com/stub/StubApp.java
-          (cd hz && javac -nowarn com/fock/Harness3.java com/stub/StubApp.java 2>&1 | head -10)
+          (cd hz && javac -nowarn com/fock/Harness4.java com/stub/StubApp.java 2>&1 | head -10)
           echo "class 文件数: $(find hz -name '*.class' | wc -l)"
           find hz -name '*.class'
-          (cd hz && javac -nowarn com/fock/Harness3.java com/stub/StubApp.java 2>&1 | head -10)
+          (cd hz && javac -nowarn com/fock/Harness4.java com/stub/StubApp.java 2>&1 | head -10)
           echo "class 文件: $(find hz -name '*.class' | wc -l)"
           find hz -name '*.class' | head -5
           mkdir -p outdex
-          echo "--- 合并 dex（Harness3 + 桩StubApp + Fock 类）---"
+          echo "--- 合并 dex（Harness4 + 桩StubApp + Fock 类）---"
           java -cp r8.jar com.android.tools.r8.D8 --min-api 29 --output outdex/ $(find hz -name '*.class' | tr '\n' ' ') fock.dex 2>&1 | head -20
           ls -la outdex/
           echo "--- 确认合并后的 dex 含 Fock 类 ---"
@@ -135,15 +135,16 @@ jobs:
           adb -s $B shell chmod 644 /data/local/tmp/libfock.so /data/local/tmp/fock.dex /data/local/tmp/harness2.dex /data/local/tmp/merged.dex
           adb -s $B shell "ls -l /data/local/tmp/ | head -14"
           echo
-          echo "########## A: Harness3 + 合并 dex（推荐）##########"
-          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness3 /data/local/tmp/params.json /data/local/tmp/libfock.so" 2>&1 | head -200
+          adb -s $B push so64/libfockrt.so /data/local/tmp/libfockrt.so 2>/dev/null || echo "no fockrt"
+          echo "########## 阶段1: 状态自检（不碰 uk）##########"
+          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness4 /data/local/tmp/params.json /data/local/tmp/libfock.so -1" 2>&1 | head -40
           echo
-          echo "########## B: 合并 dex + 显式 fock.dex 作 DexClassLoader 源 ##########"
-          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness3 /data/local/tmp/params.json /data/local/tmp/libfock.so /data/local/tmp/fock.dex" 2>&1 | head -60
-          echo
-          echo "########## C: 分开挂 ##########"
-          adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/harness3.dex:/data/local/tmp/fock.dex:/data/local/tmp/stub.dex /data/local/tmp com.fock.Harness3 /data/local/tmp/params.json /data/local/tmp/libfock.so" 2>&1 | head -50
-
+          echo "########## 阶段2: 崩溃隔离扫描（每个组合单独进程）##########"
+          for C in 0 1 2 3 4 5 6 7 8; do
+            echo "----- cfg#$C -----"
+            adb -s $B shell "app_process -Djava.class.path=/data/local/tmp/merged.dex /data/local/tmp com.fock.Harness4 /data/local/tmp/params.json /data/local/tmp/libfock.so $C" 2>&1 | head -30
+            echo
+          done
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
