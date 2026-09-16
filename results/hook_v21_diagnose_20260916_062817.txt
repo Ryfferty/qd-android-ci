@@ -1,0 +1,32 @@
+{"m": "=== v21 诊断 ===", "ver": "11"}
+{"m": "✓ OkHttpClient.newCall hooked"}
+{"m": "✓ RealInterceptorChain.proceed hooked"}
+{"m": "QDUserManager 方法数: 37"}
+{"m": "  UM| public static com.qidian.QDReader.component.user.QDUserManager com.qidian.QDReader.component.user.QDUserManager.getInstance()"}
+{"m": "  UM| private java.lang.String com.qidian.QDReader.component.user.QDUserManager.y(java.lang.String,int,java.lang.String)"}
+{"m": "  UM| public void com.qidian.QDReader.component.user.QDUserManager.A(int)"}
+{"m": "  UM| public boolean com.qidian.QDReader.component.user.QDUserManager.B(boolean)"}
+{"m": "  UM| public java.lang.String com.qidian.QDReader.component.user.QDUserManager.C(java.lang.String)"}
+{"m": "  UM| public boolean com.qidian.QDReader.component.user.QDUserManager.D(long)"}
+{"m": "  UM| public boolean com.qidian.QDReader.component.user.QDUserManager.E(long)"}
+{"m": "  UM| public boolean com.qidian.QDReader.component.user.QDUserManager.F(long)"}
+{"m": "  UM| public boolean com.qidian.QDReader.component.user.QDUserManager.G(long)"}
+{"m": "  UM| public void com.qidian.QDReader.component.user.QDUserManager.H(java.lang.String,java.lang.String,java.lang.String,java.lang.String)"}
+{"m": "  UM| public void com.qidian.QDReader.component.user.QDUserManager.I(int,java.lang.String)"}
+{"m": "  UM| public boolean com.qidian.QDReader.component.user.QDUserManager.a()"}
+{"m": "  UM| public void com.qidian.QDReader.component.user.QDUserManager.b()"}
+{"m": "  UM| public java.lang.String com.qidian.QDReader.component.user.QDUserManager.c()"}
+{"m": "  UM| public int com.qidian.QDReader.component.user.QDUserManager.d()"}
+{"m": "  UM| public java.lang.String com.qidian.QDReader.component.user.QDUserManager.e()"}
+{"m": "  UM| public java.lang.String com.qidian.QDReader.component.user.QDUserManager.f()"}
+{"m": "  UM| public long com.qidian.QDReader.component.user.QDUserManager.g()"}
+{"m": "  UM| public java.lang.String com.qidian.QDReader.component.user.QDUserManager.getGUID()"}
+{"m": "  UM| public long com.qidian.QDReader.component.user.QDUserManager.h()"}
+{"m": "  UM| public long com.qidian.QDReader.component.user.QDUserManager.i()"}
+{"m": "  UM| public long com.qidian.QDReader.component.user.QDUserManager.j()"}
+{"m": "  UM| public java.lang.String com.qidian.QDReader.component.user.QDUserManager.k()"}
+{"m": "  UM| public long com.qidian.QDReader.component.user.QDUserManager.l()"}
+{"m": "  UM| public java.lang.String com.qidian.QDReader.component.user.QDUserManager.m()"}
+{"m": "✓ libc.connect hooked"}
+{"m": "✓ FockUtil hooked"}
+{"m": "=== v21 装载完毕 ==="}
