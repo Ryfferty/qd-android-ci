@@ -127,15 +127,15 @@ jobs:
           grep -E '★★★★|明文|正文|status|方法数|params keys|① |② |③ |====' /tmp/frida_out.txt | head -70
           echo
           echo "########## 设备端结果文件（不受管道截断）##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v34_result.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v34_result.txt /tmp/v34_result.txt 2>&1 | tail -1
-          cat /tmp/v34_result.txt 2>/dev/null | head -80 || echo "(无结果文件)"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v35_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v35_result.txt /tmp/v35_result.txt 2>&1 | tail -1
+          cat /tmp/v35_result.txt 2>/dev/null | head -80 || echo "(无结果文件)"
           echo
           echo "########## 明文文件 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v34_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v34_plaintext.txt /tmp/v34_plaintext.txt 2>&1 | tail -1
-          wc -c /tmp/v34_plaintext.txt 2>/dev/null
-          head -c 2000 /tmp/v34_plaintext.txt 2>/dev/null
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v35_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v35_plaintext.txt /tmp/v35_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v35_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v35_plaintext.txt 2>/dev/null
 
       - name: Collect app logs
         if: always()
