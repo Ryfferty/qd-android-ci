@@ -1,0 +1,59 @@
+{"m": "=== v30 requestKey ==="}
+{"m": "INST=OK"}
+{"m": "CTX=OK"}
+{"m": "✓ hooked requestKey(ctx)"}
+{"m": "✓ hooked requestKey(ctx+id)"}
+{"m": "✓ hooked loadLocalKey"}
+{"m": "✓ hooked getKeyMap"}
+{"m": "✓ hooked save"}
+{"m": "✓ hooked add"}
+{"m": "✓ hooked getKey"}
+{"m": "✓ hooked isHasKey"}
+{"m": "✓ hooked unlock"}
+{"m": "密文=12528B pool=128"}
+{"m": "v30 等待 go"}
+{"m": "=== v30 装载完毕 ==="}
+{"m": "--- v30 主流程 ---"}
+{"m": "★★★ FockUtil.isHasKey 命中", "args": [], "ret": null}
+{"m": "★★★ FockUtil.getKey 命中", "args": [], "ret": null}
+{"m": "① isHasKey=true getKey=borgus"}
+{"m": "② 调 requestKey…"}
+{"m": "★★★ FockUtil.getKeyMap 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2"], "ret": null}
+{"m": "   getKeyMap size=1"}
+{"m": "★★★ FockUtil.loadLocalKey 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2"], "ret": null}
+{"m": "   loadLocalKey size=1"}
+{"m": "★★★ FockUtil.requestKey(ctx+id) 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2", "?"], "ret": null}
+{"m": "★★★ FockUtil.requestKey(ctx) 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2"], "ret": null}
+{"m": "   requestKey(ctx) 已调用"}
+{"m": "★★★ FockUtil.requestKey(ctx+id) 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2", "?"], "ret": null}
+{"m": "   requestKey(ctx,903350205) 已调用"}
+{"m": "★★★ FockUtil.requestKey(ctx+id) 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2", "?"], "ret": null}
+{"m": "   requestKey(ctx,794290252) 已调用"}
+{"m": "★★★ FockUtil.requestKey(ctx+id) 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2", "?"], "ret": null}
+{"m": "★★★ FockUtil.getKey 命中", "args": [], "ret": null}
+{"m": "   requestKey(ctx,1049120379) 已调用"}
+{"m": "③ requestKey 后试解锁"}
+{"m": "★★★ FockUtil.getKey 命中", "args": [], "ret": null}
+{"m": "★★★ FockUtil.getKey 命中", "args": [], "ret": null}
+{"m": "★★★ FockUtil.getKey 命中", "args": [], "ret": null}
+{"m": "★★★ FockUtil.unlock 命中", "args": ["?", "?"], "ret": "com.yuewen.fock.Fock$FockResult@9023425"}
+{"m": "[after-requestKey] unlock(pool) status=-2"}
+{"m": "★★★ FockUtil.unlock 命中", "args": ["?", "?"], "ret": "com.yuewen.fock.Fock$FockResult@b71a9fa"}
+{"m": "[after-requestKey] unlock(empty) status=-2"}
+{"m": "★★★ FockUtil.unlock 命中", "args": ["?", "?"], "ret": "com.yuewen.fock.Fock$FockResult@28bbbab"}
+{"m": "[after-requestKey] unlock(borgus) status=-2"}
+{"m": "★★★ FockUtil.isHasKey 命中", "args": [], "ret": null}
+{"m": "★★★ FockUtil.getKey 命中", "args": [], "ret": null}
+{"m": "③ 后 isHasKey=true getKey=borgus"}
+{"m": "★★★ FockUtil.getKeyMap 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2"], "ret": null}
+{"m": "★★★ FockUtil.add 命中", "args": ["?", "?"], "ret": null}
+{"m": "★★★ FockUtil.save 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2", "?", "?"], "ret": null}
+{"m": "★★★ FockUtil.getKeyMap 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2"], "ret": null}
+{"m": "★★★ FockUtil.add 命中", "args": ["?", "?"], "ret": null}
+{"m": "★★★ FockUtil.save 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2", "?", "?"], "ret": null}
+{"m": "★★★ FockUtil.getKeyMap 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2"], "ret": null}
+{"m": "★★★ FockUtil.add 命中", "args": ["?", "?"], "ret": null}
+{"m": "★★★ FockUtil.save 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2", "?", "?"], "ret": null}
+{"m": "★★★ FockUtil.getKeyMap 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2"], "ret": null}
+{"m": "★★★ FockUtil.add 命中", "args": ["?", "?"], "ret": null}
+{"m": "★★★ FockUtil.save 命中", "args": ["com.qidian.QDReader.QDApplication@e33f3b2", "?", "?"], "ret": null}
