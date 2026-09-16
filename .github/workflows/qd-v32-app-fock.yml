@@ -130,6 +130,8 @@ jobs:
             PID2=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             [ -n "$PID2" ] && { echo "  重启后 pid=[$PID2]"; break; }
           done
+          echo "Phase A done"
+          exit 0
 
       - name: Phase B1 - requestKey
         run: |
