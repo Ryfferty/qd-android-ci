@@ -1,0 +1,154 @@
+name: qd-qq-login
+
+# 注入 QQ cookie → 勾协议 → 点 QQ 登录 → 观测是否登录成功
+on:
+  workflow_dispatch: {}
+
+jobs:
+  qqlogin:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install APK + frida
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz && mv fs fs-server && chmod +x fs-server
+          adb -s $B push fs-server /data/local/tmp/frida-server
+          adb -s $B shell chmod 755 /data/local/tmp/frida-server
+          adb -s $B shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
+          sleep 6
+          adb -s $B forward tcp:27042 tcp:27042
+          frida-ps -H 127.0.0.1:27042 2>&1 | head -3
+
+      - name: Reach login page (consent)
+        run: |
+          set +e
+          B=localhost:5555
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -1
+          sleep 25
+          for a in 1 2 3; do
+            adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            XY=$(python3 tap_consent.py /tmp/u.xml)
+            echo "consent $a tap=[$XY]"
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; sleep 10; } || break
+          done
+          sleep 12
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          exit 0
+
+      - name: Inject QQ cookies
+        env:
+          QQ: ${{ secrets.QD_QQ_COOKIES }}
+        run: |
+          set +e
+          B=localhost:5555
+          printf '%s' "$QQ" > /tmp/qq_sess.json
+          echo "qq_sess=$(stat -c%s /tmp/qq_sess.json)B"
+          adb -s $B push /tmp/qq_sess.json /data/local/tmp/qq_sess.json
+          adb -s $B shell chmod 644 /data/local/tmp/qq_sess.json
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=[$PID]"
+          [ -z "$PID" ] && { echo APP_NOT_RUNNING; exit 0; }
+          timeout 100 frida -H 127.0.0.1:27042 -p "$PID" -l hook_qq_inject.js -q 2>&1 | grep -E '✓|✗|载入|NONEMPTY|EMPTY|拦截' | head -12
+          echo "--- 重启让 CookieManager 生效 ---"
+          adb -s $B shell "am force-stop com.qidian.QDReader"
+          sleep 5
+          for i in 1 2 3 4 5 6 7 8; do
+            adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
+            sleep 12
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            [ -n "$PID" ] && { echo "重启后 PID=[$PID] (try $i)"; break; }
+          done
+          sleep 10
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          exit 0
+
+      - name: Tick agreement and tap QQ
+        run: |
+          set +e
+          B=localhost:5555
+          for round in 1 2 3; do
+            echo "===== round $round ====="
+            adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            AG=$(python3 doit.py find_agree /tmp/u.xml)
+            echo "协议框=[$AG]"
+            [ -n "$AG" ] && { adb -s $B shell "input tap $AG"; sleep 5; }
+            adb -s $B shell "uiautomator dump /sdcard/u1.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u1.xml /tmp/u1.xml >/dev/null 2>&1
+            QQ=$(python3 doit.py find_id /tmp/u1.xml tvQQ)
+            echo "tvQQ=[$QQ]"
+            if [ -n "$QQ" ]; then
+              adb -s $B logcat -c
+              adb -s $B shell "input tap $QQ"
+              sleep 20
+            fi
+            adb -s $B shell "uiautomator dump /sdcard/u2.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u2.xml /tmp/u2.xml >/dev/null 2>&1
+            python3 doit.py text /tmp/u2.xml
+            adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          done
+          echo
+          echo "########## 点 QQ 后的 WebView / 授权日志 ##########"
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'ptlogin|imgcache|qq.com|tauth|oauth|authorize|login_status' | tail -30
+          echo
+          echo "########## App 自己的登录相关日志 ##########"
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'qidian|login|token|user|ywguid|account' | tail -30
+          echo
+          echo "########## 登录态是否写入存储 ##########"
+          PKG=/data/data/com.qidian.QDReader
+          adb -s $B shell "cat $PKG/shared_prefs/app_sp.xml 2>/dev/null"
+          for kw in ywguid ywkey isLogin ywopenid autoLogin; do
+            echo "--- $kw ---"
+            adb -s $B shell "grep -rl '$kw' $PKG/shared_prefs/ $PKG/files/ 2>/dev/null | head -5"
+          done
+          echo
+          echo "=== 截图 ==="
+          adb -s $B shell "screencap -p /sdcard/q.png"
+          adb -s $B pull /sdcard/q.png /tmp/q.png 2>&1 | tail -1
+          mkdir -p results && cp /tmp/q.png results/ && cp /tmp/u2.xml results/ 2>/dev/null
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qq-login
+          path: results/
+          if-no-files-found: warn
