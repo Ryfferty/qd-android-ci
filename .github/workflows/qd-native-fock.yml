@@ -93,10 +93,22 @@ jobs:
               [ "$SZ" -gt 1000000 ] && { echo "r8 OK $SZ"; break; }
           done
           mkdir -p hz/com/fock hz/com/stub
-          cp ../Harness3.java hz/com/fock/Harness3.java
-          cp ../stub_com_stub_StubApp.java hz/com/stub/StubApp.java 2>/dev/null || \
-            cp ../stub/com/stub/StubApp.java hz/com/stub/StubApp.java
-          ls -la hz/com/stub/ hz/com/fock/
+          for SRC in ../Harness3.java ../Harness3.java.txt; do
+            [ -f "$SRC" ] && cp "$SRC" hz/com/fock/Harness3.java && echo "Harness3 来源: $SRC" && break
+          done
+          for SRC in ../stub_com_stub_StubApp.java ../stub_com_stub_StubApp.java.txt; do
+            [ -f "$SRC" ] && cp "$SRC" hz/com/stub/StubApp.java && echo "StubApp 来源: $SRC" && break
+          done
+          if [ ! -f hz/com/stub/StubApp.java ]; then
+            echo "内联生成 StubApp"
+            printf 'package com.stub;\npublic class StubApp {\n  public static void interface11(int i) { System.out.println("[H] StubApp.interface11(" + i + ") stub-ok"); }\n}\n' > hz/com/stub/StubApp.java
+          fi
+          echo "--- 源码就位 ---"
+          ls -la hz/com/fock/ hz/com/stub/
+          head -3 hz/com/stub/StubApp.java
+          (cd hz && javac -nowarn com/fock/Harness3.java com/stub/StubApp.java 2>&1 | head -10)
+          echo "class 文件数: $(find hz -name '*.class' | wc -l)"
+          find hz -name '*.class'
           (cd hz && javac -nowarn com/fock/Harness3.java com/stub/StubApp.java 2>&1 | head -10)
           echo "class 文件: $(find hz -name '*.class' | wc -l)"
           find hz -name '*.class' | head -5
