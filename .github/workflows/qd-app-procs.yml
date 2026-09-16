@@ -1,0 +1,108 @@
+name: qd-app-procs
+
+# 诊断：Qidian 有几个进程？FockUtil 在哪个进程里？
+on:
+  workflow_dispatch:
+    inputs:
+      book_id:
+        default: '1040025277'
+      chapter_id:
+        default: '794290414'
+
+jobs:
+  procs:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install APK + frida
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz && mv fs fs-server && chmod +x fs-server
+          adb -s $B push fs-server /data/local/tmp/frida-server
+          adb -s $B shell chmod 755 /data/local/tmp/frida-server
+          adb -s $B shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
+          sleep 6
+          adb -s $B forward tcp:27042 tcp:27042
+          echo "=== frida 看到的所有进程（找 qidian） ==="
+          frida-ps -H 127.0.0.1:27042 2>&1 | grep -i qidian
+          frida-ps -H 127.0.0.1:27042 -a 2>&1 | grep -i qidian
+          exit 0
+
+      - name: Launch and observe processes
+        run: |
+          set +e
+          B=localhost:5555
+          BOOK="${{ inputs.book_id }}"; CID="${{ inputs.chapter_id }}"
+          for i in $(seq 1 10); do
+            adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/$BOOK/$CID" >/dev/null 2>&1
+            sleep 12
+            P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            [ -n "$P" ] && { echo "启动成功 try=$i pid=$P"; break; }
+          done
+          echo "=== ① 全部 Qidian 进程（ps） ==="
+          adb -s $B shell "ps -A -o PID,NAME,PPID 2>/dev/null | grep -i qidian"
+          echo
+          echo "=== ② 进程名含 : 的子进程 ==="
+          adb -s $B shell "ps -A -o PID,NAME 2>/dev/null | grep ':' | grep -i qidian"
+          echo
+          echo "=== ③ frida 看到的进程列表 ==="
+          frida-ps -H 127.0.0.1:27042 2>&1 | grep -i qidian
+          echo
+          echo "=== ④ 打开章节后再看一次 ==="
+          adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/$BOOK/$CID" 2>&1 | tail -1
+          sleep 20
+          adb -s $B shell "ps -A -o PID,NAME,PPID 2>/dev/null | grep -i qidian"
+          echo
+          echo "=== ⑤ App 有哪些进程声明（AndroidManifest） ==="
+          adb -s $B shell "dumpsys activity processes 2>/dev/null | grep -i qidian | head -25"
+          echo
+          echo "=== ⑥ 各进程里是否加载了 libfock.so ==="
+          for P in $(adb -s $B shell "ps -A -o PID,NAME 2>/dev/null | grep -i qidian | awk '{print \$1}'" | tr -d '\r'); do
+            echo "--- pid $P ---"
+            adb -s $B shell "cat /proc/$P/maps 2>/dev/null | grep -c libfock" 
+            adb -s $B shell "cat /proc/$P/maps 2>/dev/null | grep libfock | head -3"
+          done
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-procs
+          path: README.md
+          if-no-files-found: warn
