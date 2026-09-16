@@ -1,4 +1,4 @@
-name: qd-decrypt-v46
+name: qd-decrypt-v47
 
 # 按 App 反编译代码复现：e.L() 取 userKey → init → save → add → unlock
 on:
@@ -95,35 +95,57 @@ jobs:
           python3 doit.py text /tmp/u.xml
           exit 0
 
-      - name: Run v46 (按 App 代码复现)
+      - name: Crash-isolated steps (save/add/unlock)
         run: |
           set +e
           B=localhost:5555
-          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-          echo "PID=[$PID]"
-          [ -z "$PID" ] && { echo APP_NOT_RUNNING; exit 0; }
-          timeout 150 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v46_qimei.js -q > /tmp/v46.txt 2>&1 || echo "v46 exit $?"
-          cat /tmp/v46.txt | head -60
-          echo
-          echo "########## 结果文件 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v46_result.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v46_result.txt /tmp/v46_result.txt 2>&1 | tail -1
-          cat /tmp/v46_result.txt 2>/dev/null | head -80
+          ensure_app() {
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -z "$PID" ]; then
+              echo "    App 没了，重启..."
+              adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+              sleep 20
+              PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              echo "    重启后 PID=[$PID]"
+            fi
+          }
+          run_step() {
+            local TAG=$1
+            ensure_app
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            echo "=== 步骤 $TAG  (PID=$PID) ==="
+            if [ -z "$PID" ]; then echo "  无进程，跳过"; return; fi
+            timeout 60 frida -H 127.0.0.1:27042 -p "$PID" -l step_$TAG.js -q 2>&1 | grep -oE "\{'m': '[^']*'" | sed "s/^{'m': '//" | head -10
+            sleep 3
+            P2=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            echo "  步骤后 PID=[$P2]"
+          }
+
+          run_step preuser
+          run_step save
+          run_step keymap
+          run_step add
+          run_step unlock
+
           echo
           echo "########## 明文 ##########"
-          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v46_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
-          adb -s $B pull /data/local/tmp/v46_plaintext.txt /tmp/v46_plaintext.txt 2>&1 | tail -1
-          wc -c /tmp/v46_plaintext.txt 2>/dev/null
-          head -c 2000 /tmp/v46_plaintext.txt 2>/dev/null
+          for f in plain_preuser plain_save plain_keymap plain_add plain_unlock; do
+            adb -s $B pull /data/local/tmp/$f.txt /tmp/$f.txt >/dev/null 2>&1 && { echo "--- $f ---"; wc -c /tmp/$f.txt; head -c 1500 /tmp/$f.txt; echo; }
+          done
+          echo
+          echo "########## MMKV 是否出现 pref_fock_key ##########"
+          adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" > /tmp/pu3.bin
+          ls -la /tmp/pu3.bin
+          python3 mmkv_dump.py /tmp/pu3.bin
           exit 0
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v46
+          name: v49
           path: |
-            /tmp/v46.txt
-            /tmp/v46_result.txt
+            /tmp/v49.txt
+            /tmp/v49_result.txt
             /tmp/params.json
           if-no-files-found: warn
