@@ -7,9 +7,9 @@ on:
       apk_url:
         default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464_slim.apk'
       book_id:
-        default: '1040025277'
+        default: '1049120379'
       chapter_id:
-        default: '794290414'
+        default: '903350205'
 
 permissions:
   contents: write
