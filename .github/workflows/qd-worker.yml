@@ -10,7 +10,7 @@ on:
         description: '驻留小时数（最多 5.5，GitHub 单 job 上限 6h）'
         default: '5.5'
       apk_url:
-        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk'
       image_mode:
         description: 'pull / cache'
         default: 'pull'
