@@ -1,0 +1,11 @@
+{"t": "log", "m": "===== hook_fock_key 装载 ====="}
+{"t": "log", "m": "✓ 找到 com.yuewen.fock.Fock"}
+{"t": "log", "m": "✓ 已挂 Fock.unlock(String,String)"}
+{"t": "log", "m": "✓ 已挂 Fock.setup"}
+{"t": "log", "m": "✓ 已挂 Fock.addKeys"}
+{"t": "log", "m": "✓ 找到 FockUtil"}
+{"t": "log", "m": "   FockUtil.public final native void com.qidian.QDReader.component.util.FockUtil.add(java.lang.String,java.lang.String)"}
+{"t": "log", "m": "   FockUtil.public final native java.lang.String com.qidian.QDReader.component.util.FockUtil.getKey()"}
+{"t": "log", "m": "   FockUtil.public final native boolean com.qidian.QDReader.component.util.FockUtil.isHasKey()"}
+{"t": "log", "m": "   FockUtil.public final native com.yuewen.fock.Fock$FockResult com.qidian.QDReader.component.util.FockUtil.unlock(java.lang.String,java.lang.String)"}
+{"t": "log", "m": "===== hook_fock_key 装载完成 ====="}
