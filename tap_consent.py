@@ -25,8 +25,4 @@ for kw in ('同意并继续', '同意', '继续'):
         print('%d %d' % ((x1 + x2) // 2, (y1 + y2) // 2))
         sys.exit(0)
 
-# 再兜底：任何 NAF=true 的按钮
-for m in re.finditer(r'clickable="true"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', t):
-    x1, y1, x2, y2 = map(int, m.groups())
-    print('%d %d' % ((x1 + x2) // 2, (y1 + y2) // 2))
-    break
+# ★ 不再做"任意 clickable"兜底（会误点登录页的 × 关闭按钮，导致 App 退出）
