@@ -1,0 +1,85 @@
+{"m": "=== v15 直调 native 解密 ===", "ver": "11"}
+{"m": "✓ FockUtil"}
+{"m": "✓ com.yuewen.fock.Fock"}
+{"m": "★ 载入密文 /data/local/tmp/blob.bin len=12528", "head": "00000000d8300000050c984c398048597730afdcc5d66928411e01018f5cab5d...12528B"}
+{"m": "v15 等待 go 指令"}
+{"m": "=== v15 装载完毕（等 go 指令 / immediate 已排程）==="}
+{"m": "v15 setImmediate 触发"}
+{"m": "候选密钥", "keys": ["borgus", "", "900069660351", "3264757074", "ywSuO8qkZxgp"]}
+{"m": "unlock(full,borgus) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(full,) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(full,900069660351) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(full,3264757074) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(full,ywSuO8qkZxgp) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(payload(-8-16),borgus) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(payload(-8-16),) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(payload(-8-16),900069660351) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(payload(-8-16),3264757074) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(payload(-8-16),ywSuO8qkZxgp) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-tail16,borgus) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-tail16,) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-tail16,900069660351) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-tail16,3264757074) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-tail16,ywSuO8qkZxgp) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-head8,borgus) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-head8,) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-head8,900069660351) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-head8,3264757074) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "unlock(no-head8,ywSuO8qkZxgp) 异常: Error: unlock: cannot call instance method without an instance"}
+{"m": "★★★ Fock.uk 尝试", "slice": "full", "key": "borgus", "ret": "com.yuewen.fock.Fock$FockResult@8465799"}
+{"m": "★★ uk/full/borgus 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "full", "key": "", "ret": "com.yuewen.fock.Fock$FockResult@dfa1a5e"}
+{"m": "★★ uk/full/ 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "full", "key": "900069660351", "ret": "com.yuewen.fock.Fock$FockResult@a3a0e3f"}
+{"m": "★★ uk/full/900069660351 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "full", "key": "3264757074", "ret": "com.yuewen.fock.Fock$FockResult@ec9730c"}
+{"m": "★★ uk/full/3264757074 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "full", "key": "ywSuO8qkZxgp", "ret": "com.yuewen.fock.Fock$FockResult@41bd455"}
+{"m": "★★ uk/full/ywSuO8qkZxgp 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "full", "key": "<zeros16>", "ret": "com.yuewen.fock.Fock$FockResult@9497e6a"}
+{"m": "★★ uk/full/<zeros16> 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "full", "key": "<zeros32>", "ret": "com.yuewen.fock.Fock$FockResult@8cb4f5b"}
+{"m": "★★ uk/full/<zeros32> 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "payload(-8-16)", "key": "borgus", "ret": "com.yuewen.fock.Fock$FockResult@c20b3f8"}
+{"m": "★★ uk/payload(-8-16)/borgus 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "payload(-8-16)", "key": "", "ret": "com.yuewen.fock.Fock$FockResult@a9260d1"}
+{"m": "★★ uk/payload(-8-16)/ 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "payload(-8-16)", "key": "900069660351", "ret": "com.yuewen.fock.Fock$FockResult@c791736"}
+{"m": "★★ uk/payload(-8-16)/900069660351 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "payload(-8-16)", "key": "3264757074", "ret": "com.yuewen.fock.Fock$FockResult@e658637"}
+{"m": "★★ uk/payload(-8-16)/3264757074 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "payload(-8-16)", "key": "ywSuO8qkZxgp", "ret": "com.yuewen.fock.Fock$FockResult@5a917a4"}
+{"m": "★★ uk/payload(-8-16)/ywSuO8qkZxgp 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "payload(-8-16)", "key": "<zeros16>", "ret": "com.yuewen.fock.Fock$FockResult@b0b390d"}
+{"m": "★★ uk/payload(-8-16)/<zeros16> 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "payload(-8-16)", "key": "<zeros32>", "ret": "com.yuewen.fock.Fock$FockResult@c3770c2"}
+{"m": "★★ uk/payload(-8-16)/<zeros32> 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-tail16", "key": "borgus", "ret": "com.yuewen.fock.Fock$FockResult@24ed3"}
+{"m": "★★ uk/no-tail16/borgus 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-tail16", "key": "", "ret": "com.yuewen.fock.Fock$FockResult@f320a10"}
+{"m": "★★ uk/no-tail16/ 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-tail16", "key": "900069660351", "ret": "com.yuewen.fock.Fock$FockResult@fbf5909"}
+{"m": "★★ uk/no-tail16/900069660351 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-tail16", "key": "3264757074", "ret": "com.yuewen.fock.Fock$FockResult@78fd70e"}
+{"m": "★★ uk/no-tail16/3264757074 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-tail16", "key": "ywSuO8qkZxgp", "ret": "com.yuewen.fock.Fock$FockResult@e99052f"}
+{"m": "★★ uk/no-tail16/ywSuO8qkZxgp 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-tail16", "key": "<zeros16>", "ret": "com.yuewen.fock.Fock$FockResult@815b73c"}
+{"m": "★★ uk/no-tail16/<zeros16> 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-tail16", "key": "<zeros32>", "ret": "com.yuewen.fock.Fock$FockResult@37b7cc5"}
+{"m": "★★ uk/no-tail16/<zeros32> 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-head8", "key": "borgus", "ret": "com.yuewen.fock.Fock$FockResult@f6561a"}
+{"m": "★★ uk/no-head8/borgus 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-head8", "key": "", "ret": "com.yuewen.fock.Fock$FockResult@93ac54b"}
+{"m": "★★ uk/no-head8/ 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-head8", "key": "900069660351", "ret": "com.yuewen.fock.Fock$FockResult@9250b28"}
+{"m": "★★ uk/no-head8/900069660351 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-head8", "key": "3264757074", "ret": "com.yuewen.fock.Fock$FockResult@71c2041"}
+{"m": "★★ uk/no-head8/3264757074 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-head8", "key": "ywSuO8qkZxgp", "ret": "com.yuewen.fock.Fock$FockResult@c13b9e6"}
+{"m": "★★ uk/no-head8/ywSuO8qkZxgp 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-head8", "key": "<zeros16>", "ret": "com.yuewen.fock.Fock$FockResult@4ee6b27"}
+{"m": "★★ uk/no-head8/<zeros16> 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ Fock.uk 尝试", "slice": "no-head8", "key": "<zeros32>", "ret": "com.yuewen.fock.Fock$FockResult@553b1d4"}
+{"m": "★★ uk/no-head8/<zeros32> 字段", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★ Fock.sign 测试", "ret": "bfc8af2590b25df17c8b11c22492a8db"}
