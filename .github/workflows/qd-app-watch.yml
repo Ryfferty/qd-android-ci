@@ -1,0 +1,175 @@
+name: qd-app-watch
+
+# App 端协议观测：让 App 自己跑读章流程，全量记录 FockUtil 的使用
+on:
+  workflow_dispatch:
+    inputs:
+      acct:
+        default: '900069660351'
+      book_id:
+        default: '1040025277'
+      chapter_id:
+        default: '794290414'
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install APK + frida
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz && mv fs fs-server && chmod +x fs-server
+          adb -s $B push fs-server /data/local/tmp/frida-server
+          adb -s $B shell chmod 755 /data/local/tmp/frida-server
+          adb -s $B shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
+          sleep 6
+          adb -s $B forward tcp:27042 tcp:27042
+          frida-ps -H 127.0.0.1:27042 2>&1 | head -4
+          exit 0
+
+      - name: Launch app (deeplink first, 10 retries)
+        run: |
+          set +e
+          B=localhost:5555
+          BOOK="${{ inputs.book_id }}"; CID="${{ inputs.chapter_id }}"
+          PID=""
+          for i in $(seq 1 10); do
+            echo "--- try $i ---"
+            adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/$BOOK/$CID" 2>&1 | tail -1
+            sleep 12
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -z "$PID" ]; then
+              adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
+              sleep 12
+              PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            fi
+            echo "  pid=[$PID]"
+            [ -n "$PID" ] && break
+          done
+          if [ -z "$PID" ]; then
+            echo "APP_NOT_RUNNING"
+            adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.QDReaderActivity" 2>&1 | tail -2
+            sleep 15
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            echo "  fallback pid=[$PID]"
+          fi
+          echo "FINAL_PID=[$PID]"
+          exit 0
+
+      - name: Inject cookies then observe
+        env:
+          S_A: ${{ secrets.QD_SESS_3264757074 }}
+          S_B: ${{ secrets.QD_SESS_2719559418 }}
+          S_C: ${{ secrets.QD_SESS_900069660351 }}
+          ACCT: ${{ inputs.acct }}
+        run: |
+          set +e
+          B=localhost:5555
+          BOOK="${{ inputs.book_id }}"; CID="${{ inputs.chapter_id }}"
+          case "$ACCT" in
+            3264757074) printf '%s' "$S_A" > /tmp/sess.json ;;
+            2719559418) printf '%s' "$S_B" > /tmp/sess.json ;;
+            *) printf '%s' "$S_C" > /tmp/sess.json ;;
+          esac
+          echo "sess=$(stat -c%s /tmp/sess.json)B acct=$ACCT"
+          adb -s $B push /tmp/sess.json /data/local/tmp/sess.json
+          adb -s $B shell chmod 644 /data/local/tmp/sess.json
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID1=[$PID]"
+          if [ -n "$PID" ]; then
+            echo "--- 第一步：注入 cookie ---"
+            timeout 100 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v16_inject_session.js -q 2>&1 | grep -E "CookieManager|载入 sess|NONEMPTY|EMPTY" | head -6
+          fi
+          echo "--- 重启 App 让登录态生效 ---"
+          adb -s $B shell "am force-stop com.qidian.QDReader"
+          sleep 5
+          for i in $(seq 1 10); do
+            adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/$BOOK/$CID" >/dev/null 2>&1
+            sleep 12
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            [ -n "$PID" ] && { echo "  重启后 PID=[$PID] (try $i)"; break; }
+          done
+          if [ -z "$PID" ]; then echo "APP_DIED_AFTER_INJECT"; exit 0; fi
+          echo "--- 第二步：全量观测（含中途打开多章）---"
+          (
+            sleep 25
+            adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/$BOOK/$CID" 2>&1 | tail -1
+            sleep 20
+            adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/$BOOK/794290708" 2>&1 | tail -1
+            sleep 20
+            adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/$BOOK/794290414" 2>&1 | tail -1
+          ) &
+          timeout 180 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v45_watch.js -q > /tmp/watch.txt 2>&1 || echo "watch exit $?"
+          echo "--- 观测输出 ---"
+          cat /tmp/watch.txt | head -80
+          echo
+          echo "########## v45 结果文件 ##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v45_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v45_result.txt /tmp/v45_result.txt 2>&1 | tail -1
+          cat /tmp/v45_result.txt 2>/dev/null | head -80
+          echo
+          echo "########## 明文 ##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v45_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v45_plaintext.txt /tmp/v45_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v45_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v45_plaintext.txt 2>/dev/null
+          echo
+          echo "########## .qd 密文缓存 ##########"
+          adb -s $B shell "find /storage/emulated/0/Android/data/com.qidian.QDReader -name '*.qd' 2>/dev/null | head -20"
+          adb -s $B shell "ls -laR /storage/emulated/0/Android/data/com.qidian.QDReader/files/QDReader/ 2>/dev/null | head -30"
+          echo
+          echo "########## MMKV ##########"
+          adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" > /tmp/pu2.bin
+          ls -la /tmp/pu2.bin
+          python3 mmkv_dump.py /tmp/pu2.bin
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-watch
+          path: |
+            /tmp/watch.txt
+            /tmp/v45_result.txt
+            /tmp/pu2.bin
+          if-no-files-found: warn
