@@ -1,0 +1,18 @@
+{"m": "=== v27 add→unlock ===", "ver": "11"}
+{"m": "★★★ Java.choose 实例"}
+{"m": "INST=OK"}
+{"m": "密文 len=12528  pool len=128"}
+{"m": "v27 等待 go / setImmediate"}
+{"m": "=== v27 装载完毕 ==="}
+{"m": "--- v27 主流程 ---"}
+{"m": "① add 之前基线和 isHasKey/getKey"}
+{"m": "  isHasKey=true"}
+{"m": "  getKey=borgus"}
+{"m": "★★★ uk-before-add(borgus) 用时 1ms", "r": "com.yuewen.fock.Fock$FockResult@daca09a", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "② INST.add(pool,\"\") OK"}
+{"m": "★★★ uk-after-add(pool) 用时 0ms", "r": "com.yuewen.fock.Fock$FockResult@c8b7dcb", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk-after-add(borgus) 用时 0ms", "r": "com.yuewen.fock.Fock$FockResult@dba99a8", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk-after-add(empty) 用时 1ms", "r": "com.yuewen.fock.Fock$FockResult@334ccc1", "fields": {"data": {"utf8": null, "hex": ""}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "③ add 后 getKey=borgus"}
+{"m": "③ add 后 isHasKey=true"}
+{"m": "--- v27 结束 ---"}
