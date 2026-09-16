@@ -121,12 +121,15 @@ jobs:
             echo "  步骤后 PID=[$P2]"
           }
 
-          run_step saveformats
-          run_step saveformats
+          # ★ v50：让 App 自己请求密钥（内部 getH→save→add）
+          run_step appreqkey
+          echo "  等 App 自己完成密钥请求（30 秒）..."
+          sleep 30
+          run_step afterkey
 
           echo
           echo "########## 明文 ##########"
-          for f in plain_preuser plain_save plain_keymap plain_add plain_unlock; do
+          for f in plain_preuser plain_save plain_keymap plain_add plain_unlock plain_saveformats plain_afterkey; do
             adb -s $B pull /data/local/tmp/$f.txt /tmp/$f.txt >/dev/null 2>&1 && { echo "--- $f ---"; wc -c /tmp/$f.txt; head -c 1500 /tmp/$f.txt; echo; }
           done
           echo
