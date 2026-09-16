@@ -25,11 +25,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup adb + python
+      - name: Setup binder + adb + frida
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq android-tools-adb python3-pip unzip curl
+          sudo apt-get update -qq || true
+          # ★★★ 必须装 binder 内核模块并 modprobe，否则 redroid 起不来（boot_completed 永远空）
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb python3-pip curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE_LOADED
+          ls -la /dev/binder* 2>/dev/null || echo "no binder dev"
+          # frida 17 移除了内置 Java bridge（脚本里 Java 会 ReferenceError），必须锁 16.x
           pip install -q "frida==16.7.19" "frida-tools<14"
+          frida --version
 
       - name: 准备 redroid 镜像（缓存优先）
         run: |
@@ -66,20 +71,27 @@ jobs:
             androidboot.redroid_adb=5555
           sleep 15
           adb start-server >/dev/null 2>&1 || true
-          for i in $(seq 1 60); do
-            adb connect localhost:5555 >/dev/null 2>&1 || true
-            B=$(timeout 10 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             echo "[$i] boot=$B"
-            [ "$B" = "1" ] && break
-            sleep 15
+            [ "$B" = "1" ] && { echo BOOT_OK try $i; break; }
+            sleep 8
           done
           adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
 
       - name: 装 APK + adb root + frida-server + 端口转发
         run: |
           set +e
+          adb devices
+          timeout 30 adb connect localhost:5555 || true
+          adb -s localhost:5555 shell getprop sys.boot_completed | tr -d '\r'
           mkdir -p dl && cd dl
-          curl -sSL --max-time 900 -o qidian.apk "${{ inputs.apk_url }}"
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 300 -o qidian.apk "${{ inputs.apk_url }}" || true
+            SZ=$(stat -c%s qidian.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"; [ "$SZ" -gt 10000000 ] && break; sleep 10
+          done
           echo "apk=$(stat -c%s qidian.apk)"
           curl -sSL --max-time 600 -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz
           unxz -f fs.xz && chmod +x fs && ls -lh fs
