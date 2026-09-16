@@ -1,15 +1,13 @@
 name: qd-v32-app-fock
 
 # 路径 D：App 当「加密容器」——数据仍走 argus（零网页），算法由 App 内已初始化的 libfock.so 提供
-#   理由：极简进程里 sign/setup/addKeypool/unlock 都是 UnsatisfiedLinkError（加固壳运行时才释放实现），
-#         且 uk/sn 会 SIGABRT；而在真 App 进程里（v27/v30 实测）uk 正常返回状态码。
 on:
   workflow_dispatch:
     inputs:
       per_hook_sec:
-        default: '300'
+        default: '240'
       hook:
-        default: 'hook_v34_final.js'
+        default: 'hook_v36_userkey.js'
 
 permissions:
   contents: write
@@ -61,7 +59,7 @@ jobs:
             curl -sSL --max-time 900 -o qd.apk "$REL/$A"
             echo "  downloaded $(stat -c%s qd.apk 2>/dev/null)B"
             if adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2 | grep -q Success; then
-              echo "  ✓ INSTALLED $A"; OK=1; break
+              echo "  INSTALLED $A"; OK=1; break
             fi
           done
           echo "install_ok=$OK"
@@ -87,36 +85,16 @@ jobs:
           adb -s localhost:5555 push /tmp/params.json /data/local/tmp/params.json
           adb -s localhost:5555 shell chmod 644 /data/local/tmp/params.json
 
-      - name: Dump MMKV (App 真实密钥池格式)
+      - name: Dump MMKV ground truth
         if: always()
         run: |
           set +e
           B=localhost:5555
           echo "=== MMKV 目录 ==="
           adb -s $B shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/ 2>/dev/null"
-          echo "=== pref_utils 内容分析 ==="
-          adb -s $B shell "su 0 cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null || cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" > /tmp/pref_utils.bin
+          adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" > /tmp/pref_utils.bin
           ls -la /tmp/pref_utils.bin
-          python3 - <<'PY2'
-import re
-try:
-    d = open('/tmp/pref_utils.bin','rb').read()
-except Exception as e:
-    print('读取失败', e); raise SystemExit
-print('大小', len(d))
-i = d.find(b'pref_fock_key')
-print('pref_fock_key 偏移 =', i)
-if i >= 0:
-    seg = d[i:i+600]
-    print('--- 可打印片段 ---')
-    for m in re.finditer(rb'[\x20-\x7e]{6,}', seg):
-        print('  @%d: %s' % (m.start(), m.group().decode('ascii','replace')[:300]))
-    print('--- 原始 hex 前 192B ---')
-    print(' ', seg[:192].hex())
-print('--- 全文里的 JSON 片段 ---')
-for m in re.finditer(rb'\{[^{}]{0,300}\}', d):
-    print('  JSON@%d: %s' % (m.start(), m.group().decode('utf-8','replace')[:300]))
-PY2
+          python3 mmkv_dump.py /tmp/pref_utils.bin
 
       - name: Inject hook into App process
         env:
@@ -125,7 +103,7 @@ PY2
         run: |
           set +e
           B=localhost:5555
-          echo "=== 启动 App（仅作加密容器，不碰登录/UI）==="
+          echo "=== 启动 App（仅作加密容器）==="
           adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -2
           sleep 22
           PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
@@ -137,30 +115,22 @@ PY2
             echo "retry App pid=[$PID]"
           fi
           echo "--- push hook ($HOOK) ---"
-          ls -la "$HOOK" 2>/dev/null || echo "  源文件不存在！"
-          for SRC in "$HOOK" "./$HOOK" "/home/runner/work/qd-android-ci/qd-android-ci/$HOOK"; do
-            if [ -f "$SRC" ]; then
-              adb -s $B push "$SRC" /data/local/tmp/hook.js && echo "  ✓ 已推送自 $SRC" && break
-            fi
+          for SRC in "$HOOK" "./$HOOK"; do
+            [ -f "$SRC" ] && adb -s $B push "$SRC" /data/local/tmp/hook.js && echo "  pushed from $SRC" && break
           done
-          echo "--- 验证 ---"
-          adb -s $B shell "ls -l /data/local/tmp/hook.js || echo HOOK_MISSING"
-          echo "=== attach frida ==="
-          ( sleep 25; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -1 ) &
           LOCALHOOK="$HOOK"
           [ -f "$LOCALHOOK" ] || LOCALHOOK="./$HOOK"
-          [ -f "$LOCALHOOK" ] || LOCALHOOK="/home/runner/work/qd-android-ci/qd-android-ci/$HOOK"
-          echo "frida 本地脚本路径: $LOCALHOOK"
-          timeout ${PER:-300} frida -H 127.0.0.1:27042 -p "$PID" -l "$LOCALHOOK" -q > /tmp/frida_out.txt 2>&1 || echo "frida 退出码 $?"
+          echo "frida script: $LOCALHOOK"
+          ( sleep 25; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -1 ) &
+          timeout ${PER:-240} frida -H 127.0.0.1:27042 -p "$PID" -l "$LOCALHOOK" -q > /tmp/frida_out.txt 2>&1 || echo "frida exit $?"
           wc -l /tmp/frida_out.txt
-          echo
           echo "=== 关键行 ==="
-          grep -E '★★★★|明文|正文|status|方法数|params keys|① |② |③ |====' /tmp/frida_out.txt | head -70
+          grep -E "unlock|明文|正文|status|add\[|候选|Fock" /tmp/frida_out.txt | head -60
           echo
-          echo "########## 设备端结果文件（不受管道截断）##########"
+          echo "########## 设备端结果文件 ##########"
           adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v36_result.txt /data/local/tmp/ 2>/dev/null" || true
           adb -s $B pull /data/local/tmp/v36_result.txt /tmp/v36_result.txt 2>&1 | tail -1
-          cat /tmp/v36_result.txt 2>/dev/null | head -80 || echo "(无结果文件)"
+          cat /tmp/v36_result.txt 2>/dev/null | head -80
           echo
           echo "########## 明文文件 ##########"
           adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v36_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
@@ -168,19 +138,20 @@ PY2
           wc -c /tmp/v36_plaintext.txt 2>/dev/null
           head -c 2000 /tmp/v36_plaintext.txt 2>/dev/null
 
-      - name: Collect app logs
+      - name: Collect logs
         if: always()
         run: |
           set +e
-          adb -s localhost:5555 logcat -d -v brief 2>/dev/null | grep -iE 'fock|unlock|keypool|abort|assert' | head -40
+          adb -s localhost:5555 logcat -d -v brief 2>/dev/null | grep -iE 'fock|unlock|keypool|abort' | head -30
           mkdir -p results
           cp /tmp/frida_out.txt results/ 2>/dev/null || true
-          cp /tmp/params.json results/ 2>/dev/null || true
+          cp /tmp/v36_result.txt results/ 2>/dev/null || true
+          cp /tmp/pref_utils.bin results/ 2>/dev/null || true
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v32-app-out
+          name: v36-app-out
           path: results/
           if-no-files-found: warn
