@@ -356,22 +356,46 @@ jobs:
                   except Exception as e:
                       print(f'[{hname}] 二次 attach 失败 {e}', flush=True)
 
-          # ★ 发深链（触发正文解密）
-          DLS = ['QDReader://OpenBook/1049120379/903350205',
-                 'QDReader://OpenBook/1040025277/790923799',
-                 'QDReader://OpenBook/1040025277/794290252']
+          # 清 logcat，便于定位崩溃
+          sh(['adb','-s','localhost:5555','shell','logcat','-c'], 25)
+          sh(['adb','-s','localhost:5555','shell','logcat','-b','crash','-c'], 25)
+
+          # ★ 发深链（触发正文解密）—— 多格式，含 App Links 的 http 形式
+          DLS = [
+              'QDReader://OpenBook/1049120379/903350205',
+              'qdreader://openbook/1049120379/903350205',
+              'https://m.qidian.com/chapter/1049120379/903350205/',
+              'https://www.qidian.com/chapter/1049120379/903350205/',
+          ]
           for dl in DLS:
-              print(f'[{hname}] >>> deeplink {dl}', flush=True)
-              subprocess.call(['adb','-s','localhost:5555','shell','am','start','-a',
-                               'android.intent.action.VIEW','-d',dl],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-              time.sleep(8)
-              # 深链后 dump 一次，看是不是被登录页拦住
+              before = sh(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'], 20)
+              print(f'[{hname}] >>> deeplink {dl}  (pid_before={before or "NONE"})', flush=True)
+              out = subprocess.run(['adb','-s','localhost:5555','shell','am','start','-a',
+                                    'android.intent.action.VIEW','-d',dl],
+                                   capture_output=True, text=True, timeout=40)
+              print(f'[{hname}]     am start -> {(out.stdout or out.stderr or "").strip()[:160]}', flush=True)
+              time.sleep(10)
+              after = sh(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'], 20)
+              print(f'[{hname}]     pid_after={after or "NONE"}', flush=True)
+              if before and after and before != after:
+                  print(f'[{hname}] ★★★ App 崩溃重启了！({before} → {after}) 抓崩溃日志', flush=True)
+                  cr = sh(['adb','-s','localhost:5555','shell','logcat','-d','-b','crash','-t','120'], 40)
+                  for line in cr.splitlines():
+                      if any(k in line for k in ['FATAL', 'AndroidRuntime', 'Caused by', 'com.qidian', 'frida', 'art::']):
+                          print(f'[{hname}]   CRASH| {line.strip()[:180]}', flush=True)
+                  # 也抓主日志里 App 的最后若干行
+                  mn = sh(['adb','-s','localhost:5555','shell','logcat','-d','-t','200'], 40)
+                  for line in mn.splitlines()[-60:]:
+                      if 'qidian' in line.lower() or 'FATAL' in line or 'DEBUG' in line:
+                          print(f'[{hname}]   LOG| {line.strip()[:170]}', flush=True)
               act = sh(['adb','-s','localhost:5555','shell','dumpsys','activity','activities'], 30)
               for line in act.splitlines():
                   if 'ResumedActivity' in line:
-                      print(f'[{hname}] 当前 {line.strip()[:110]}', flush=True)
+                      print(f'[{hname}]     当前 {line.strip()[:120]}', flush=True)
                       break
+              # 崩了就重拉，让下一个深链能继续试
+              if not sh(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'], 20):
+                  ensure_app()
           # 点一下屏幕中央（有些阅读器需要交互才请求正文）
           subprocess.call(['adb','-s','localhost:5555','shell','input','tap','540','1200'],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
