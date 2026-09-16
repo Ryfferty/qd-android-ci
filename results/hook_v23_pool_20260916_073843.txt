@@ -1,0 +1,13 @@
+{"m": "=== v23 pool 解锁 ===", "ver": "11"}
+{"m": "✓ FockUtil / Fock"}
+{"m": "✓ 全部方法已挂"}
+{"m": "★★★ Java.choose 找到实例！"}
+{"m": "findInst 结果: OK"}
+{"m": "v23 用 setImmediate 立即执行"}
+{"m": "=== v23 装载完毕 ==="}
+{"m": "--- v23 主流程 ---"}
+{"m": "params.json 内容: {\"pool_b64\": \"mG/GLUa7suIcjY/G+VMyjggKUx19NUJzF3WHEfw/TwFCOcj7JIW/NZzqCQQwCOD8LJXT/T5CqVbOWoZq69rXcJqmOtC0ujhZz4GR2CSk6UCOycj0MAREpNcFAKsPVZ5J\"}"}
+{"m": "pool len=128 qimei="}
+{"m": "Context=OK"}
+{"m": "★★★ FockUtil.add", "args": ["mG/GLUa7suIcjY/G+VMyjggKUx19NUJzF3WHEfw/TwFCOcj7JIW/NZzqCQQwCOD8LJXT/T5CqVbOWoZq69rXcJqmOtC0ujhZz4GR2CSk6UCOycj0MAREpNcFAKsPVZ5J", ""], "ret": null}
+{"m": "① INST.add(pool, qimei) OK"}
