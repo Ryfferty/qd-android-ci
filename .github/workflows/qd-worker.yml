@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   worker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 350          # 5h50m，留余量
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +76,7 @@ jobs:
           set +e
           mkdir -p dl && cd dl
           curl -sSL --max-time 900 -o qidian.apk "${{ inputs.apk_url }}"; echo "apk=$(stat -c%s qidian.apk)"
-          curl -sSL --max-time 600 -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-x86_64.xz
+          curl -sSL --max-time 600 -o fs.xz https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz
           unxz -f fs.xz && chmod +x fs
           timeout 900 adb -s localhost:5555 install -r -t qidian.apk 2>&1 | tail -3
           adb -s localhost:5555 shell pm list packages | grep qidian || echo NOT_INSTALLED
