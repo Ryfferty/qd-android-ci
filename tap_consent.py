@@ -9,20 +9,17 @@ try:
 except Exception:
     sys.exit(0)
 
-# 优先按 resource-id
-for rid in ('btnAgree', 'button_text_id', 'tvAgree', 'agree'):
-    pat = r'resource-id="[^"]*%s"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"' % rid
-    for m in re.finditer(pat, t):
-        x1, y1, x2, y2 = map(int, m.groups())
-        print('%d %d' % ((x1 + x2) // 2, (y1 + y2) // 2))
-        sys.exit(0)
+# 只认两个精确目标（其余一律不点，避免误点）
+# ① 精确 id：btnAgree
+for m in re.finditer(r'resource-id="com\.qidian\.QDReader:id/btnAgree"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', t):
+    x1, y1, x2, y2 = map(int, m.groups())
+    print('%d %d' % ((x1 + x2) // 2, (y1 + y2) // 2))
+    sys.exit(0)
 
-# 兜底：按文本
-for kw in ('同意并继续', '同意', '继续'):
-    pat = r'text="[^"]*%s[^"]*"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"' % kw
-    for m in re.finditer(pat, t):
-        x1, y1, x2, y2 = map(int, m.groups())
-        print('%d %d' % ((x1 + x2) // 2, (y1 + y2) // 2))
-        sys.exit(0)
+# ② 精确文本：同意并继续
+for m in re.finditer(r'text="同意并继续"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', t):
+    x1, y1, x2, y2 = map(int, m.groups())
+    print('%d %d' % ((x1 + x2) // 2, (y1 + y2) // 2))
+    sys.exit(0)
 
 # ★ 不再做"任意 clickable"兜底（会误点登录页的 × 关闭按钮，导致 App 退出）
