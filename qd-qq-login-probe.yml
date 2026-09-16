@@ -1,0 +1,111 @@
+name: qd-qq-login-probe
+
+# 点登录页的 QQ 登录入口，看它拉起什么（WebView / 外部 App / 二维码）
+on:
+  workflow_dispatch: {}
+
+jobs:
+  qqprobe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install and reach login page
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -1
+          sleep 25
+          for a in 1 2 3; do
+            adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            XY=$(python3 tap_consent.py /tmp/u.xml)
+            echo "consent attempt=$a tap=[$XY]"
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; sleep 10; } || break
+          done
+          sleep 15
+          echo "--- 现在在登录页了吗 ---"
+          adb -s $B shell "uiautomator dump /sdcard/u3.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/u3.xml /tmp/u3.xml >/dev/null 2>&1
+          python3 uitext.py /tmp/u3.xml
+          exit 0
+
+      - name: Tap QQ login and observe
+        run: |
+          set +e
+          B=localhost:5555
+          echo "=== 找 tvQQ 并点击 ==="
+          adb -s $B shell "uiautomator dump /sdcard/u4.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/u4.xml /tmp/u4.xml >/dev/null 2>&1
+          XY=$(python3 tap_id.py /tmp/u4.xml tvQQ)
+          echo "tvQQ 坐标=[$XY]"
+          if [ -z "$XY" ]; then
+            XY=$(python3 tap_consent.py /tmp/u4.xml)
+            echo "兜底坐标=[$XY]"
+          fi
+          adb -s $B logcat -c
+          adb -s $B shell "input tap $XY"
+          for t in 5 10 20 35 50; do
+            sleep 15
+            echo "=== T+${t}s ==="
+            adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+            adb -s $B shell "dumpsys window 2>/dev/null | grep mCurrentFocus | head -1"
+          done
+          echo
+          echo "=== 屏幕内容 ==="
+          adb -s $B shell "uiautomator dump /sdcard/u5.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/u5.xml /tmp/u5.xml >/dev/null 2>&1
+          python3 uitext.py /tmp/u5.xml
+          echo
+          echo "=== WebView 是否出现 ==="
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep -iE 'webview|WebActivity|H5' | head -5"
+          echo
+          echo "=== 拉起的包（是否是 QQ 客户端）==="
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep -iE 'mResumedActivity|ActivityRecord' | head -8"
+          echo
+          echo "=== App 日志（QQ 授权相关）==="
+          adb -s $B logcat -d -v brief 2>/dev/null | grep -iE 'qq|tencent|openid|auth|oauth|login|sso' | tail -40
+          echo
+          echo "=== 截图 ==="
+          adb -s $B shell "screencap -p /sdcard/qq.png"
+          adb -s $B pull /sdcard/qq.png /tmp/qq.png 2>&1 | tail -1
+          mkdir -p results && cp /tmp/qq.png results/ 2>/dev/null
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qq-probe
+          path: results/
+          if-no-files-found: warn
