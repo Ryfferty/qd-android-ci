@@ -92,14 +92,15 @@ jobs:
             *) printf '%s' "$S_C" > /tmp/sess.json ;;
           esac
           echo argus-acct=$ACCT
-          if [ "${{ inputs.use_web }}" = "1" ] && [ -f params_web.json ]; then
-            cp params_web.json /tmp/params.json
-            echo "--- 已改用网页参数集 ---"
-            head -c 200 /tmp/params.json
-            echo
-          fi
+
           BOOK=1049120379 CID=903350205 python3 argus_fetch.py
           python3 merge_params.py 1049120379 903350205
+          if [ "${{ inputs.use_web }}" = "1" ] && [ -f params_web.json ]; then
+            echo "--- 用网页密钥池参数集覆盖（argus 之后）---"
+            cp params_web.json /tmp/params.json
+            head -c 150 /tmp/params.json
+            echo
+          fi
           adb -s localhost:5555 push /tmp/params.json /data/local/tmp/params.json
           adb -s localhost:5555 shell chmod 644 /data/local/tmp/params.json
 
