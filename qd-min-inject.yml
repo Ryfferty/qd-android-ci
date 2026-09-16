@@ -1,0 +1,123 @@
+name: qd-min-inject
+
+# 受控实验：写同意文件 → 启动 → 最小注入 → 逐步加压，每步验证 App 存活
+on:
+  workflow_dispatch: {}
+
+jobs:
+  mininj:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install APK + frida
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz && mv fs fs-server && chmod +x fs-server
+          adb -s $B push fs-server /data/local/tmp/frida-server
+          adb -s $B shell chmod 755 /data/local/tmp/frida-server
+          adb -s $B shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
+          sleep 6
+          adb -s $B forward tcp:27042 tcp:27042
+          frida-ps -H 127.0.0.1:27042 2>&1 | head -3
+
+      - name: Write consent file and launch
+        run: |
+          set +e
+          B=localhost:5555
+          bash write_consent.sh
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -1
+          sleep 30
+          echo "=== 启动后状态 ==="
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=[$PID]"
+          adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+          python3 doit.py text /tmp/u.xml
+          exit 0
+
+      - name: Step1 minimal inject (no hooks)
+        env:
+          QQ: ${{ secrets.QD_QQ_COOKIES }}
+        run: |
+          set +e
+          B=localhost:5555
+          printf '%s' "$QQ" > /tmp/qq_sess.json
+          adb -s $B push /tmp/qq_sess.json /data/local/tmp/qq_sess.json
+          adb -s $B shell chmod 644 /data/local/tmp/qq_sess.json
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "注入前 PID=[$PID]"
+          [ -z "$PID" ] && { echo APP_NOT_RUNNING_BEFORE_INJECT; exit 0; }
+          timeout 60 frida -H 127.0.0.1:27042 -p "$PID" -l hook_qq_min.js -q 2>&1 | grep -E '载入|写入尝试|NONEMPTY|EMPTY|完成' | head -8
+          sleep 8
+          echo "=== 最小注入后 ==="
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          echo "PID=[$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')]"
+          exit 0
+
+      - name: Step2 alive check and inspect
+        run: |
+          set +e
+          B=localhost:5555
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=[$PID]"
+          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
+          adb -s $B shell "uiautomator dump /sdcard/u2.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/u2.xml /tmp/u2.xml >/dev/null 2>&1
+          python3 doit.py text /tmp/u2.xml
+          echo "--- 登录页控件是否在 ---"
+          for id in tvQQ editPhone tvVerifyCode btnLogin; do
+            echo -n "$id: "
+            python3 doit.py find_id /tmp/u2.xml $id || echo "(无)"
+          done
+          echo "--- 协议复选框（checkable 节点）---"
+          python3 doit.py dump /tmp/u2.xml | grep -i 'checkable=true' | head -5
+          echo
+          echo "=== 截图 ==="
+          adb -s $B shell "screencap -p /sdcard/m.png"
+          adb -s $B pull /sdcard/m.png /tmp/m.png 2>&1 | tail -1
+          mkdir -p results && cp /tmp/m.png results/ && cp /tmp/u2.xml results/ 2>/dev/null
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: min-inject
+          path: results/
+          if-no-files-found: warn
