@@ -16,7 +16,7 @@ on:
 jobs:
   hook:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -67,15 +67,32 @@ jobs:
 
       - name: Install Qidian + start frida-server
         run: |
-          cd dl
-          for i in 1 2 3; do timeout 300 adb -s localhost:5555 install -r -g qidian.apk 2>&1 | tail -3 && break || { echo "重试 $i"; sleep 20; }; done
-          adb -s localhost:5555 shell pm list packages | grep qidian || true
-          adb -s localhost:5555 wait-for-device 2>/dev/null || true
-          adb -s localhost:5555 push fs /data/local/tmp/fs
-          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs"
-          adb -s localhost:5555 shell "su 0 /data/local/tmp/fs -D &" 2>/dev/null || adb -s localhost:5555 shell "/data/local/tmp/fs -D &"
+          set +e
+          echo "=== 装 APK（给足 12 分钟）==="
+          timeout 720 adb -s localhost:5555 install -r -t dl/qidian.apk 2>&1 | tail -3
+          adb -s localhost:5555 shell pm list packages | grep qidian || echo "NOT_INSTALLED"
+
+          echo "===== adb root（frida-server 必须 root 跑）====="
+          adb -s localhost:5555 root 2>&1 | tail -2
           sleep 8
-          adb -s localhost:5555 shell "ps -A | grep -i frida" | tr -d '\r'
+          adb -s localhost:5555 wait-for-device 2>/dev/null || true
+          timeout 20 adb -s localhost:5555 shell id 2>&1 | head -2
+
+          echo "=== 推 frida-server ==="
+          adb -s localhost:5555 push dl/fs /data/local/tmp/fs
+          adb -s localhost:5555 shell chmod 755 /data/local/tmp/fs
+          adb -s localhost:5555 shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
+          sleep 12
+          adb -s localhost:5555 shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
+
+          echo "=== ★ 端口转发（不做这个连不上）==="
+          adb -s localhost:5555 forward tcp:27042 tcp:27042 || true
+          adb -s localhost:5555 forward --list || true
+          for i in 1 2 3; do
+            echo "--- frida-ps try $i ---"
+            frida-ps -H 127.0.0.1:27042 2>&1 | head -8 && break
+            sleep 5
+          done
 
       - name: 启动 App + attach frida 抓 lk/mmr
         run: |
@@ -84,10 +101,10 @@ jobs:
           adb -s localhost:5555 shell "am start -a android.intent.action.VIEW -d 'QDReader://main'" 2>&1 | tail -2
           sleep 20
           adb -s localhost:5555 shell "uiautomator dump /sdcard/d.xml >/dev/null 2>&1; cat /sdcard/d.xml" 2>/dev/null | tr -d '\r' | sed 's/></>\n</g' | grep -oE 'text="[^"]+"' | head -10
-          mkdir -p cap
+          mkdir -p dl/cap
           python3 - <<'PY'
           import frida, sys, time, json, subprocess
-          dev = frida.get_device_manager().add_remote_device('localhost:5555')
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
           # 找 App 进程
           pid = None
           for i in range(20):
@@ -107,7 +124,7 @@ jobs:
                   msgs.append(line); print('[JS]', line[:300], flush=True)
               else:
                   print('[ERR]', str(m)[:200], flush=True)
-          script = sess.create_script(open('hook.js').read())
+          script = sess.create_script(open('dl/hook.js').read())
           script.on('message', on_msg)
           script.load()
           print('[PY] script loaded OK', flush=True)
@@ -115,7 +132,7 @@ jobs:
           for i in range(48):
               time.sleep(5)
               if i % 6 == 0: print(f'[PY] alive t+{i*5}s  msgs={len(msgs)}', flush=True)
-          open('cap/capture.txt', 'w').write('\n'.join(msgs))
+          open('dl/cap/capture.txt', 'w').write('\n'.join(msgs))
           print(f'[PY] 完成 共 {len(msgs)} 条', flush=True)
           PY
           echo "=== 关键行 ==="
