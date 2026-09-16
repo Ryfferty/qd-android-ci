@@ -116,7 +116,11 @@ jobs:
           adb -s $B shell "ls -l /data/local/tmp/hook.js || echo HOOK_MISSING"
           echo "=== attach frida ==="
           ( sleep 25; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" 2>&1 | tail -1 ) &
-          timeout ${PER:-300} frida -H 127.0.0.1:27042 -p "$PID" -l /data/local/tmp/hook.js -q 2>&1 | tee /tmp/frida_out.txt | head -200
+          LOCALHOOK="$HOOK"
+          [ -f "$LOCALHOOK" ] || LOCALHOOK="./$HOOK"
+          [ -f "$LOCALHOOK" ] || LOCALHOOK="/home/runner/work/qd-android-ci/qd-android-ci/$HOOK"
+          echo "frida 本地脚本路径: $LOCALHOOK"
+          timeout ${PER:-300} frida -H 127.0.0.1:27042 -p "$PID" -l "$LOCALHOOK" -q 2>&1 | tee /tmp/frida_out.txt | head -200
           echo
           echo "=== 关键行 ==="
           grep -E '★★★★|明文|正文|status|方法数|params keys|① |② |③ |====' /tmp/frida_out.txt | head -70
