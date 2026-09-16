@@ -107,9 +107,25 @@ Java.perform(function () {
       if (fIt) { try { var b = bytes(u); W('  Fock.it ret=' + fIt.invoke(null, b, b.length)); } catch (e) { W('  Fock.it: ' + String(e).slice(0, 110)); } }
       if (fUrk) { try { W('  Fock.urk()=' + fUrk.invoke(null)); } catch (e) { } }
       if (fAv) { try { W('  Fock.av()=[' + fAv.invoke(null) + ']'); } catch (e) { } }
-      // 3) 装密钥池
-      if (fAddKeypool) { try { fAddKeypool.invoke(null, keyA, ver); W('  Fock.addKeypool OK'); } catch (e) { W('  addKeypool: ' + String(e).slice(0, 110)); } }
-      try { inst.add(keyA, ver); W('  FockUtil.add OK isHasKey=' + inst.isHasKey()); } catch (e) { W('  add: ' + String(e).slice(0, 110)); }
+      // 3) 装密钥池 —— 四种格式都试（关键是 encryptedKeys 可能是 {ver:key} 的 JSON map）
+      var addForms = [
+        ['裸Key', keyA],
+        ['JSON{ver:key}', '{"' + ver + '":"' + keyA + '"}'],
+        ['JSON{key:ver}', '{"' + keyA + '":"' + ver + '"}']
+      ];
+      for (var af = 0; af < addForms.length; af++) {
+        try {
+          inst.add(addForms[af][1], ver);
+          W('  add[' + addForms[af][0] + '] OK isHasKey=' + inst.isHasKey());
+        } catch (e) { W('  add[' + addForms[af][0] + ']: ' + String(e).slice(0, 110)); }
+        try {
+          var r0 = inst.unlock(blobB64, chId);
+          W('    → 立即试 unlock: ' + desc(r0));
+          var st = JSON.parse(desc(r0)).status;
+          if (String(st) === '0') { W('★★★★★★★ 成功！格式=' + addForms[af][0]); return; }
+        } catch (e) { W('    试 unlock 异常'); }
+      }
+      if (fAddKeypool) { try { fAddKeypool.invoke(null, keyA, ver); W('  Fock.addKeypool(裸Key) OK'); } catch (e) { W('  addKeypool: ' + String(e).slice(0, 110)); } }
       // 4) 解密
       if (blobB64) {
         try {
