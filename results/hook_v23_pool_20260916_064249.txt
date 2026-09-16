@@ -1,0 +1,21 @@
+{"m": "=== v23 pool 解锁 ===", "ver": "11"}
+{"m": "✓ FockUtil / Fock"}
+{"m": "✓ 全部方法已挂"}
+{"m": "v23 等待 go"}
+{"m": "=== v23 装载完毕 ==="}
+{"m": "v23 setImmediate"}
+{"m": "--- v23 主流程 ---"}
+{"m": "params.json 内容: 无"}
+{"m": "pool len=0 qimei="}
+{"m": "Context=OK"}
+{"m": "✗ 无实例，无法注入 pool"}
+{"m": "② 密文 len=12528"}
+{"m": "★★★ uk(full,borgus) 调用", "ret": "com.yuewen.fock.Fock$FockResult@7dab592"}
+{"m": "★★ uk/full/borgus status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk(full,empty) 调用", "ret": "com.yuewen.fock.Fock$FockResult@c5dfb63"}
+{"m": "★★ uk/full/empty status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk(payload,borgus) 调用", "ret": "com.yuewen.fock.Fock$FockResult@82e6360"}
+{"m": "★★ uk/payload/borgus status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk(payload,empty) 调用", "ret": "com.yuewen.fock.Fock$FockResult@a47c019"}
+{"m": "★★ uk/payload/empty status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "--- v23 结束 ---"}
