@@ -55,29 +55,22 @@ jobs:
           adb -s $B forward tcp:27042 tcp:27042
           frida-ps -H 127.0.0.1:27042 2>&1 | head -3
 
-      - name: Reach login page (consent)
+      - name: Reach login page (write consent file, no tapping)
         run: |
           set +e
           B=localhost:5555
+          bash write_consent.sh
+          echo "--- 启动 App（应直接跳过隐私弹窗）---"
           adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -1
-          sleep 25
-          # 同意只点一次，点完就用 Activity 判断，绝不重复点
-          adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
-          adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
-          if grep -q '同意并继续' /tmp/u.xml; then
-            XY=$(python3 tap_consent.py /tmp/u.xml)
-            echo "  点同意一次 [$XY]"
-            [ -n "$XY" ] && adb -s $B shell "input tap $XY"
-            sleep 15
-          else
-            echo "  无同意弹窗"
-          fi
-          echo "  点击后:"
+          sleep 30
           adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
           echo "  pid=[$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')]"
-          sleep 12
-          adb -s $B shell "dumpsys activity activities 2>/dev/null | grep mResumedActivity | head -1"
-          echo "存活检查 pid=[$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')]"
+          echo "--- 当前界面 ---"
+          adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+          python3 doit.py text /tmp/u.xml
+          echo "--- 是否还有同意弹窗 ---"
+          grep -c '同意并继续' /tmp/u.xml || true
           exit 0
 
       - name: Inject QQ cookies (keep session alive, no restart)
