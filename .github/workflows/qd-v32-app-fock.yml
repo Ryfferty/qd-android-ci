@@ -148,6 +148,19 @@ jobs:
           [ -z "$PID" ] && { echo APP_NOT_RUNNING; exit 0; }
           echo "--- 段1: 注入 cookie + init + requestKey ---"
           ( sleep 25; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1040025277/794290414" 2>&1 | tail -1 ) &
+          timeout 100 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v16_inject_session.js -q > /tmp/inj.txt 2>&1 || echo "inj exit $?"
+          grep -E "CookieManager|载入 sess|NONEMPTY" /tmp/inj.txt | head -6
+          echo "--- force-stop + 重启（让登录态生效）---"
+          adb -s $B shell "am force-stop com.qidian.QDReader"
+          sleep 5
+          for k in 1 2 3 4 5; do
+            adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
+            sleep 12
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d "\r")
+            [ -n "$PID" ] && { echo "  重启后 PID=[$PID]"; break; }
+          done
+          echo "--- 段1b: 观测 App 自身流程（hook v43）---"
+          ( sleep 20; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1040025277/794290414" 2>&1 | tail -1 ) &
           timeout 120 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v43_net.js -q > /tmp/a.txt 2>&1 || echo "a exit $?"
           cat /tmp/a.txt | head -30
           echo "--- 等 30 秒让 App 完成密钥池请求 ---"
@@ -156,7 +169,8 @@ jobs:
           echo "段2 PID=[$PID2]"
           [ -z "$PID2" ] && { echo APP_DIED_AFTER_A; exit 0; }
           echo "--- 段2: add + unlock ---"
-          timeout 150 frida -H 127.0.0.1:27042 -p "$PID2" -l hook_v41a.js -q > /tmp/b.txt 2>&1 || echo "b exit $?"
+          ( sleep 20; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1040025277/794290414" 2>&1 | tail -1; sleep 8; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1040025277/794290708" 2>&1 | tail -1 ) &
+          timeout 150 frida -H 127.0.0.1:27042 -p "$PID2" -l hook_v43_net.js -q > /tmp/b.txt 2>&1 || echo "b exit $?"
           cat /tmp/b.txt | head -60
           echo
           echo "########## v41b 结果文件 ##########"
