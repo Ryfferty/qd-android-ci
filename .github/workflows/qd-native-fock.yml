@@ -31,7 +31,8 @@ jobs:
           sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb python3-pip curl xz-utils unzip || echo APT_PARTIAL
           sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
           ls -la /dev/binder* 2>/dev/null || echo "no binder dev"
-          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+          python3 -c "from Crypto.Cipher import DES3; print('pycryptodome OK')" || pip install -q pycryptodome
           java -version 2>&1 | head -2
           javac -version 2>&1 | head -1
 
@@ -186,7 +187,11 @@ jobs:
           (cd hz && javac -source 8 -target 8 -nowarn com/fock/Harness.java 2>&1 | head -10)
           find hz -name '*.class' | head
           echo "--- d8 ---"
-          java -cp r8.jar com.android.tools.r8.D8 --min-api 29 --output outdex $(find hz -name '*.class') 2>&1 | head -15
+          mkdir -p outdex
+          echo "class 文件数: $(find hz -name '*.class' | wc -l)"
+          find hz -name '*.class' | head -3
+          java -cp r8.jar com.android.tools.r8.D8 --min-api 29 --output outdex/ $(find hz -name '*.class' | tr '\n' ' ') 2>&1 | head -20
+          ls -la outdex/ 2>/dev/null
           ls -la outdex/ 2>/dev/null
 
       - name: ④ push 组件进设备 + 运行
