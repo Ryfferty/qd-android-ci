@@ -150,17 +150,40 @@ jobs:
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
             H="$H" SEC="${{ inputs.per_hook_sec }}" python3 - <<'PY'
-          import frida, time, json, os, sys
+          import frida, time, json, os, sys, subprocess
           hname = os.environ['H']; secs = int(os.environ.get('SEC','180'))
           dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
+          # ★ 用 adb pidof 拿 pid（frida 的 p.name 是应用显示名如「起点读书」，不是包名，
+          #   所以按包名过滤 enumerate_processes() 恒为 None）
           pid = None
-          for i in range(10):
-              for p in dev.enumerate_processes():
-                  if 'qidian' in p.name.lower(): pid = p.pid; break
+          for attempt in range(15):
+              try:
+                  o = subprocess.check_output(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'],
+                                              stderr=subprocess.DEVNULL, timeout=15).decode().strip()
+                  if o:
+                      pid = int(o.split()[0]); print(f'[{hname}] adb pidof -> {pid}', flush=True); break
+              except Exception as e:
+                  pass
+              # 兜底：遍历 frida 进程表，按 应用名/包名 双向匹配
+              try:
+                  for p in dev.enumerate_processes():
+                      nm = (p.name or '').lower()
+                      if 'qidian' in nm or 'qdreader' in nm or '起点' in (p.name or ''):
+                          pid = p.pid; print(f'[{hname}] frida enum -> {p.name} {pid}', flush=True); break
+              except Exception as e:
+                  print(f'[{hname}] enum err {e}', flush=True)
               if pid: break
               time.sleep(3)
           print(f'[{hname}] pid={pid}', flush=True)
           if not pid:
+              # 打印设备进程表帮助诊断
+              try:
+                  print('--- 设备进程(前40) ---', flush=True)
+                  print(subprocess.check_output(['adb','-s','localhost:5555','shell','ps -A -o PID,NAME'],
+                        timeout=15).decode()[:2000], flush=True)
+                  print('--- frida 进程表(前40) ---', flush=True)
+                  print([str(p) for p in dev.enumerate_processes()][:40], flush=True)
+              except Exception as e: print('diag err', e, flush=True)
               open(f'out/{hname}.txt','w').write('APP_NOT_RUNNING'); sys.exit(0)
           sess = dev.attach(pid); msgs = []
           def on_msg(m, d):
