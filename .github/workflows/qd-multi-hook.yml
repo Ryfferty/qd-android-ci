@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       apk_url:
-        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk'
       per_hook_sec:
         description: 每套 hook 观察秒数
         default: '180'
