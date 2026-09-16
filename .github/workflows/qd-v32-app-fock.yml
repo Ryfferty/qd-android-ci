@@ -87,6 +87,37 @@ jobs:
           adb -s localhost:5555 push /tmp/params.json /data/local/tmp/params.json
           adb -s localhost:5555 shell chmod 644 /data/local/tmp/params.json
 
+      - name: Dump MMKV (App 真实密钥池格式)
+        if: always()
+        run: |
+          set +e
+          B=localhost:5555
+          echo "=== MMKV 目录 ==="
+          adb -s $B shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/ 2>/dev/null"
+          echo "=== pref_utils 内容分析 ==="
+          adb -s $B shell "su 0 cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null || cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" > /tmp/pref_utils.bin
+          ls -la /tmp/pref_utils.bin
+          python3 - <<'PY2'
+import re
+try:
+    d = open('/tmp/pref_utils.bin','rb').read()
+except Exception as e:
+    print('读取失败', e); raise SystemExit
+print('大小', len(d))
+i = d.find(b'pref_fock_key')
+print('pref_fock_key 偏移 =', i)
+if i >= 0:
+    seg = d[i:i+600]
+    print('--- 可打印片段 ---')
+    for m in re.finditer(rb'[\x20-\x7e]{6,}', seg):
+        print('  @%d: %s' % (m.start(), m.group().decode('ascii','replace')[:300]))
+    print('--- 原始 hex 前 192B ---')
+    print(' ', seg[:192].hex())
+print('--- 全文里的 JSON 片段 ---')
+for m in re.finditer(rb'\{[^{}]{0,300}\}', d):
+    print('  JSON@%d: %s' % (m.start(), m.group().decode('utf-8','replace')[:300]))
+PY2
+
       - name: Inject hook into App process
         env:
           PER: ${{ inputs.per_hook_sec }}
