@@ -1,0 +1,129 @@
+name: qd-decrypt-v46
+
+# 按 App 反编译代码复现：e.L() 取 userKey → init → save → add → unlock
+on:
+  workflow_dispatch:
+    inputs:
+      acct:
+        default: '900069660351'
+      book_id:
+        default: '1049120379'
+      chapter_id:
+        default: '903350205'
+
+jobs:
+  v46:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install APK + frida
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz && mv fs fs-server && chmod +x fs-server
+          adb -s $B push fs-server /data/local/tmp/frida-server
+          adb -s $B shell chmod 755 /data/local/tmp/frida-server
+          adb -s $B shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
+          sleep 6
+          adb -s $B forward tcp:27042 tcp:27042
+          frida-ps -H 127.0.0.1:27042 2>&1 | head -3
+          exit 0
+
+      - name: argus params (protocol side)
+        env:
+          S_A: ${{ secrets.QD_SESS_3264757074 }}
+          S_B: ${{ secrets.QD_SESS_2719559418 }}
+          S_C: ${{ secrets.QD_SESS_900069660351 }}
+          ACCT: ${{ inputs.acct }}
+        run: |
+          set +e
+          case "$ACCT" in
+            3264757074) printf '%s' "$S_A" > /tmp/sess.json ;;
+            2719559418) printf '%s' "$S_B" > /tmp/sess.json ;;
+            *) printf '%s' "$S_C" > /tmp/sess.json ;;
+          esac
+          SESS=/tmp/sess.json BOOK="${{ inputs.book_id }}" CID="${{ inputs.chapter_id }}" python3 argus_fetch.py
+          python3 merge_params.py "${{ inputs.book_id }}" "${{ inputs.chapter_id }}"
+          adb -s localhost:5555 push /tmp/params.json /data/local/tmp/params.json
+          adb -s localhost:5555 shell chmod 644 /data/local/tmp/params.json
+          exit 0
+
+      - name: Write consent + stable launch
+        run: |
+          set +e
+          B=localhost:5555
+          bash write_consent.sh
+          chmod +x launch_stable.sh
+          bash launch_stable.sh com.qidian.QDReader com.qidian.QDReader/.ui.activity.SplashActivity GuidanceActivity 12
+          echo "--- 当前界面 ---"
+          adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+          adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+          python3 doit.py text /tmp/u.xml
+          exit 0
+
+      - name: Run v46 (按 App 代码复现)
+        run: |
+          set +e
+          B=localhost:5555
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=[$PID]"
+          [ -z "$PID" ] && { echo APP_NOT_RUNNING; exit 0; }
+          timeout 150 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v46_qimei.js -q > /tmp/v46.txt 2>&1 || echo "v46 exit $?"
+          cat /tmp/v46.txt | head -60
+          echo
+          echo "########## 结果文件 ##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v46_result.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v46_result.txt /tmp/v46_result.txt 2>&1 | tail -1
+          cat /tmp/v46_result.txt 2>/dev/null | head -80
+          echo
+          echo "########## 明文 ##########"
+          adb -s $B shell "cp /data/data/com.qidian.QDReader/files/v46_plaintext.txt /data/local/tmp/ 2>/dev/null" || true
+          adb -s $B pull /data/local/tmp/v46_plaintext.txt /tmp/v46_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v46_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v46_plaintext.txt 2>/dev/null
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v46
+          path: |
+            /tmp/v46.txt
+            /tmp/v46_result.txt
+            /tmp/params.json
+          if-no-files-found: warn
