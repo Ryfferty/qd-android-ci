@@ -1,0 +1,4 @@
+{"m": "=== v24 WebView 取正文 ===", "ver": "11"}
+{"m": "✓ WebView 构造器 hooked"}
+{"m": "✓ loadUrl/loadData hooked"}
+{"m": "=== v24 装载完毕 ==="}

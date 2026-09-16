@@ -1,0 +1,24 @@
+{"m": "=== v23 pool 解锁 ===", "ver": "11"}
+{"m": "✓ FockUtil / Fock"}
+{"m": "✓ 全部方法已挂"}
+{"m": "v23 用 setImmediate 立即执行"}
+{"m": "=== v23 装载完毕 ==="}
+{"m": "--- v23 主流程 ---"}
+{"m": "params.json 内容: {\"pool_b64\": \"B0CzCe57OvuhREeDBtZB+80sA2k7KGyErupAaGC038wUQn5+6dr32Es7K7OFrVDNX85qhMM+xT9J3abjhXoHXCCoLf26EEQGGdMVMRT5M+xkTflPWBfDu3/15/g/Cg4q\"}"}
+{"m": "pool len=128 qimei="}
+{"m": "Context=OK"}
+{"m": "✗ 无实例，无法注入 pool"}
+{"m": "② 密文 len=12528"}
+{"m": "★★★ uk(full,pool_b64) 调用", "ret": "com.yuewen.fock.Fock$FockResult@6c46d36"}
+{"m": "★★ uk/full/pool_b64 status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk(full,borgus) 调用", "ret": "com.yuewen.fock.Fock$FockResult@8ad2437"}
+{"m": "★★ uk/full/borgus status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk(full,empty) 调用", "ret": "com.yuewen.fock.Fock$FockResult@c4b5da4"}
+{"m": "★★ uk/full/empty status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk(payload,pool_b64) 调用", "ret": "com.yuewen.fock.Fock$FockResult@377070d"}
+{"m": "★★ uk/payload/pool_b64 status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk(payload,borgus) 调用", "ret": "com.yuewen.fock.Fock$FockResult@ee226c2"}
+{"m": "★★ uk/payload/borgus status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "★★★ uk(payload,empty) 调用", "ret": "com.yuewen.fock.Fock$FockResult@a25ccd3"}
+{"m": "★★ uk/payload/empty status=-2", "fields": {"data": {"hex": "", "utf8": null}, "status": "-2", "STATUS_BAD_DATA": "-1", "STATUS_EMPTY_USER_KEY": "-3", "STATUS_MISSING_KEY_POOL": "-2", "STATUS_SUCCESS": "0"}}
+{"m": "--- v23 结束 ---"}
