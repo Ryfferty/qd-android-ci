@@ -1,0 +1,14 @@
+{"m": "=== v22 HTTP 抓密钥 ===", "ver": "11"}
+{"m": "✓ OkHttpClient.newCall"}
+{"m": "✓ BridgeInterceptor"}
+{"m": "✓ hooked requestKey"}
+{"m": "✓ hooked init"}
+{"m": "✓ hooked loadLocalKey"}
+{"m": "✓ hooked getKeyMap"}
+{"m": "✓ hooked save"}
+{"m": "✓ hooked add"}
+{"m": "✓ hooked getKey"}
+{"m": "✓ hooked isHasKey"}
+{"m": "✓ hooked $init"}
+{"m": "v22 等待 go"}
+{"m": "=== v22 装载完毕 ==="}
