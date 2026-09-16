@@ -9,7 +9,7 @@ on:
       per_hook_sec:
         default: '300'
       hook:
-        default: 'hook_v33_capture.js'
+        default: 'hook_v34_final.js'
 
 permissions:
   contents: write
@@ -124,6 +124,15 @@ jobs:
           echo
           echo "=== 关键行 ==="
           grep -E '★★★★|明文|正文|status|方法数|params keys|① |② |③ |====' /tmp/frida_out.txt | head -70
+          echo
+          echo "########## 设备端结果文件（不受管道截断）##########"
+          adb -s $B pull /data/local/tmp/v34_result.txt /tmp/v34_result.txt 2>&1 | tail -1
+          cat /tmp/v34_result.txt 2>/dev/null | head -80 || echo "(无结果文件)"
+          echo
+          echo "########## 明文文件 ##########"
+          adb -s $B pull /data/local/tmp/v34_plaintext.txt /tmp/v34_plaintext.txt 2>&1 | tail -1
+          wc -c /tmp/v34_plaintext.txt 2>/dev/null
+          head -c 2000 /tmp/v34_plaintext.txt 2>/dev/null
 
       - name: Collect app logs
         if: always()
