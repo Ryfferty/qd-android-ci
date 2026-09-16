@@ -94,7 +94,9 @@ jobs:
           done
           mkdir -p hz/com/fock hz/com/stub
           cp ../Harness3.java hz/com/fock/Harness3.java
-          cp ../stub/com/stub/StubApp.java hz/com/stub/StubApp.java
+          cp ../stub_com_stub_StubApp.java hz/com/stub/StubApp.java 2>/dev/null || \
+            cp ../stub/com/stub/StubApp.java hz/com/stub/StubApp.java
+          ls -la hz/com/stub/ hz/com/fock/
           (cd hz && javac -nowarn com/fock/Harness3.java com/stub/StubApp.java 2>&1 | head -10)
           echo "class 文件: $(find hz -name '*.class' | wc -l)"
           find hz -name '*.class' | head -5
