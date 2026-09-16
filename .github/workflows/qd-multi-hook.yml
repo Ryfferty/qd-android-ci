@@ -202,7 +202,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          for H in hook_v22_http hook_v21_diagnose hook_v16_inject_session; do
+          for H in hook_v23_pool hook_v22_http hook_v16_inject_session; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
@@ -363,10 +363,10 @@ jobs:
 
           # ★ 发深链（触发正文解密）—— 多格式，含 App Links 的 http 形式
           DLS = [
-              'QDReader://OpenBook/1049120379/903350205',
-              'qdreader://openbook/1049120379/903350205',
-              'https://m.qidian.com/chapter/1049120379/903350205/',
-              'https://www.qidian.com/chapter/1049120379/903350205/',
+              'QDReader://OpenBook/1040025277/794290252',   # VIP 章（逼 App 取 key pool + 写 MMKV）
+              'QDReader://OpenBook/1040025277/794290414',
+              'QDReader://OpenBook/1040025277/790923799',
+              'QDReader://OpenBook/1049120379/903350205',   # 免费章对照
           ]
           for dl in DLS:
               before = sh(['adb','-s','localhost:5555','shell','pidof','com.qidian.QDReader'], 20)
@@ -389,6 +389,56 @@ jobs:
                   for line in mn.splitlines()[-60:]:
                       if 'qidian' in line.lower() or 'FATAL' in line or 'DEBUG' in line:
                           print(f'[{hname}]   LOG| {line.strip()[:170]}', flush=True)
+              # ★★★ 从设备读 MMKV(pref_fock_key) + beacon DB，抽 pool_b64 / qimei36
+              try:
+                  MMKV = '/data/data/com.qidian.QDReader/files/mmkv/pref_utils'
+                  DB1 = '/data/data/com.qidian.QDReader/databases/beacon_db_com.qidian.QDReader'
+                  print(f'[{hname}] --- 提取 pool/qimei ---', flush=True)
+                  lsm = sh(['adb','-s','localhost:5555','shell','ls','-l','/data/data/com.qidian.QDReader/files/mmkv/'], 30)
+                  print(f'[{hname}]   mmkv 目录: {lsm[:300]}', flush=True)
+                  sh(['adb','-s','localhost:5555','shell',f'su 0 cp {MMKV} /sdcard/pref_utils 2>/dev/null || cp {MMKV} /sdcard/pref_utils'], 40)
+                  r1 = subprocess.run(['adb','-s','localhost:5555','pull','/sdcard/pref_utils','/tmp/pref_utils'],
+                                      capture_output=True, text=True, timeout=60)
+                  print(f'[{hname}]   pull MMKV: {(r1.stdout or r1.stderr or "").strip()[:120]}', flush=True)
+                  sh(['adb','-s','localhost:5555','shell',f'su 0 cp {DB1} /sdcard/beacon_db 2>/dev/null || cp {DB1} /sdcard/beacon_db'], 40)
+                  r2 = subprocess.run(['adb','-s','localhost:5555','pull','/sdcard/beacon_db','/tmp/beacon_db'],
+                                      capture_output=True, text=True, timeout=60)
+                  print(f'[{hname}]   pull beacon: {(r2.stdout or r2.stderr or "").strip()[:120]}', flush=True)
+
+                  import re as _re, json as _json, os as _os
+                  params = {}
+                  try:
+                      if _os.path.exists('/tmp/pref_utils'):
+                          d = open('/tmp/pref_utils','rb').read()
+                          i = d.find(b'pref_fock_key')
+                          print(f'[{hname}]   pref_utils={len(d)}B  pref_fock_key idx={i}', flush=True)
+                          if i >= 0:
+                              m = _re.search(rb'[A-Za-z0-9+/]{100,}={0,2}', d[i:])
+                              if m:
+                                  params['pool_b64'] = m.group().decode('ascii','replace')
+                                  print(f'[{hname}]   ★ POOL len={len(params["pool_b64"])} head={params["pool_b64"][:60]}', flush=True)
+                  except Exception as e:
+                      print(f'[{hname}]   mmkv 解析失败 {e}', flush=True)
+                  try:
+                      if _os.path.exists('/tmp/beacon_db'):
+                          b = open('/tmp/beacon_db','rb').read()
+                          for mm in _re.finditer(b'qimei36', b):
+                              if mm.end()+3 <= len(b) and b[mm.end()] == 0x74:
+                                  ln = (b[mm.end()+1] << 8) | b[mm.end()+2]
+                                  if ln == 36:
+                                      v = b[mm.end()+3:mm.end()+3+36].decode('ascii','replace')
+                                      if all(c in '0123456789abcdef' for c in v):
+                                          params['qimei36'] = v
+                                          print(f'[{hname}]   ★ QIMEI36={v}', flush=True)
+                                          break
+                  except Exception as e:
+                      print(f'[{hname}]   beacon 解析失败 {e}', flush=True)
+                  open('/tmp/params.json','w').write(_json.dumps(params))
+                  print(f'[{hname}]   params keys={list(params.keys())}', flush=True)
+                  sh(['adb','-s','localhost:5555','push','/tmp/params.json','/data/local/tmp/params.json'], 40)
+              except Exception as e:
+                  print(f'[{hname}] pool 提取整体失败 {e}', flush=True)
+
               # ★ 触发 v15 类脚本的主动解密（recv 驱动）
               try:
                   _act = sc2 if sc2 is not None else sc
