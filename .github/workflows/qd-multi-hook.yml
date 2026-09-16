@@ -168,7 +168,7 @@ jobs:
           adb -s localhost:5555 shell "uiautomator dump /sdcard/g.xml >/dev/null 2>&1"
           adb -s localhost:5555 shell "cat /sdcard/g.xml" 2>/dev/null | tr -d '\r' > /tmp/g.xml
           echo "--- 可点节点 ---"
-          cat /tmp/g.xml | sed 's/></>\n</g' | grep -oE '(text|content-desc)="[^"]+"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -25
+          cat /tmp/g.xml | sed 's/></>\n</g' | grep -oE '(text|content-desc)="[^"]+"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' 
           for W in 跳过 随便看看 暂不登录 以后再说 我知道了 暂不 关闭 取消; do
             L=$(cat /tmp/g.xml | sed 's/></>\n</g' | grep -E "text=\"$W\"|content-desc=\"$W\"" | grep -oE 'bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' | head -1)
             if [ -n "$L" ]; then
@@ -193,7 +193,7 @@ jobs:
         run: |
           set +e
           mkdir -p out
-          for H in hook_v14_unlock_invoke hook_v13_fockutil hook_v12_precise; do
+          for H in hook_v15_direct_decrypt hook_v14_unlock_invoke hook_v13_fockutil; do
             echo "########## 挂载 $H ##########"
             curl -sSL -o "out/$H.js" "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/$H.js"
             [ -s "out/$H.js" ] || { echo "下载失败 $H"; continue; }
