@@ -1,0 +1,95 @@
+name: qd-464-install
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps + redroid
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -2
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 40); do adb connect localhost:5555 >/dev/null 2>&1; S=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          adb -s localhost:5555 shell "echo BOOT_OK; getprop ro.product.cpu.abi"
+          exit 0
+
+      - name: 装 464（设备侧 pm install，抓真实报错）
+        run: |
+          set +e
+          B=localhost:5555
+          echo "=== 下载 464 ==="
+          curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464_slim.apk" || \
+          curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          ls -la q464.apk; file q464.apk | head -1
+          echo "=== 先删旧的 ==="
+          adb -s $B uninstall com.qidian.QDReader 2>&1 | tail -1
+          echo "=== 推到设备侧安装（避开 streaming 限制）==="
+          adb -s $B push q464.apk /data/local/tmp/q464.apk 2>&1 | tail -1
+          adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -6
+          echo "=== 结果核对 ==="
+          adb -s $B shell "pm path com.qidian.QDReader" 2>&1 | tail -2
+          adb -s $B shell "dumpsys package com.qidian.QDReader | grep -E 'versionName|primaryCpuAbi'" 2>&1 | head -3
+          echo "=== APK 里的 fock 库 ==="
+          adb -s $B shell "run-as com.qidian.QDReader ls -la lib/ 2>/dev/null" 2>&1 | head -5
+          adb -s $B shell "ls -la \$(pm path com.qidian.QDReader | sed 's/package://' | xargs dirname)/lib/arm64/ 2>/dev/null | grep -iE 'fock|nib|knobs'" 2>&1 | head -6
+          exit 0
+
+      - name: 若装上 → 跑 FockUtil 看 getKey 是否不再 borgus
+        run: |
+          set +e
+          B=localhost:5555
+          P=$(adb -s $B shell "pm path com.qidian.QDReader" | tr -d '\r')
+          [ -z "$P" ] && { echo "SKIP: 没装上"; exit 0; }
+          echo "已安装: $P"
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          gunzip -f fs.xz 2>/dev/null || unxz -f fs.xz 2>/dev/null
+          mv -f fs fs-server 2>/dev/null; chmod +x fs-server
+          adb -s $B push fs-server /data/local/tmp/frida-server >/dev/null 2>&1
+          adb -s $B shell chmod 755 /data/local/tmp/frida-server
+          adb -s $B shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+          adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
+          sleep 30
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=[$PID]"
+          [ -z "$PID" ] && { echo "NO_APP"; exit 0; }
+          cat > /tmp/probe.js <<'JS'
+          Java.perform(function(){
+            function S(o){try{send(o);}catch(e){}}
+            try{
+              var FU=Java.use('com.qidian.QDReader.component.util.FockUtil');
+              var inst=FU.INSTANCE.value;
+              S({m:'getKey='+String(inst.getKey()).slice(0,60)});
+              S({m:'isHasKey='+inst.isHasKey()});
+              var ms=FU.class.getDeclaredMethods(), names=[];
+              for(var i=0;i<ms.length;i++) names.push(String(ms[i].getName()));
+              S({m:'方法数='+names.length+' 是否有 addKeypool='+(names.indexOf('addKeypool')>=0)});
+            }catch(e){ S({m:'异常 '+String(e).slice(0,180)}); }
+          });
+          JS
+          timeout 60 frida -H 127.0.0.1:27042 -p "$PID" -l /tmp/probe.js -q 2>&1 | grep -E "getKey|isHasKey|方法数|异常" | head -6
+          exit 0
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: q464
+          path: q464.apk
+          if-no-files-found: warn
