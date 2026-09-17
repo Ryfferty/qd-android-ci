@@ -12,7 +12,11 @@ YW = S.get('ywguid') or '0'
 COOKIE = '; '.join('%s=%s' % (k, v) for k, v in S.items())
 APPVER, VC, ASRC = '7.9.472', '1956', '1000009'
 HOST = 'https://bravev6.if.qidian.com'
-IMEI, Q = '5a271be5da434be', 'b3b295be58644158'
+# ★ 设备身份：优先用环境变量（= 模拟器里 App 的真实身份），保证密文与 App 的密钥同源
+IMEI  = os.environ.get('DEV_IMEI')       or '5a271be5da434be'
+Q     = os.environ.get('DEV_ANDROID_ID') or 'b3b295be58644158'
+MODEL = os.environ.get('DEV_MODEL')      or 'V2329A'
+print('设备身份 DEV: IMEI=%s Q=%s MODEL=%s' % (IMEI, Q, MODEL))
 
 
 def enc(d, k, iv):
@@ -25,7 +29,7 @@ B64 = lambda b: base64.b64encode(b).decode()
 
 def qdinfo(u='0'):
     ts = str(int(time.time() * 1000))
-    f = [IMEI, APPVER, '720', '1184', ASRC, '14', '1', 'V2329A', VC, ASRC, '4', u, ts, '1', Q, '', '', '', '0']
+    f = [IMEI, APPVER, '720', '1184', ASRC, '14', '1', MODEL, VC, ASRC, '4', u, ts, '1', Q, '', '', '', '0']
     k = b'0821CAAD409B8402'
     return B64(enc('|'.join(f).encode(), k + k[:8], b'\x00' * 8))
 
@@ -101,7 +105,7 @@ raw = aget('/argus/api/v2/bookcontent/safegetcontent', {'bookId': BOOK, 'chapter
 if raw and not raw.startswith(b'{'):
     out['blob_b64'] = base64.b64encode(raw).decode()
 
-out.setdefault('qimei16', 'b3b295be58644158')
+out.setdefault('qimei16', Q)
 out['ywguid'] = YW
 out['ywkey'] = S.get('ywkey') or ''
 out['ywopenid'] = S.get('ywopenid') or ''
