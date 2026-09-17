@@ -71,9 +71,25 @@ jobs:
           echo "身份: Q=[$DEV_Q16] AID=[$DEV_ANDROID_ID] DEVID=[$DEV_DEVICEID]"
           mkdir -p /tmp/sess
           echo "${{ secrets.QD_SESS_900069660351 }}" | base64 -d > /tmp/sess/s.json 2>/dev/null
-          SESS=/tmp/sess/s.json BOOK=1049120379 CID=903350205 timeout 120 python3 argus_final.py 2>&1 | tail -8
-          python3 check_key.py 2>/dev/null
-          cp /tmp/params.json /tmp/params_dev.json 2>/dev/null
+          echo "########## 结构 A: legacy (19 字段) ##########"
+          DEV_QDINFO_MODE=legacy SESS=/tmp/sess/s.json BOOK=1049120379 CID=903350205 timeout 120 python3 argus_final.py 2>&1 | tail -4
+          cp /tmp/params.json /tmp/params_legacy.json 2>/dev/null
+          echo
+          echo "########## 结构 B: app (15 字段) ##########"
+          sleep 3
+          DEV_QDINFO_MODE=app SESS=/tmp/sess/s.json BOOK=1049120379 CID=903350205 timeout 120 python3 argus_final.py 2>&1 | tail -4
+          cp /tmp/params.json /tmp/params_app.json 2>/dev/null
+          cp /tmp/params_app.json /tmp/params_dev.json 2>/dev/null
+          echo
+          echo "=== 两份密文是否相同（相同=结构不影响绑定）==="
+          python3 - <<'PY2'
+import json
+a=json.load(open('/tmp/params_legacy.json')); b=json.load(open('/tmp/params_app.json'))
+print('  legacy blob head:', (a.get('blob_b64') or '')[:48])
+print('  app    blob head:', (b.get('blob_b64') or '')[:48])
+print('  相同?', (a.get('blob_b64') or '')[:64]==(b.get('blob_b64') or '')[:64])
+print('  Key 相同?', a.get('Key')==b.get('Key'))
+PY2
           echo "DEVID=$DEV_DEVICEID" > /tmp/devid.txt
           exit 0
 
@@ -84,5 +100,7 @@ jobs:
           name: dev
           path: |
             /tmp/params_dev.json
+            /tmp/params_legacy.json
+            /tmp/params_app.json
             /tmp/devid.txt
           if-no-files-found: warn
