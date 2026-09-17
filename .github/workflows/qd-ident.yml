@@ -123,12 +123,14 @@ jobs:
             echo "    PID=[$P]"
             [ -z "$P" ] && continue
             # 此时才起 frida-server（避免它先于 App 常驻导致自毁）
-            timeout 20 adb -s $B shell "pkill -f fsd 2>/dev/null; true"
-            timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
-            sleep 6
+            # ★ 只在 fsd 没在跑时才启动（重启它会触发壳的看门狗把 App 杀掉）
+            if ! timeout 10 adb -s $B shell "ps -A | grep -c fsd" | tr -d '\r' | grep -qv '^0'; then
+              timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+              sleep 6
+            fi
             timeout 20 adb -s $B forward tcp:27042 tcp:27042 >/dev/null 2>&1
             ( sleep 70 ) | timeout 130 frida -H 127.0.0.1:27042 -p "$P" -l stepO_real.js > /tmp/dec.txt 2>&1
-            if grep -q '=== N:' /tmp/dec.txt 2>/dev/null; then echo "    ✓ 拿到输出"; break; fi
+            if grep -q '=== O:' /tmp/dec.txt 2>/dev/null; then echo "    ✓ 拿到输出"; break; fi
             echo "    未拿到（$(head -c 80 /tmp/dec.txt | tr -d '\n')）"
             sleep 10
           done
