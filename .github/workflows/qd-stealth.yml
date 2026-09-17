@@ -69,9 +69,12 @@ jobs:
           else
             echo "✅ App 仍存活，开始 attach 探测 FockUtil"
             # 立刻重启 App（保证 frida 已在场，观察它能否活过自检）
-            ( sleep 60 ) | timeout 120 frida -H 127.0.0.1:27042 -p "$P" -l stepB_attach.js > /tmp/probe.txt 2>&1
+            SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 python3 argus_fetch.py > /dev/null 2>&1
+            cp /tmp/params.json /tmp/pj.json 2>/dev/null
+            timeout 60 adb -s $B push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
+            ( sleep 120 ) | timeout 200 frida -H 127.0.0.1:27042 -p "$P" -l stepE_464fock.js > /tmp/probe.txt 2>&1
             echo "--- 探针输出 ---"
-            grep -oE "\{'m': '[^']*'" /tmp/probe.txt | sed "s/^{'m': '//" | head -40
+            grep -oE "\{'m': '[^']*'" /tmp/probe.txt | sed "s/^{'m': '//" | head -70
             head -15 /tmp/probe.txt
           fi
           cp /tmp/probe.txt /tmp/logcat.txt 2>/dev/null
