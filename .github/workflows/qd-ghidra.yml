@@ -44,7 +44,7 @@ jobs:
           export TARGET_ADDRS="${{ inputs.addrs }}"
           echo "TARGET_ADDRS=$TARGET_ADDRS"
           timeout 2400 "$GH/support/analyzeHeadless" /tmp ghidraproj \
-            -import libfock.so -scriptPath "$PWD" -postScript ghidra_decomp.py \
+            -import libfock.so -scriptPath "$PWD" -postScript DecompFock.java \
             -deleteProject > /tmp/decomp_out.txt 2>&1
           echo "=== 行数: $(wc -l < /tmp/decomp_out.txt) ==="
           grep -nE '^###|^=====|undefined|void |int |char |long |memcpy|malloc' /tmp/decomp_out.txt | head -60
