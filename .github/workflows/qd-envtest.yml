@@ -1,0 +1,81 @@
+name: qd-envtest
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'r11 / r12 / r13'
+        default: 'r11'
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          exit 0
+
+      - name: 启 redroid（按 variant）+ 装 464 + 观测存活
+        run: |
+          set +e
+          B=localhost:5555
+          V="${{ inputs.variant }}"
+          case "$V" in
+            r12) IMG="redroid/redroid:12.0.0-latest" ;;
+            r13) IMG="redroid/redroid:13.0.0-latest" ;;
+            *)   IMG="redroid/redroid:11.0.0-latest" ;;
+          esac
+          echo "IMG=$IMG"
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            $IMG \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot_completed=[$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')]"
+          echo "=== 环境原貌（壳会看这些）==="
+          for k in ro.product.model ro.product.brand ro.product.manufacturer ro.product.name ro.build.fingerprint ro.build.tags ro.debuggable ro.secure ro.hardware ro.product.cpu.abi ro.serialno; do
+            echo "  $k = $(timeout 6 adb -s $B shell getprop $k | tr -d '\r')"
+          done
+          timeout 20 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 20 adb -s $B wait-for-device
+          echo "  有无 su: $(timeout 6 adb -s $B shell 'which su || echo none' | tr -d '\r')"
+          echo "SELinux: $(timeout 6 adb -s $B shell getenforce | tr -d '\r')"
+
+          echo "=== 装 464 ==="
+          curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+
+          echo "=== 启动并逐秒观测（抓死前全量 logcat）==="
+          timeout 10 adb -s $B logcat -c 2>/dev/null
+          nohup timeout 200 adb -s $B logcat -v time > /tmp/lc.txt 2>&1 &
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          for i in $(seq 1 12); do
+            sleep 5
+            P=$(timeout 6 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            echo "  t=$((i*5))s PID=[$P]"
+          done
+          echo "=== 该进程相关日志（从启动到结束）==="
+          grep -iE 'qidian' /tmp/lc.txt | head -60
+          echo
+          echo "=== 死前最后 40 行（含壳自检痕迹）==="
+          tail -40 /tmp/lc.txt
+          cp /tmp/lc.txt /tmp/logcat.txt
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: env-${{ inputs.variant }}
+          path: /tmp/lc.txt
+          if-no-files-found: warn
