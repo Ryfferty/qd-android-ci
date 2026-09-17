@@ -95,6 +95,50 @@ jobs:
           python3 doit.py text /tmp/u.xml
           exit 0
 
+      - name: ★ 注入登录态（cookie → sess.json → hook_v16 → 重启生效）
+        env:
+          S_A: ${{ secrets.QD_SESS_3264757074 }}
+          S_B: ${{ secrets.QD_SESS_2719559418 }}
+          S_C: ${{ secrets.QD_SESS_900069660351 }}
+        run: |
+          set +e
+          B=localhost:5555
+          ACCT="${{ inputs.acct }}"
+          case "$ACCT" in
+            3264757074) printf '%s' "$S_A" > /tmp/sess.json ;;
+            2719559418) printf '%s' "$S_B" > /tmp/sess.json ;;
+            *)          printf '%s' "$S_C" > /tmp/sess.json ;;
+          esac
+          echo "acct=$ACCT sess=$(stat -c%s /tmp/sess.json)B"
+          head -c 60 /tmp/sess.json; echo
+          adb -s $B push /tmp/sess.json /data/local/tmp/sess.json
+          adb -s $B shell chmod 644 /data/local/tmp/sess.json
+          adb -s $B shell "am force-stop com.qidian.QDReader" 2>/dev/null
+          sleep 4
+          adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
+          sleep 22
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "注入前 PID=[$PID]"
+          [ -z "$PID" ] && { echo NO_APP; exit 0; }
+          ( sleep 20; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1040025277/794290414" >/dev/null 2>&1 ) &
+          timeout 110 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v16_inject_session.js -q > /tmp/inj.txt 2>&1
+          echo "--- 注入结果 ---"
+          grep -E "載入|载入 sess|CookieManager|NONEMPTY|EMPTY|失败" /tmp/inj.txt | head -8
+          echo "--- force-stop + 重启（让登录态生效）---"
+          adb -s $B shell "am force-stop com.qidian.QDReader"
+          sleep 5
+          for k in 1 2 3 4 5; do
+            adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
+            sleep 12
+            P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            [ -n "$P" ] && break
+          done
+          echo "重启后 PID=[$P]"
+          adb -s $B shell "uiautomator dump /sdcard/u9.xml" >/dev/null 2>&1
+          adb -s $B pull /sdcard/u9.xml /tmp/u9.xml >/dev/null 2>&1
+          python3 doit.py text /tmp/u9.xml 2>/dev/null | head -12
+          exit 0
+
       - name: Crash-isolated steps (save/add/unlock)
         run: |
           set +e
@@ -121,15 +165,12 @@ jobs:
             echo "  步骤后 PID=[$P2]"
           }
 
-          # ★ v50：让 App 自己请求密钥（内部 getH→save→add）
-          run_step appreqkey
-          echo "  等 App 自己完成密钥请求（30 秒）..."
-          sleep 30
-          run_step afterkey
+          run_step saveformats
+          run_step saveformats
 
           echo
           echo "########## 明文 ##########"
-          for f in plain_preuser plain_save plain_keymap plain_add plain_unlock plain_saveformats plain_afterkey; do
+          for f in plain_preuser plain_save plain_keymap plain_add plain_unlock; do
             adb -s $B pull /data/local/tmp/$f.txt /tmp/$f.txt >/dev/null 2>&1 && { echo "--- $f ---"; wc -c /tmp/$f.txt; head -c 1500 /tmp/$f.txt; echo; }
           done
           echo
