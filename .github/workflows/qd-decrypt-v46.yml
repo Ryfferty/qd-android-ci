@@ -187,6 +187,8 @@ jobs:
           }
 
           # ★ v53：让 App 自己请求密钥（内部 getH→save→add），再展开池子、再 unlock
+          # ★ v61：反射列出 FockUtil 真实方法 + dump MMKV 里的 Key
+          run_step methods
           run_step appreqkey
           echo "  等 App 自己完成密钥请求（30 秒）..."
           sleep 30
