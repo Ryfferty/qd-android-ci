@@ -110,6 +110,14 @@ jobs:
           python3 doit.py text /tmp/u.xml
           exit 0
 
+      - name: ★ 全程 logcat（崩溃原因可查）
+        run: |
+          set +e
+          adb -s localhost:5555 logcat -c 2>/dev/null
+          nohup adb -s localhost:5555 logcat -v time > /tmp/logcat.txt 2>&1 &
+          echo "logcat 已启动 pid=$!"
+          exit 0
+
       - name: ★ 注入登录态（cookie → sess.json → hook_v16 → 重启生效）
         env:
           S_A: ${{ secrets.QD_SESS_3264757074 }}
@@ -206,7 +214,10 @@ jobs:
             PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             echo "=== 步骤 $TAG  (PID=$PID) ==="
             if [ -z "$PID" ]; then echo "  无进程，跳过"; return; fi
-            timeout 60 frida -H 127.0.0.1:27042 -p "$PID" -l step_$TAG.js -q 2>&1 | grep -oE "\{'m': '[^']*'" | sed "s/^{'m': '//" | head -10
+            timeout 60 frida -H 127.0.0.1:27042 -p "$PID" -l step_$TAG.js -q > /tmp/raw_$TAG.txt 2>&1
+            grep -oE "\{'m': '[^']*'" /tmp/raw_$TAG.txt | sed "s/^{'m': '//" | head -12
+            echo "  --- 原始输出（前 12 行）---"
+            head -12 /tmp/raw_$TAG.txt | sed 's/^/    /'
             sleep 3
             P2=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             echo "  步骤后 PID=[$P2]"
