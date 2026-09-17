@@ -4,7 +4,7 @@ setImmediate(function(){
   try{
     S({m:'=== D: 抓自杀原因 ==='});
     // ① android_set_abort_message —— 直接读出 abort 原因
-    var fns=['android_set_abort_message','__android_log_assert','abort','exit','_exit','kill','pthread_kill','raise','syscall'];
+    var fns=['android_set_abort_message','__android_log_assert','abort','exit','_exit','kill','pthread_kill','raise'];
     for(var i=0;i<fns.length;i++){
       var n=fns[i];
       try{
@@ -19,9 +19,7 @@ setImmediate(function(){
                   extra=' msg='+a[0].readCString();
                 } else if(nm==='kill'||nm==='pthread_kill'||nm==='raise'){
                   extra=' sig='+(nm==='kill'?a[1].toInt32():a[0].toInt32());
-                } else if(nm==='syscall'){
-                  extra=' nr='+a[0].toInt32()+' arg0='+a[1];
-                }
+
               }catch(e){ extra=' (读取失败)'; }
               S({m:'★★ ['+nm+'] 被调用'+extra});
             }
@@ -41,6 +39,17 @@ setImmediate(function(){
       }catch(e){}
     }, 2000);
     // ③ 30 秒后总结
+    // 每 5 秒报一次存活 + 模块
+    var n=0;
+    var alive=setInterval(function(){
+      n++;
+      try{
+        var mods2=Process.enumerateModules(), hit2=[];
+        for(var q=0;q<mods2.length;q++){ if(/fock|nib|knobs|shell|jiagu|omg|stub/i.test(mods2[q].name)) hit2.push(mods2[q].name); }
+        S({m:'[t='+(n*5)+'s] 存活 ✓ 模块='+mods2.length+' 相关: '+(hit2.join(',')||'无')});
+      }catch(e){}
+      if(n>=8) clearInterval(alive);
+    }, 5000);
     setTimeout(function(){
       try{
         var mods=Process.enumerateModules();
