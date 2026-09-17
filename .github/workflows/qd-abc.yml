@@ -59,7 +59,13 @@ jobs:
           adb -s $B logcat -c 2>/dev/null
           nohup adb -s $B logcat -v time > /tmp/lc.txt 2>&1 &
 
-          if [ "$M" = "a" ]; then
+          if [ "$M" = "d" ]; then
+            echo "########## D: spawn + 挂钩自杀点 ##########"
+            ( sleep 60 ) | timeout 120 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l stepD_antikill.js > /tmp/outD.txt 2>&1
+            echo "--- 原始 ---"; head -30 /tmp/outD.txt
+            grep -oE "\{'m': '[^']*'" /tmp/outD.txt | sed "s/^{'m': '//" | head -80
+            cp /tmp/outD.txt /tmp/outA.txt 2>/dev/null
+          elif [ "$M" = "a" ]; then
             echo "########## A: native 层（spawn）##########"
             ( sleep 100 ) | timeout 160 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l stepA_native.js > /tmp/outA.txt 2>&1
             echo "--- 原始 ---"; head -30 /tmp/outA.txt
