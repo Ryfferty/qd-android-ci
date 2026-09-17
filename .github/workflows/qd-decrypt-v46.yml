@@ -216,9 +216,18 @@ jobs:
             echo "  --- 操作后 activity ---"
             adb -s $B shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r' | head -2
             adb -s $B shell "rm -f /data/local/tmp/fock_trace.txt /data/local/tmp/captured_unlock_data.txt" 2>/dev/null
-            timeout 140 frida -H 127.0.0.1:27042 -p "$PID" -l step_hookfock.js > /tmp/fock.log 2>&1 &
+            timeout 160 frida -H 127.0.0.1:27042 -p "$PID" -l step_hookfock.js > /tmp/fock.log 2>&1 &
             FPID=$!
-            sleep 95
+            # ★ v60：窗口内多次取证，看深链到底把 App 带到哪
+            for t in 12 30 60 90; do
+              sleep 18
+              echo "  --- +${t}s 界面 ---"
+              ACT=$(adb -s $B shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r')
+              echo "    $ACT"
+              adb -s $B shell "uiautomator dump /sdcard/uh.xml >/dev/null 2>&1"
+              adb -s $B pull /sdcard/uh.xml /tmp/uh.xml >/dev/null 2>&1
+              python3 uitext.py /tmp/uh.xml 2>/dev/null | head -12
+            done
             kill $FPID 2>/dev/null
             echo "  --- frida 捕获日志 ---"
             grep -E "App 调|hook .* 装上|deeplink|★★" /tmp/fock.log | head -25
