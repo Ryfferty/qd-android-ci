@@ -68,6 +68,7 @@ jobs:
           echo "########## 其他 MMKV 文件 ##########"
           timeout 20 adb -s $B shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/" 2>/dev/null | head -12
           cp /tmp/mmkv.bin /tmp/logcat.txt
+          ls -la /tmp/mmkv.bin
           exit 0
 
       - name: 用设备真实身份跑协议 + 对照 Key
@@ -80,16 +81,8 @@ jobs:
           echo "=== 用抓到的设备身份跑协议 ==="
           echo "DEV_ANDROID_ID=[$DEV_ANDROID_ID] DEV_MODEL=[$DEV_MODEL] DEV_IMEI=[$DEV_IMEI]"
           SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py 2>&1 | tail -15
-          echo "--- argus 拿到的 Key ---"
-          python3 -c "
-import json
-try:
-    d=json.load(open('/tmp/params.json'))
-    k=d.get('Key','')
-    print('argus Key 前 60:', k[:60])
-    print('argus Key 长度:', len(k), ' Version:', d.get('Version'))
-except Exception as e: print('读 params 失败', e)
-"
+          echo "--- 对照 Key ---"
+          python3 check_key.py
           cp /tmp/params.json /tmp/pj.json 2>/dev/null
           exit 0
 
