@@ -95,6 +95,9 @@ jobs:
         run: |
           set +e
           B=localhost:5555
+          echo "=== 装 frida（之前漏了，导致 frida: No such file or directory）==="
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          which frida || python3 -m pip show frida-tools | head -2
           FR=16.7.19
           curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
           unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
