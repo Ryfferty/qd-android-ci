@@ -4,7 +4,10 @@ on:
     inputs:
       addrs:
         description: '要反编译的函数地址（逗号分隔）'
-        default: 'a7b8'
+        default: ''
+      names:
+        description: '要反编译的函数符号名（逗号分隔）'
+        default: 'fock_sn'
 
 jobs:
   t:
@@ -42,7 +45,7 @@ jobs:
           GH=$(ls -d /opt/ghidra_* | head -1)
           echo "GH=$GH"
           export TARGET_ADDRS="${{ inputs.addrs }}"
-          export TARGET_NAMES="${TARGET_NAMES:-fock_sn}"
+          export TARGET_NAMES="${{ inputs.names }}"
           echo "TARGET_ADDRS=$TARGET_ADDRS NAMES=$TARGET_NAMES"
           timeout 2400 "$GH/support/analyzeHeadless" /tmp ghidraproj \
             -import libfock.so -scriptPath "$PWD/ghidra_scripts" -postScript DecompFock.java \
