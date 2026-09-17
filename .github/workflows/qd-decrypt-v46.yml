@@ -198,6 +198,23 @@ jobs:
           PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "  PID=$PID"
           if [ -n "$PID" ]; then
+            # ★ v59：先关升级弹窗 + 跳过登录页（否则深链被 GuidanceActivity 吞掉）
+            for i in 1 2 3 4; do
+              adb -s $B shell "uiautomator dump /sdcard/ud.xml >/dev/null 2>&1"
+              adb -s $B pull /sdcard/ud.xml /tmp/ud.xml >/dev/null 2>&1
+              ACT=$(adb -s $B shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r')
+              echo "  轮次$i 当前: $(echo $ACT | grep -oE '[A-Za-z]+\.ui\.activity\.[A-Za-z]+' | head -1)"
+              # 升级弹窗：先关按钮，再试 btn_positive
+              XY=$(python3 tap_id.py /tmp/ud.xml upgrade_dialog_close_btn)
+              [ -z "$XY" ] && XY=$(python3 tap_id.py /tmp/ud.xml btn_negative)
+              [ -n "$XY" ] && { echo "  关升级弹窗 @ $XY"; adb -s $B shell "input tap $XY"; sleep 3; }
+              # 跳过登录（tvSkip）
+              XY=$(python3 tap_id.py /tmp/ud.xml tvSkip)
+              [ -n "$XY" ] && { echo "  跳过登录 @ $XY"; adb -s $B shell "input tap $XY"; sleep 6; }
+              case "$ACT" in *GuidanceActivity*|*upgrade*) : ;; *) echo "  ✓ 已离开登录/升级页"; break ;; esac
+            done
+            echo "  --- 操作后 activity ---"
+            adb -s $B shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r' | head -2
             adb -s $B shell "rm -f /data/local/tmp/fock_trace.txt /data/local/tmp/captured_unlock_data.txt" 2>/dev/null
             timeout 140 frida -H 127.0.0.1:27042 -p "$PID" -l step_hookfock.js > /tmp/fock.log 2>&1 &
             FPID=$!
