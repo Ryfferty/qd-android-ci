@@ -1,0 +1,67 @@
+name: qd-464-why-crash
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps + redroid
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 40); do adb connect localhost:5555 >/dev/null 2>&1; S=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          adb -s localhost:5555 shell "echo BOOT_OK"
+          exit 0
+
+      - name: 装 464 + 抓崩溃日志
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 1800 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -2
+          adb -s $B shell "pm path com.qidian.QDReader" | head -1
+          echo "=== 启动 App 并全程录 logcat ==="
+          adb -s $B logcat -c 2>/dev/null
+          nohup adb -s $B logcat -v time > /tmp/lc.txt 2>&1 &
+          sleep 2
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          for i in 1 2 3 4 5 6; do
+            sleep 12
+            P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            A=$(adb -s $B shell "dumpsys activity activities | grep ResumedActivity | head -1" | tr -d '\r' | grep -oE '[A-Za-z]+Activity' | head -1)
+            echo "  t=$((i*12))s PID=[$P] act=[$A]"
+          done
+          sleep 3
+          echo "=== logcat 行数: $(wc -l < /tmp/lc.txt 2>/dev/null) ==="
+          echo "########## 崩溃/异常 ##########"
+          grep -nE 'FATAL|AndroidRuntime|SIGSEGV|SIGABRT|signal 11|signal 6|libfock|libshell|libfockrt|libnib|dlopen|UnsatisfiedLink|DexClassLoader|NoClassDef|E/|W/System.err' /tmp/lc.txt | head -40
+          echo
+          echo "########## 进程死亡记录 ##########"
+          grep -nE 'Process com.qidian|died|killing|ANR|am_crash|am_proc_died' /tmp/lc.txt | head -20
+          cp /tmp/lc.txt /tmp/logcat.txt
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: why464
+          path: |
+            /tmp/lc.txt
+            /tmp/logcat.txt
+          if-no-files-found: warn
