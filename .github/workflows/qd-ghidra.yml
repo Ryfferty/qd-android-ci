@@ -4,12 +4,12 @@ on:
     inputs:
       addrs:
         description: '要反编译的函数地址（逗号分隔）'
-        default: 'a7b8,74843294,58294087,39238121,71816385,74270372,21028915'
+        default: 'a7b8'
 
 jobs:
   t:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -19,13 +19,7 @@ jobs:
           sudo -S -p '' apt-get update -qq || true
           sudo -S -p '' apt-get install -y -qq openjdk-17-jre-headless unzip curl python3-pip || echo APT_PARTIAL
           java -version 2>&1 | head -2
-          GH_URL=$(curl -sL "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest" | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-for a in d.get('assets',[]):
-    if a['name'].endswith('.zip') and 'PUBLIC' in a['name']:
-        print(a['browser_download_url']); break
-")
+          GH_URL=$(curl -sL "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest" | python3 gh_url.py)
           echo "Ghidra: $GH_URL"
           curl -sSL --max-time 900 -o ghidra.zip "$GH_URL"
           ls -la ghidra.zip
@@ -33,60 +27,27 @@ for a in d.get('assets',[]):
           ls -d /opt/ghidra_* | head -2
           exit 0
 
-      - name: 取 libfock.so（从 APK 里抽 464 版）
+      - name: 从 464 APK 抽 libfock.so
         run: |
           set +e
           curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
           ls -la q464.apk
-          python3 - <<'PY'
-import zipfile
-z=zipfile.ZipFile('q464.apk')
-names=[n for n in z.namelist() if 'arm64' in n and ('libfock' in n or 'libfockrt' in n or 'libnib' in n)]
-print('抽出的库:', names)
-for n in names:
-    open('/tmp/'+n.split('/')[-1],'wb').write(z.read(n))
-PY
-          ls -la /tmp/libfock*.so /tmp/libnib*.so 2>/dev/null
-          cp /tmp/libfock.so . 2>/dev/null
+          python3 extract_fock.py
           ls -la libfock.so
+          exit 0
 
-      - name: Ghidra headless 分析 + 反编译目标函数
+      - name: Ghidra headless 反编译
         run: |
           set +e
           GH=$(ls -d /opt/ghidra_* | head -1)
           echo "GH=$GH"
-          cat > /tmp/decomp.py <<'PY'
-# Ghidra 脚本：反编译指定地址的函数并打印 C 代码
-import os
-from ghidra.app.decompiler import DecompInterface
-from ghidra.util.task import ConsoleTaskMonitor
-addrs = os.environ.get('TARGET_ADDRS','a7b8').split(',')
-prog = getCurrentProgram()
-dec = DecompInterface()
-dec.openProgram(prog)
-mon = ConsoleTaskMonitor()
-fm = prog.getFunctionManager()
-for a in addrs:
-    try: v = int(a,16)
-    except: continue
-    f = fm.getFunctionAt(prog.getAddressFactory().getDefaultAddressSpace().getAddress(v))
-    print('='*70)
-    if f is None:
-        print('### 0x%x : 未识别为函数（可能需先 disassemble）' % v)
-        continue
-    print('### 0x%x  %s  (%d bytes)' % (v, f.getName(), f.getBody().getNumAddresses()))
-    r = dec.decompileFunction(f, 120, mon)
-    if r and r.decompileCompleted():
-        print(r.getDecompiledFunction().getC())
-    else:
-        print('### 反编译失败')
-PY
-          TARGET_ADDRS="${{ inputs.addrs }}" timeout 1800 "$GH/support/analyzeHeadless" \
-            /tmp ghidraproj -import libfock.so -scriptPath /tmp -postScript decomp.py \
-            -deleteProject 2>&1 | tail -120 > /tmp/decomp_out.txt
-          echo "=== 输出行数: $(wc -l < /tmp/decomp_out.txt) ==="
-          cat /tmp/decomp_out.txt | head -100
-          cp /tmp/decomp_out.txt /tmp/decomp_fock.txt
+          export TARGET_ADDRS="${{ inputs.addrs }}"
+          echo "TARGET_ADDRS=$TARGET_ADDRS"
+          timeout 2400 "$GH/support/analyzeHeadless" /tmp ghidraproj \
+            -import libfock.so -scriptPath "$PWD" -postScript ghidra_decomp.py \
+            -deleteProject > /tmp/decomp_out.txt 2>&1
+          echo "=== 行数: $(wc -l < /tmp/decomp_out.txt) ==="
+          grep -nE '^###|^=====|undefined|void |int |char |long |memcpy|malloc' /tmp/decomp_out.txt | head -60
           exit 0
 
       - name: Upload
@@ -96,6 +57,5 @@ PY
           name: decomp
           path: |
             /tmp/decomp_out.txt
-            /tmp/decomp_fock.txt
             libfock.so
           if-no-files-found: warn
