@@ -159,6 +159,11 @@ jobs:
         run: |
           set +e
           B=localhost:5555
+          # ★ v57：后台抓 logcat，崩溃原因可查
+          adb -s $B logcat -c 2>/dev/null
+          adb -s $B logcat -v time > /tmp/logcat.txt 2>&1 &
+          LC=$!
+          echo "logcat PID=$LC"
           ensure_app() {
             PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             if [ -z "$PID" ]; then
@@ -222,6 +227,18 @@ jobs:
           adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" > /tmp/pu3.bin
           ls -la /tmp/pu3.bin
           python3 mmkv_dump.py /tmp/pu3.bin
+          exit 0
+
+      - name: 收集 logcat（崩溃线索）
+        if: always()
+        run: |
+          set +e
+          B=localhost:5555
+          adb -s $B logcat -d -v time > /tmp/logcat.txt 2>&1
+          echo "logcat 行数: $(wc -l < /tmp/logcat.txt)"
+          echo "--- 崩溃/异常摘要 ---"
+          grep -nE 'FATAL|SIGABRT|SIGSEGV|abort|FockUtil|fock|Fock|tombstone|libshell|StubApp|UnsatisfiedLink' /tmp/logcat.txt | tail -30
+          cp /tmp/logcat.txt /tmp/logcat_full.txt
           exit 0
 
       - name: Upload
