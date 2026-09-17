@@ -53,7 +53,7 @@ jobs:
           for i in $(seq 1 6); do sleep 10; SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r'); echo "  init t=$((i*10))s MMKV=${SZ}B"; [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break; done
           exit 0
 
-      - name: 抓 App 自己的 unlock（同源密文）
+      - name: 抓 App 真实请求全貌（协议复刻的对照样本）
         run: |
           set +e
           B=localhost:5555
@@ -66,37 +66,20 @@ jobs:
           timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
           sleep 8
           timeout 20 adb -s $B forward tcp:27042 tcp:27042
+          timeout 20 adb -s $B shell "rm -f /data/local/tmp/REQDUMP.txt /data/local/tmp/RESPDUMP.txt"
           P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "PID=[$P]"
-          [ -z "$P" ] && { echo "重启 App"; timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 25; P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); }
-          timeout 20 adb -s $B shell "rm -f /data/local/tmp/CAPTURED_* /data/local/tmp/plain_K.txt"
-          echo "=== 保持 attach 150 秒，捕获 App 自己的调用 ==="
-          # ★ 后台起 frida（不用 stdin 管道，避免 Python abort），同时轮询界面取证
-          nohup timeout 200 frida -H 127.0.0.1:27042 -p "$P" -l stepK_capture.js > /tmp/k.txt 2>&1 &
-          FP=$!
-          for t in 1 2 3 4 5 6; do
-            sleep 25
-            ACT=$(timeout 10 adb -s $B shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r' | grep -oE '[A-Za-z.]+Activity' | head -1)
-            echo "  [+$((t*25))s] activity=$ACT PID=[$(timeout 6 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')]"
-            timeout 15 adb -s $B shell "uiautomator dump /sdcard/uk.xml >/dev/null 2>&1"
-            timeout 20 adb -s $B shell "cat /sdcard/uk.xml" 2>/dev/null | tr -d '\r' > /tmp/uk.xml
-            python3 uitext.py /tmp/uk.xml 2>/dev/null | head -8
-            # 如果还在书城/详情页，尝试点“开始阅读/免费阅读/继续阅读”
-            for ID in btn_read tv_read startRead reading_btn; do
-              XY=$(python3 tap_id.py /tmp/uk.xml $ID 2>/dev/null | head -1)
-              [ -n "$XY" ] && { echo "    点 $ID @ $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
-            done
-          done
-          kill $FP 2>/dev/null
-          grep -oE "\{'m': '[^']*'" /tmp/k.txt | sed "s/^{'m': '//" | head -60
-          echo "--- 设备端捕获物 ---"
-          timeout 20 adb -s $B shell "ls -la /data/local/tmp/CAPTURED_* /data/local/tmp/plain_K.txt 2>/dev/null" | head -8
-          for f in CAPTURED_unlock_data.txt CAPTURED_unlock_ak.txt CAPTURED_uk.txt plain_K.txt; do
-            timeout 30 adb -s $B pull /data/local/tmp/$f /tmp/$f >/dev/null 2>&1 && echo "  $f = $(wc -c < /tmp/$f)B"
-          done
-          echo "--- 明文预览 ---"
-          [ -f /tmp/plain_K.txt ] && { head -c 1000 /tmp/plain_K.txt; echo; }
-          cp /tmp/k.txt /tmp/win_out.txt 2>/dev/null
+          [ -z "$P" ] && { timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 25; P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); }
+          # ★ 同步 attach（这个形式今天最稳），挂上后触发一次请求
+          ( sleep 60; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" >/dev/null 2>&1; sleep 60 ) &
+          ( sleep 130 ) | timeout 200 frida -H 127.0.0.1:27042 -p "$P" -l stepL_reqdump.js > /tmp/l.txt 2>&1
+          echo "=== 抓到的请求 ==="
+          grep -E '### URL|### HDR (QDInfo|QDSign|Referer|User-Agent|tstamp)|### RESP|✓ hook' /tmp/l.txt | head -40
+          echo "--- 完整 REQDUMP ---"
+          timeout 30 adb -s $B pull /data/local/tmp/REQDUMP.txt /tmp/REQDUMP.txt >/dev/null 2>&1 && { wc -c /tmp/REQDUMP.txt; head -60 /tmp/REQDUMP.txt; }
+          echo "--- RESPDUMP ---"
+          timeout 30 adb -s $B pull /data/local/tmp/RESPDUMP.txt /tmp/RESPDUMP.txt >/dev/null 2>&1 && head -20 /tmp/RESPDUMP.txt
+          cp /tmp/l.txt /tmp/win_out.txt 2>/dev/null
           exit 0
 
       - name: Upload
@@ -106,8 +89,6 @@ jobs:
           name: win464
           path: |
             /tmp/win_out.txt
-            /tmp/CAPTURED_unlock_data.txt
-            /tmp/CAPTURED_unlock_ak.txt
-            /tmp/CAPTURED_uk.txt
-            /tmp/plain_K.txt
+            /tmp/REQDUMP.txt
+            /tmp/RESPDUMP.txt
           if-no-files-found: warn
