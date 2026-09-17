@@ -114,10 +114,10 @@ jobs:
           echo "PID=[$P]"
           [ -z "$P" ] && { timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 25; P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); }
           echo "=== 同步 attach 解密（同源密文 + 设备密钥）==="
-          ( sleep 90 ) | timeout 160 frida -H 127.0.0.1:27042 -p "$P" -l stepH_unlock.js > /tmp/dec.txt 2>&1
+          ( sleep 90 ) | timeout 160 frida -H 127.0.0.1:27042 -p "$P" -l stepM_fockchain.js > /tmp/dec.txt 2>&1
           grep -oE "\{'m': '[^']*'" /tmp/dec.txt | sed "s/^{'m': '//" | head -50
           echo "--- 设备端明文 ---"
-          timeout 30 adb -s $B pull /data/local/tmp/plain_464_FINAL.txt /tmp/plain_464_FINAL.txt >/dev/null 2>&1 && { echo "明文大小: $(wc -c < /tmp/plain_464_FINAL.txt)B"; head -c 1500 /tmp/plain_464_FINAL.txt; echo; }
+          timeout 30 adb -s $B pull /data/local/tmp/plain_M.txt /tmp/plain_M.txt >/dev/null 2>&1 && { echo "明文大小: $(wc -c < /tmp/plain_M.txt)B"; head -c 1500 /tmp/plain_M.txt; echo; }
           cp /tmp/dec.txt /tmp/win_out.txt 2>/dev/null
           exit 0
 
@@ -130,6 +130,6 @@ jobs:
             /tmp/mmkv.bin
             /tmp/params.json
             /tmp/dec.txt
-            /tmp/plain_464_FINAL.txt
+            /tmp/plain_M.txt
             /tmp/win_out.txt
           if-no-files-found: warn
