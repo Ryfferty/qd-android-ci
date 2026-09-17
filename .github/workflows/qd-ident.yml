@@ -67,6 +67,16 @@ jobs:
 
           echo "########## 其他 MMKV 文件 ##########"
           timeout 20 adb -s $B shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/" 2>/dev/null | head -12
+          echo "########## 提取设备真实 QIMEI ##########"
+          Q16=$(strings /tmp/mmkv.bin | grep -oE 'O_STAR_Q_IMEI_16%\$([0-9a-f]{16,40})' | head -1 | sed 's/.*\$//')
+          echo "★ QIMEI16=[$Q16]"
+          AID=$(timeout 6 adb -s $B shell 'settings get secure android_id' | tr -d '\r')
+          MODEL=$(timeout 6 adb -s $B shell getprop ro.product.model | tr -d '\r')
+          echo "android_id=[$AID] model=[$MODEL]"
+          echo "DEV_ANDROID_ID=$AID" >> $GITHUB_ENV
+          echo "DEV_MODEL=$MODEL" >> $GITHUB_ENV
+          echo "DEV_IMEI=$Q16" >> $GITHUB_ENV
+          echo "DEV_Q16=$Q16" >> $GITHUB_ENV
           cp /tmp/mmkv.bin /tmp/logcat.txt
           ls -la /tmp/mmkv.bin
           exit 0
@@ -81,8 +91,18 @@ jobs:
           echo "=== 用抓到的设备身份跑协议 ==="
           echo "DEV_ANDROID_ID=[$DEV_ANDROID_ID] DEV_MODEL=[$DEV_MODEL] DEV_IMEI=[$DEV_IMEI]"
           SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py 2>&1 | tail -15
-          echo "--- 对照 Key ---"
-          python3 check_key.py
+          echo "=== 身份矩阵测试（Q 用设备真实值 / androidId / 两者混合）==="
+          cp /tmp/params.json /tmp/params_default.json 2>/dev/null
+          for COMBO in "qimei16|qimei16" "qimei16|androidid" "androidid|qimei16" "qimei16|empty"; do
+            QV=$(echo $COMBO | cut -d'|' -f1); IV=$(echo $COMBO | cut -d'|' -f2)
+            case "$QV" in qimei16) QVAL="$DEV_Q16";; androidid) QVAL="$DEV_ANDROID_ID";; *) QVAL="";; esac
+            case "$IV" in qimei16) IVAL="$DEV_Q16";; androidid) IVAL="$DEV_ANDROID_ID";; *) IVAL="";; esac
+            echo ""
+            echo "########## 组合 Q=$QV($QVAL) IMEI=$IV($IVAL) ##########"
+            DEV_ANDROID_ID="$QVAL" DEV_IMEI="$IVAL" DEV_MODEL="$DEV_MODEL" \
+              SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py > /dev/null 2>&1
+            python3 check_key.py
+          done
           cp /tmp/params.json /tmp/pj.json 2>/dev/null
           exit 0
 
