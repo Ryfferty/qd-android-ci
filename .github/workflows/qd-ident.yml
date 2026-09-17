@@ -126,13 +126,32 @@ jobs:
           fi
           timeout 20 adb -s $B forward tcp:27042 tcp:27042 >/dev/null 2>&1
           timeout 20 adb -s $B shell "rm -f /data/local/tmp/SN_DUMP.txt"
-          echo "=== spawn 注入（保持 stdin 100 秒）==="
-          ( sleep 100 ) | timeout 160 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l stepS_snpair.js > /tmp/sn.txt 2>&1
+          echo "=== attach 抓样本（重试 5 轮；spawn 必被壳掐）==="
+          for try in 1 2 3 4 5; do
+            P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -z "$P" ]; then
+              echo "  try$try: 重启 App"
+              timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+              sleep 20
+              continue
+            fi
+            echo "  try$try: PID=[$P] attach..."
+            ( sleep 75 ) | timeout 130 frida -H 127.0.0.1:27042 -p "$P" -l stepS_snpair.js > /tmp/sn.txt 2>&1
+            if grep -q 'PAIR#' /tmp/sn.txt 2>/dev/null; then
+              echo "  ✓ try$try 抓到样本"
+              break
+            fi
+            echo "  try$try 未抓到（$(head -c 70 /tmp/sn.txt | tr -d '\n')）"
+            # 每轮触发一次请求
+            timeout 15 adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1049120379/903350205" >/dev/null 2>&1
+            sleep 8
+          done
           echo "--- 原始前 15 行 ---"; head -15 /tmp/sn.txt
-          echo "--- hook 与捕获 ---"
-          grep -E "=== S:|hook |IN \[|OUT |URL=|deeplink" /tmp/sn.txt | head -50
-          echo "--- 设备端 SN_DUMP ---"
-          timeout 30 adb -s $B pull /data/local/tmp/SN_DUMP.txt /tmp/SN_DUMP.txt >/dev/null 2>&1 && { wc -c /tmp/SN_DUMP.txt; head -60 /tmp/SN_DUMP.txt; }
+          echo "--- 样本 ---"
+          grep -E "=== S:|hook sn|PAIR#|IN\[|OUT\[" /tmp/sn.txt | head -40
+          echo "--- 设备端 SN_PAIRS ---"
+          timeout 30 adb -s $B pull /data/local/tmp/SN_PAIRS.txt /tmp/SN_PAIRS.txt >/dev/null 2>&1 && { wc -c /tmp/SN_PAIRS.txt; head -30 /tmp/SN_PAIRS.txt; }
+          cp /tmp/sn.txt /tmp/dec.txt 2>/dev/null
           cp /tmp/sn.txt /tmp/dec.txt 2>/dev/null
           exit 0
 
