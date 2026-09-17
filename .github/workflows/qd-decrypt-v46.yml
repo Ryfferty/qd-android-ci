@@ -171,6 +171,8 @@ jobs:
           sleep 30
           run_step keymap2
           run_step afterkey
+          # ★ v54：hook FockUtil，捕获 App 自己调用时的真实参数
+          run_step hookfock
 
           echo
           echo "########## 明文 ##########"
@@ -178,6 +180,10 @@ jobs:
             adb -s $B pull /data/local/tmp/$f.txt /tmp/$f.txt >/dev/null 2>&1 && { echo "--- $f ---"; wc -c /tmp/$f.txt; head -c 1500 /tmp/$f.txt; echo; }
           done
           echo
+          echo "########## Fock 调用追踪 ##########"
+          for g in fock_trace captured_unlock_data; do
+            adb -s $B pull /data/local/tmp/$g.txt /tmp/$g.txt >/dev/null 2>&1 && { echo "--- $g ---"; wc -c /tmp/$g.txt; head -c 2000 /tmp/$g.txt; echo; }
+          done
           echo "########## MMKV 是否出现 pref_fock_key ##########"
           adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" > /tmp/pu3.bin
           ls -la /tmp/pu3.bin
@@ -193,4 +199,7 @@ jobs:
             /tmp/v49.txt
             /tmp/v49_result.txt
             /tmp/params.json
+            /tmp/fock_trace.txt
+            /tmp/captured_unlock_data.txt
+            /tmp/plain_afterkey.txt
           if-no-files-found: warn
