@@ -1,0 +1,52 @@
+name: qd-acct
+on:
+  workflow_dispatch:
+    inputs:
+      q16:
+        description: '用作协议身份的 QIMEI16（两个账号都用这个值）'
+        default: '90de39fdaa21774b6b5487fd100015f1a911'
+      book:
+        default: '1049120379'
+      cid:
+        default: '903350205'
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          set +e
+          pip install -q pycryptodome 2>&1 | tail -1
+          python3 -c "print('deps ok')"
+          exit 0
+
+      - name: 用两个账号各取一次（同一身份 Q）
+        run: |
+          set +e
+          echo "${{ secrets.QD_SESS_900069660351 }}" | base64 -d > /tmp/sess_a.json 2>/dev/null
+          echo "${{ secrets.QD_SESS_2719559418 }}" | base64 -d > /tmp/sess_b.json 2>/dev/null
+          ls -la /tmp/sess_a.json /tmp/sess_b.json
+          for pair in "a:900069660351" "b:2719559418"; do
+            L=${pair%%:*}; A=${pair##*:}
+            echo "########## 账号 $A （标记 $L）##########"
+            SESS=/tmp/sess_$L.json Q16="${{ inputs.q16 }}" BOOK=${{ inputs.book }} CID=${{ inputs.cid }} \
+              timeout 90 python3 argus_final.py 2>&1 | tail -6
+            cp /tmp/params.json /tmp/params_$L.json 2>/dev/null
+            python3 summarize_params.py 2>/dev/null
+            echo
+          done
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acct
+          path: |
+            /tmp/params_a.json
+            /tmp/params_b.json
+          if-no-files-found: warn
