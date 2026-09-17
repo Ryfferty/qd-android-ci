@@ -1,0 +1,104 @@
+name: qd-ident
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q pycryptodome 2>&1 | tail -1
+          exit 0
+
+      - name: redroid + 464 + 初始化 + 读设备真实身份
+        run: |
+          set +e
+          B=localhost:5555
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=[$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')]"
+          curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 30 adb -s $B wait-for-device
+          bash write_consent.sh 2>&1 | tail -2
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 25
+          for i in 1 2 3 4 5; do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+            for ID in btnAgree upgrade_dialog_close_btn btn_negative tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u2.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { timeout 10 adb -s $B shell "input tap $XY"; sleep 4; }
+            done
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && { echo "  MMKV 已初始化=${SZ}B"; break; }
+          done
+          for i in $(seq 1 6); do sleep 10; SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r'); echo "  init t=$((i*10))s MMKV=${SZ}B"; [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break; done
+
+          echo "########## 设备系统身份 ##########"
+          for k in ro.product.model ro.product.brand ro.product.manufacturer ro.product.device ro.serialno ro.build.fingerprint; do
+            echo "  $k = $(timeout 6 adb -s $B shell getprop $k | tr -d '\r')"
+          done
+          echo "  android_id = $(timeout 6 adb -s $B shell 'settings get secure android_id' | tr -d '\r')"
+          echo "  gsf_id     = $(timeout 6 adb -s $B shell 'settings get secure android_id gsf_id 2>/dev/null || true' | tr -d '\r')"
+
+          echo "########## MMKV 里的身份（App 自己的） ##########"
+          timeout 30 adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils" 2>/dev/null | tr -d '\r' > /tmp/mmkv.bin
+          echo "MMKV 大小: $(wc -c < /tmp/mmkv.bin)B"
+          strings /tmp/mmkv.bin | grep -iE 'QIMEI|IMEI|uuid|device|id$|serial|mac' | head -25
+          echo "--- MMKV 里的 pref_fock_key（App 拿到的密钥）---"
+          strings /tmp/mmkv.bin | grep -oE '\{"1639985422":"[A-Za-z0-9+/=]{40,}' | head -2
+
+          echo "########## 其他 MMKV 文件 ##########"
+          timeout 20 adb -s $B shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/" 2>/dev/null | head -12
+          cp /tmp/mmkv.bin /tmp/logcat.txt
+          exit 0
+
+      - name: 用设备真实身份跑协议 + 对照 Key
+        env:
+          DEV_ANDROID_ID: ${{ env.DEV_ANDROID_ID }}
+          DEV_MODEL: ${{ env.DEV_MODEL }}
+          DEV_IMEI: ${{ env.DEV_IMEI }}
+        run: |
+          set +e
+          echo "=== 用抓到的设备身份跑协议 ==="
+          echo "DEV_ANDROID_ID=[$DEV_ANDROID_ID] DEV_MODEL=[$DEV_MODEL] DEV_IMEI=[$DEV_IMEI]"
+          SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py 2>&1 | tail -15
+          echo "--- argus 拿到的 Key ---"
+          python3 -c "
+import json
+try:
+    d=json.load(open('/tmp/params.json'))
+    k=d.get('Key','')
+    print('argus Key 前 60:', k[:60])
+    print('argus Key 长度:', len(k), ' Version:', d.get('Version'))
+except Exception as e: print('读 params 失败', e)
+"
+          cp /tmp/params.json /tmp/pj.json 2>/dev/null
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ident
+          path: |
+            /tmp/mmkv.bin
+            /tmp/params.json
+          if-no-files-found: warn
