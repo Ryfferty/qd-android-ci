@@ -17,6 +17,9 @@ jobs:
         env:
           QD_SESS: ${{ secrets.QD_SESS_900069660351 }}
 
+      - name: 装依赖
+        run: pip3 install --quiet pycryptodome requests
+
       - name: 测 VIP 端点（CI IP）
         run: python3 ci/vip_test.py
         env:
