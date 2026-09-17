@@ -95,6 +95,9 @@ jobs:
         run: |
           set +e
           B=localhost:5555
+          echo "=== 装 frida（pip 装，避免 No such file or directory）==="
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          which frida || echo "FRIDA_MISSING"
           echo "=== 先确认 App 已初始化（MMKV>500）==="
           for i in 1 2 3 4 5 6 7 8; do
             SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
