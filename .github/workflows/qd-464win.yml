@@ -71,7 +71,23 @@ jobs:
           [ -z "$P" ] && { echo "重启 App"; timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 25; P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); }
           timeout 20 adb -s $B shell "rm -f /data/local/tmp/CAPTURED_* /data/local/tmp/plain_K.txt"
           echo "=== 保持 attach 150 秒，捕获 App 自己的调用 ==="
-          ( sleep 150 ) | timeout 220 frida -H 127.0.0.1:27042 -p "$P" -l stepK_capture.js > /tmp/k.txt 2>&1
+          # ★ 后台起 frida（不用 stdin 管道，避免 Python abort），同时轮询界面取证
+          nohup timeout 200 frida -H 127.0.0.1:27042 -p "$P" -l stepK_capture.js > /tmp/k.txt 2>&1 &
+          FP=$!
+          for t in 1 2 3 4 5 6; do
+            sleep 25
+            ACT=$(timeout 10 adb -s $B shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r' | grep -oE '[A-Za-z.]+Activity' | head -1)
+            echo "  [+$((t*25))s] activity=$ACT PID=[$(timeout 6 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')]"
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/uk.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/uk.xml" 2>/dev/null | tr -d '\r' > /tmp/uk.xml
+            python3 uitext.py /tmp/uk.xml 2>/dev/null | head -8
+            # 如果还在书城/详情页，尝试点“开始阅读/免费阅读/继续阅读”
+            for ID in btn_read tv_read startRead reading_btn; do
+              XY=$(python3 tap_id.py /tmp/uk.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { echo "    点 $ID @ $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
+            done
+          done
+          kill $FP 2>/dev/null
           grep -oE "\{'m': '[^']*'" /tmp/k.txt | sed "s/^{'m': '//" | head -60
           echo "--- 设备端捕获物 ---"
           timeout 20 adb -s $B shell "ls -la /data/local/tmp/CAPTURED_* /data/local/tmp/plain_K.txt 2>/dev/null" | head -8
