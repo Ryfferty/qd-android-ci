@@ -16,6 +16,9 @@ jobs:
           sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
           sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
           pip install -q pycryptodome 2>&1 | tail -1
+          # ★ 一次装好 frida（今天两次因为步骤里忘装而报 "frida: No such file or directory"）
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          which frida && frida --version
           exit 0
 
       - name: redroid + 464 + 初始化 + 读设备真实身份
