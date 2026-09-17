@@ -32,11 +32,20 @@ jobs:
           mv -f fs fs-server 2>/dev/null; chmod +x fs-server
           adb -s localhost:5555 push fs-server /data/local/tmp/frida-server >/dev/null 2>&1
           adb -s localhost:5555 shell chmod 755 /data/local/tmp/frida-server
+          echo "=== ★ adb root（frida 必须 root，否则 unable to access process）==="
+          adb -s localhost:5555 root 2>&1 | head -2
+          sleep 6
+          adb -s localhost:5555 wait-for-device
+          adb -s localhost:5555 shell "id" 2>&1 | head -1
           adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
           adb -s localhost:5555 shell "getenforce"
-          adb -s localhost:5555 shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
-          sleep 8
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/frida-server"
+          adb -s localhost:5555 shell "setsid /data/local/tmp/frida-server -D >/dev/null 2>&1 &"
+          sleep 10
+          adb -s localhost:5555 shell "ps -A | grep -c frida" 2>&1 | head -1
           adb -s localhost:5555 forward tcp:27042 tcp:27042
+          echo "=== frida-ps 自检 ==="
+          frida-ps -H 127.0.0.1:27042 2>&1 | head -5
           exit 0
 
       - name: 装 464 + 探 FockUtil
