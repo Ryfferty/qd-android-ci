@@ -1,0 +1,79 @@
+name: qd-cfg
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps + redroid
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl unzip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=[$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed | tr -d '\r')]"
+          timeout 30 adb -s localhost:5555 root >/dev/null 2>&1; sleep 5
+          exit 0
+
+      - name: 装 464 + 初始化
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -2
+          timeout 20 adb -s $B shell "mkdir -p /data/data/com.qidian.QDReader/shared_prefs && echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml"
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          for i in $(seq 1 10); do
+            sleep 12
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            for ID in btnAgree tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
+            done
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            echo "  t=$((i*12))s MMKV=${SZ}B"
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break
+          done
+          exit 0
+
+      - name: ★ dump App 配置（UUID / SettingUserToken 等）
+        run: |
+          set +e
+          B=localhost:5555
+          echo "########## shared_prefs 文件清单 ##########"
+          timeout 20 adb -s $B shell "ls -la /data/data/com.qidian.QDReader/shared_prefs/ 2>/dev/null"
+          echo "########## 所有 shared_prefs 内容（找 UUID / SettingUserToken）##########"
+          for f in $(timeout 20 adb -s $B shell "ls /data/data/com.qidian.QDReader/shared_prefs/ 2>/dev/null" | tr -d '\r'); do
+            echo "--- $f ---"
+            timeout 20 adb -s $B shell "cat /data/data/com.qidian.QDReader/shared_prefs/$f 2>/dev/null" | tr -d '\r' | grep -iE 'UUID|SettingUserToken|Token|device|qimei|imei|id' | head -12
+          done
+          echo
+          echo "########## MMKV 里的 UUID 相关键 ##########"
+          timeout 60 adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils" > /tmp/mmkv.bin 2>/dev/null
+          strings /tmp/mmkv.bin 2>/dev/null | grep -iE 'UUID|SettingUserToken|Token' | head -10
+          echo
+          echo "########## QDConfig 可能的文件位置 ##########"
+          timeout 20 adb -s $B shell "find /data/data/com.qidian.QDReader -name '*config*' -o -name '*QDConfig*' 2>/dev/null | head -10"
+          timeout 20 adb -s $B shell "ls -la /data/data/com.qidian.QDReader/files/ 2>/dev/null | head -20"
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cfg
+          path: /tmp/mmkv.bin
+          if-no-files-found: warn
