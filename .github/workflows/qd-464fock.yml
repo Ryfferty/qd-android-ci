@@ -56,7 +56,8 @@ jobs:
           adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
           adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
           echo "=== ① 先试 spawn 注入（绕开反调试）==="
-          timeout 120 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l step_probe464.js -q > /tmp/p464.txt 2>&1
+          # ★ 保持 stdin 打开 90 秒，否则 frida 恢复主线程后立刻退出、脚本输出全丢
+          ( sleep 90 ) | timeout 150 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l step_probe464.js > /tmp/p464.txt 2>&1
           echo "--- spawn 原始输出 ---"
           head -25 /tmp/p464.txt
           grep -oE "\{'m': '[^']*'" /tmp/p464.txt | sed "s/^{'m': '//" | head -30
