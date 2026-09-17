@@ -1,0 +1,88 @@
+name: qd-stealth
+on:
+  workflow_dispatch:
+    inputs:
+      delay:
+        description: '先让 App 稳定多少秒再起 frida-server'
+        default: '25'
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+          exit 0
+
+      - name: redroid(无 frida) + 装 464 + 跑稳
+        run: |
+          set +e
+          B=localhost:5555
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=[$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')]"
+          curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          D="${{ inputs.delay }}"
+          echo "=== 启动 App，稳定 $D 秒（此阶段无 frida）==="
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          for i in $(seq 1 6); do sleep 5; echo "  [无frida] t=$((i*5))s PID=[$(timeout 6 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')]"; done
+          exit 0
+
+      - name: 改名起 frida-server → 观测 App 是否被杀 → attach 探测
+        run: |
+          set +e
+          B=localhost:5555
+          echo "=== 起 frida-server（改名 fsd，避开按名字的检测）==="
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fsd 2>/dev/null; chmod +x fsd
+          timeout 60 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 30 adb -s $B wait-for-device
+          timeout 60 adb -s $B push fsd /data/local/tmp/fsd >/dev/null 2>&1
+          timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fsd"
+          timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 20 adb -s $B forward tcp:27042 tcp:27042
+          echo "--- frida-server 起来后，App 是否还活着 ---"
+          for i in $(seq 1 6); do sleep 5; echo "  [有frida] t=$((i*5))s PID=[$(timeout 6 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')]"; done
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "最终 PID=[$P]"
+          if [ -z "$P" ]; then
+            echo "❌ frida-server 一出现，App 就被杀 ⇒ 壳按 frida 检测自毁"
+          else
+            echo "✅ App 仍存活，开始 attach 探测 FockUtil"
+            # 立刻重启 App（保证 frida 已在场，观察它能否活过自检）
+            ( sleep 60 ) | timeout 120 frida -H 127.0.0.1:27042 -p "$P" -l stepB_attach.js > /tmp/probe.txt 2>&1
+            echo "--- 探针输出 ---"
+            grep -oE "\{'m': '[^']*'" /tmp/probe.txt | sed "s/^{'m': '//" | head -40
+            head -15 /tmp/probe.txt
+          fi
+          cp /tmp/probe.txt /tmp/logcat.txt 2>/dev/null
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stealth
+          path: |
+            /tmp/probe.txt
+            /tmp/logcat.txt
+          if-no-files-found: warn
