@@ -218,6 +218,8 @@ jobs:
           # ★ v66：决定性一步 —— loadLocalKey → addMap（装进引擎）→ unlock
           run_step addmap
           run_step mainthread
+          # ★ v67：找 App 自己缓存的章节密文（同源才能解开）
+          run_step qdfind
 
           echo
           echo "########## 明文 ##########"
