@@ -53,7 +53,7 @@ jobs:
           for i in $(seq 1 6); do sleep 10; SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r'); echo "  init t=$((i*10))s MMKV=${SZ}B"; [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break; done
           exit 0
 
-      - name: 阶段1 — 起 frida（改名）+ 提取 userKey
+      - name: 单会话决胜（读 userKey → 取同源密文 → 解锁）
         run: |
           set +e
           B=localhost:5555
@@ -67,53 +67,12 @@ jobs:
           sleep 8
           timeout 20 adb -s $B forward tcp:27042 tcp:27042
           P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-          echo "PID=[$P]"
-          [ -z "$P" ] && exit 0
-          # ★ userKey 出现得比较晚：重试 6 次（每次等 20 秒）
-          UK=""
-          for try in 1 2 3 4 5 6; do
-            P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-            [ -z "$P" ] && { echo "  try$try: App 不在，重启"; timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 20; continue; }
-            ( sleep 25 ) | timeout 60 frida -H 127.0.0.1:27042 -p "$P" -l stepZ_getuk.js > /tmp/uk.txt 2>&1
-            UK=$(grep -oE 'USERKEY=[A-Za-z0-9]+' /tmp/uk.txt | head -1 | cut -d= -f2)
-            echo "  try$try userKey=[$UK]"
-            [ -n "$UK" ] && break
-            sleep 20
-          done
-          echo "提取到 userKey=[$UK]"
-          echo "DEV_ANDROID_ID=$UK" >> $GITHUB_ENV
-          echo "USRKEY=$UK" >> $GITHUB_ENV
-          exit 0
-
-      - name: 阶段2 — 用同一身份取密文（同源）
-        env:
-          DEV_ANDROID_ID: ${{ env.DEV_ANDROID_ID }}
-          DEV_MODEL: redroid11_arm64
-          DEV_IMEI: ${{ env.DEV_ANDROID_ID }}
-        run: |
-          set +e
-          echo "用身份 DEV_ANDROID_ID=$DEV_ANDROID_ID 取密文"
-          SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py 2>&1 | tail -12
-          cp /tmp/params.json /tmp/pj.json 2>/dev/null
-          ls -la /tmp/pj.json
-          timeout 60 adb -s localhost:5555 push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
-          timeout 20 adb -s localhost:5555 shell "printf '%s' '$USRKEY' > /data/local/tmp/userkey.txt"
-          timeout 20 adb -s localhost:5555 shell "cat /data/local/tmp/userkey.txt"
-          exit 0
-
-      - name: 阶段3 — 解锁（3 参重载 + 矩阵）
-        run: |
-          set +e
-          B=localhost:5555
-          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-          echo "PID=[$P]"
-          [ -z "$P" ] && { echo "App 不在了"; exit 0; }
-          ( sleep 120 ) | timeout 200 frida -H 127.0.0.1:27042 -p "$P" -l stepI_final.js > /tmp/final.txt 2>&1
-          grep -oE "\{'m': '[^']*'" /tmp/final.txt | sed "s/^{'m': '//" | head -60
-          echo "--- 设备端明文 ---"
-          timeout 20 adb -s $B shell "ls -la /data/local/tmp/plain_464_WIN.txt 2>/dev/null" | head -2
-          timeout 30 adb -s $B pull /data/local/tmp/plain_464_WIN.txt /tmp/plain_464_WIN.txt >/dev/null 2>&1 && { echo "明文大小: $(wc -c < /tmp/plain_464_WIN.txt)B"; head -c 800 /tmp/plain_464_WIN.txt; echo; }
-          cp /tmp/final.txt /tmp/logcat.txt 2>/dev/null
+          echo "App PID=[$P]"
+          [ -z "$P" ] && { echo "App 不在，重启"; timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 25; }
+          BOOK=1049120379 CID=903350205 SESS=/tmp/sess.json timeout 260 python3 frida_win.py > /tmp/win_out.txt 2>&1
+          cat /tmp/win_out.txt | head -60
+          echo "--- 设备/本地明文 ---"
+          ls -la /tmp/plain_464_WIN.txt 2>/dev/null && { echo "明文大小: $(wc -c < /tmp/plain_464_WIN.txt)B"; head -c 1000 /tmp/plain_464_WIN.txt; echo; }
           exit 0
 
       - name: Upload
@@ -122,7 +81,7 @@ jobs:
         with:
           name: win464
           path: |
-            /tmp/final.txt
+            /tmp/win_out.txt
             /tmp/plain_464_WIN.txt
-            /tmp/pj.json
+            /tmp/params.json
           if-no-files-found: warn
