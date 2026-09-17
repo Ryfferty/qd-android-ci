@@ -42,7 +42,8 @@ jobs:
           GH=$(ls -d /opt/ghidra_* | head -1)
           echo "GH=$GH"
           export TARGET_ADDRS="${{ inputs.addrs }}"
-          echo "TARGET_ADDRS=$TARGET_ADDRS"
+          export TARGET_NAMES="${TARGET_NAMES:-fock_sn}"
+          echo "TARGET_ADDRS=$TARGET_ADDRS NAMES=$TARGET_NAMES"
           timeout 2400 "$GH/support/analyzeHeadless" /tmp ghidraproj \
             -import libfock.so -scriptPath "$PWD/ghidra_scripts" -postScript DecompFock.java \
             -deleteProject > /tmp/decomp_out.txt 2>&1
