@@ -63,6 +63,21 @@ jobs:
           frida-ps -H 127.0.0.1:27042 2>&1 | head -3
           exit 0
 
+      - name: 读模拟器真实设备身份（★ 让密文与 App 密钥同源）
+        run: |
+          set +e
+          B=localhost:5555
+          AID=$(adb -s $B shell "settings get secure android_id" | tr -d '\r' | tail -1)
+          MOD=$(adb -s $B shell "getprop ro.product.model" | tr -d '\r' | tail -1)
+          SER=$(adb -s $B shell "getprop ro.serialno" | tr -d '\r' | tail -1)
+          echo "androidId=[$AID] model=[$MOD] serial=[$SER]"
+          if [ -z "$AID" ] || [ "$AID" = "null" ]; then AID="b3b295be58644158"; fi
+          if [ -z "$MOD" ]; then MOD="V2329A"; fi
+          echo "DEV_ANDROID_ID=$AID" >> $GITHUB_ENV
+          echo "DEV_MODEL=$MOD" >> $GITHUB_ENV
+          echo "DEV_IMEI=$SER" >> $GITHUB_ENV
+          exit 0
+
       - name: argus params (protocol side)
         env:
           S_A: ${{ secrets.QD_SESS_3264757074 }}
