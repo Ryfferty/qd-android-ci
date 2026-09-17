@@ -28,14 +28,14 @@ jobs:
             androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
             androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
           adb start-server >/dev/null 2>&1; sleep 5
-          for i in $(seq 1 40); do adb connect localhost:5555 >/dev/null 2>&1; S=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
           adb -s localhost:5555 shell "echo BOOT_OK"
           FR=16.7.19
-          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
           unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
           mv -f fs fs-server 2>/dev/null; chmod +x fs-server
-          adb -s localhost:5555 root 2>&1 | head -1
-          sleep 6; adb -s localhost:5555 wait-for-device
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6; timeout 30 adb -s localhost:5555 wait-for-device || true
           adb -s localhost:5555 shell "id" | head -1
           adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1; adb -s localhost:5555 shell getenforce
           adb -s localhost:5555 push fs-server /data/local/tmp/frida-server >/dev/null 2>&1
@@ -53,7 +53,7 @@ jobs:
           B=localhost:5555
           M="${{ inputs.mode }}"
           echo "MODE=$M"
-          curl -sSL --max-time 1800 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
           adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
           adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
           adb -s $B logcat -c 2>/dev/null
