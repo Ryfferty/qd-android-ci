@@ -103,7 +103,20 @@ jobs:
               SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py > /dev/null 2>&1
             python3 check_key.py
           done
+          echo ""
+          echo "########## 用命中身份（Q=设备QIMEI16）取最终密文 ##########"
+          Q16="$DEV_Q16" python3 argus_final.py 2>&1 | tail -8
+          python3 check_key.py
           cp /tmp/params.json /tmp/pj.json 2>/dev/null
+          echo "--- 最终 params 概要 ---"
+          python3 -c "
+import json
+d=json.load(open('/tmp/params.json'))
+print(' Key len=%d head=%s' % (len(d.get('Key','')), d.get('Key','')[:40]))
+print(' Version=%s' % d.get('Version'))
+print(' blob_b64 len=%d' % len(d.get('blob_b64','')))
+print(' chapter_id=%s' % d.get('chapter_id'))
+"
           exit 0
 
       - name: Upload
