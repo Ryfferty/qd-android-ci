@@ -1,0 +1,119 @@
+name: qd-464win
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+          exit 0
+
+      - name: redroid + 464 + 跳过隐私/登录 + 初始化
+        run: |
+          set +e
+          B=localhost:5555
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=[$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')]"
+          curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 30 adb -s $B wait-for-device
+          bash write_consent.sh 2>&1 | tail -2
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 25
+          for i in 1 2 3 4 5; do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+            for ID in btnAgree upgrade_dialog_close_btn btn_negative tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u2.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { echo "  点 $ID @ $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 4; }
+            done
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            echo "  轮$i MMKV=${SZ}B"
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break
+          done
+          for i in $(seq 1 6); do sleep 10; SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r'); echo "  init t=$((i*10))s MMKV=${SZ}B"; [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break; done
+          exit 0
+
+      - name: 阶段1 — 起 frida（改名）+ 提取 userKey
+        run: |
+          set +e
+          B=localhost:5555
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fsd 2>/dev/null; chmod +x fsd
+          timeout 60 adb -s $B push fsd /data/local/tmp/fsd >/dev/null 2>&1
+          timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fsd"
+          timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 20 adb -s $B forward tcp:27042 tcp:27042
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=[$P]"
+          [ -z "$P" ] && exit 0
+          ( sleep 45 ) | timeout 80 frida -H 127.0.0.1:27042 -p "$P" -l stepZ_getuk.js > /tmp/uk.txt 2>&1
+          UK=$(grep -oE 'USERKEY=[A-Za-z0-9]+' /tmp/uk.txt | head -1 | cut -d= -f2)
+          echo "提取到 userKey=[$UK]"
+          echo "DEV_ANDROID_ID=$UK" >> $GITHUB_ENV
+          echo "USRKEY=$UK" >> $GITHUB_ENV
+          exit 0
+
+      - name: 阶段2 — 用同一身份取密文（同源）
+        env:
+          DEV_ANDROID_ID: ${{ env.DEV_ANDROID_ID }}
+          DEV_MODEL: redroid11_arm64
+          DEV_IMEI: ${{ env.DEV_ANDROID_ID }}
+        run: |
+          set +e
+          echo "用身份 DEV_ANDROID_ID=$DEV_ANDROID_ID 取密文"
+          SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py 2>&1 | tail -12
+          cp /tmp/params.json /tmp/pj.json 2>/dev/null
+          ls -la /tmp/pj.json
+          timeout 60 adb -s localhost:5555 push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
+          timeout 20 adb -s localhost:5555 shell "printf '%s' '$USRKEY' > /data/local/tmp/userkey.txt"
+          timeout 20 adb -s localhost:5555 shell "cat /data/local/tmp/userkey.txt"
+          exit 0
+
+      - name: 阶段3 — 解锁（3 参重载 + 矩阵）
+        run: |
+          set +e
+          B=localhost:5555
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=[$P]"
+          [ -z "$P" ] && { echo "App 不在了"; exit 0; }
+          ( sleep 120 ) | timeout 200 frida -H 127.0.0.1:27042 -p "$P" -l stepI_final.js > /tmp/final.txt 2>&1
+          grep -oE "\{'m': '[^']*'" /tmp/final.txt | sed "s/^{'m': '//" | head -60
+          echo "--- 设备端明文 ---"
+          timeout 20 adb -s $B shell "ls -la /data/local/tmp/plain_464_WIN.txt 2>/dev/null" | head -2
+          timeout 30 adb -s $B pull /data/local/tmp/plain_464_WIN.txt /tmp/plain_464_WIN.txt >/dev/null 2>&1 && { echo "明文大小: $(wc -c < /tmp/plain_464_WIN.txt)B"; head -c 800 /tmp/plain_464_WIN.txt; echo; }
+          cp /tmp/final.txt /tmp/logcat.txt 2>/dev/null
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: win464
+          path: |
+            /tmp/final.txt
+            /tmp/plain_464_WIN.txt
+            /tmp/pj.json
+          if-no-files-found: warn
