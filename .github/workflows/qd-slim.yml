@@ -50,8 +50,8 @@ jobs:
         run: |
           set +e
           B=localhost:5555
-          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
-          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          curl -sSL --max-time 900 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          adb -s $B push qd.apk /data/local/tmp/qd.apk >/dev/null 2>&1; adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/qd.apk" 2>&1 | tail -3
           FR=16.7.19
           curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
           unxz -f fs.xz && mv fs fs-server && chmod +x fs-server
