@@ -199,9 +199,9 @@ jobs:
 
           # ★ v53：让 App 自己请求密钥（内部 getH→save→add），再展开池子、再 unlock
           # ★ 瘦身版：只做「看池子 + 装载 + 主线程解密」，不做长等待
-          run_step methods
           run_step mapdump4
-          run_step initload
+          # ★ v66：决定性一步 —— loadLocalKey → addMap（装进引擎）→ unlock
+          run_step addmap
           run_step mainthread
 
           echo
