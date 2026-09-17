@@ -24,29 +24,34 @@ jobs:
           python3 -c "print('deps ok')"
           exit 0
 
-      - name: 用两个账号各取一次（同一身份 Q）
+      - name: IMEI 矩阵测试（同一 Q，不同 IMEI）
         run: |
           set +e
-          echo "${{ secrets.QD_SESS_900069660351 }}" | base64 -d > /tmp/sess_a.json 2>/dev/null
-          echo "${{ secrets.QD_SESS_2719559418 }}" | base64 -d > /tmp/sess_b.json 2>/dev/null
-          ls -la /tmp/sess_a.json /tmp/sess_b.json
-          for pair in "a:900069660351" "b:2719559418"; do
-            L=${pair%%:*}; A=${pair##*:}
-            echo "########## 账号 $A （标记 $L）##########"
-            SESS=/tmp/sess_$L.json Q16="${{ inputs.q16 }}" BOOK=${{ inputs.book }} CID=${{ inputs.cid }} \
-              timeout 90 python3 argus_final.py 2>&1 | tail -6
-            cp /tmp/params.json /tmp/params_$L.json 2>/dev/null
+          mkdir -p /tmp/sess
+          echo "${{ secrets.QD_SESS_900069660351 }}" | base64 -d > /tmp/sess/900069660351.json 2>/dev/null
+          Q="${{ inputs.q16 }}"
+          # IMEI 候选矩阵：空 / 我们原本的假值 / 与 Q 相同 / androidId（这里用 Q 的前 15 位近似）
+          i=0
+          for IM in "" "5a271be5da434be" "$Q" "${Q:0:15}"; do
+            i=$((i+1))
+            echo "########## IMEI 候选 $i = [$IM] ##########"
+            DEV_IMEI="$IM" DEV_ANDROID_ID="$Q" DEV_MODEL=redroid11_arm64 SESS=/tmp/sess/900069660351.json \
+              BOOK=${{ inputs.book }} CID=${{ inputs.cid }} timeout 90 python3 argus_final.py 2>&1 | tail -4
+            cp /tmp/params.json /tmp/params_i$i.json 2>/dev/null
             python3 summarize_params.py 2>/dev/null
             echo
           done
+          ls -la /tmp/params_i*.json
           exit 0
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: acct
+          name: imei
           path: |
-            /tmp/params_a.json
-            /tmp/params_b.json
+            /tmp/params_i1.json
+            /tmp/params_i2.json
+            /tmp/params_i3.json
+            /tmp/params_i4.json
           if-no-files-found: warn
