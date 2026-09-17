@@ -136,8 +136,8 @@ jobs:
               continue
             fi
             echo "  try$try: PID=[$P] attach..."
-            ( sleep 75 ) | timeout 130 frida -H 127.0.0.1:27042 -p "$P" -l stepS_snpair.js > /tmp/sn.txt 2>&1
-            if grep -q 'PAIR#' /tmp/sn.txt 2>/dev/null; then
+            ( sleep 75 ) | timeout 130 frida -H 127.0.0.1:27042 -p "$P" -l stepT_qdinfo.js > /tmp/sn.txt 2>&1
+            if grep -q '### ' /tmp/sn.txt 2>/dev/null; then
               echo "  ✓ try$try 抓到样本"
               break
             fi
@@ -148,7 +148,7 @@ jobs:
           done
           echo "--- 原始前 15 行 ---"; head -15 /tmp/sn.txt
           echo "--- 样本 ---"
-          grep -E "=== S:|hook sn|PAIR#|IN\[|OUT\[" /tmp/sn.txt | head -40
+          grep -E "=== T:|hook sn|PAIR#|IN\[|OUT\[" /tmp/sn.txt | head -40
           echo "--- 设备端 SN_PAIRS ---"
           timeout 30 adb -s $B pull /data/local/tmp/SN_PAIRS.txt /tmp/SN_PAIRS.txt >/dev/null 2>&1 && { wc -c /tmp/SN_PAIRS.txt; head -30 /tmp/SN_PAIRS.txt; }
           cp /tmp/sn.txt /tmp/dec.txt 2>/dev/null
@@ -164,6 +164,7 @@ jobs:
             /tmp/mmkv.bin
             /tmp/SN_DUMP.txt
             /tmp/SN_PAIRS.txt
+            /tmp/QDIFF.txt
             /tmp/params.json
             /tmp/dec.txt
             /tmp/plain_O.txt
