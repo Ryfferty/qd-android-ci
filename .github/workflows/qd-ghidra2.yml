@@ -1,0 +1,113 @@
+name: qd-ghidra2
+on:
+  workflow_dispatch:
+    inputs:
+      names:
+        description: '符号名（逗号分隔）'
+        default: 'Java_a_b_b,Java_a_b_c'
+      addrs:
+        description: '地址（逗号分隔，如 10a7b8）'
+        default: ''
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 JDK + Ghidra（固定 URL）
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq openjdk-17-jre-headless unzip curl || echo APT_PARTIAL
+          GH_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip"
+          curl -sSL --max-time 900 -o ghidra.zip "$GH_URL"
+          ls -la ghidra.zip
+          unzip -q ghidra.zip -d /opt/ 2>&1 | tail -1
+          GH=$(ls -d /opt/ghidra_* 2>/dev/null | head -1)
+          echo "GHIDRA=$GH" >> $GITHUB_ENV
+          echo "Ghidra: $GH"
+
+      - name: 反编译 libload-jni.so
+        run: |
+          set +e
+          ls -la libso/ 2>/dev/null
+          cat > /tmp/Decomp2.java <<'JEOF'
+          // @category Decomp
+          import ghidra.app.script.GhidraScript;
+          import ghidra.app.decompiler.*;
+          import ghidra.program.model.listing.*;
+          import ghidra.program.model.address.*;
+          import ghidra.program.model.symbol.*;
+          import ghidra.program.model.mem.*;
+          import java.io.*;
+
+          public class Decomp2 extends GhidraScript {
+              public void run() throws Exception {
+                  DecompInterface di = new DecompInterface();
+                  di.openProgram(currentProgram);
+                  PrintWriter w = new PrintWriter(new FileWriter("/tmp/out2.txt"));
+                  String names = System.getenv("TARGET_NAMES");
+                  String addrsS = System.getenv("TARGET_ADDRS");
+                  if (names != null && !names.trim().isEmpty()) {
+                      for (String n : names.split(",")) {
+                          n = n.trim();
+                          if (n.isEmpty()) continue;
+                          Symbol s = getSymbol(n, null);
+                          if (s == null) { w.println("### 未找到符号: " + n); continue; }
+                          Address a = s.getAddress();
+                          Function f = getFunctionAt(a);
+                          if (f == null) { disassemble(a); f = createFunction(a, n); }
+                          dump(di, f, n, w);
+                      }
+                  }
+                  if (addrsS != null && !addrsS.trim().isEmpty()) {
+                      for (String t : addrsS.split(",")) {
+                          long v = Long.parseLong(t.trim(), 16);
+                          Address a = currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(v);
+                          Function f = getFunctionAt(a);
+                          if (f == null) { disassemble(a); f = createFunction(a, null); }
+                          dump(di, f, "0x" + Long.toHexString(v), w);
+                      }
+                  }
+                  // 同时列出全部导出函数
+                  w.println("\n### 全部函数符号 ###");
+                  for (Symbol s : currentProgram.getSymbolTable().getAllSymbols(true)) {
+                      if (s.getSymbolType() == SymbolType.FUNCTION) {
+                          w.println("  " + s.getName() + " @ " + s.getAddress());
+                      }
+                  }
+                  w.close();
+                  System.out.println("行数: " + new java.io.File("/tmp/out2.txt").length());
+              }
+              void dump(DecompInterface di, Function f, String label, PrintWriter w) throws Exception {
+                  if (f == null) { w.println("### " + label + " : 无函数"); return; }
+                  w.println("========================================");
+                  w.println("### [" + label + "] " + f.getName() + " @ " + f.getEntryPoint()
+                          + " (" + f.getBody().getNumAddresses() + " bytes)");
+                  DecompileResults r = di.decompileFunction(f, 60, monitor);
+                  if (r != null && r.decompileCompleted()) {
+                      w.println(r.getDecompiledFunction().getC());
+                  } else {
+                      w.println("(反编译失败)");
+                  }
+              }
+          }
+          JEOF
+          mkdir -p gs && cp /tmp/Decomp2.java gs/Decomp2.java
+          SO=$(ls libso/*.so 2>/dev/null | head -1)
+          echo "目标: $SO"
+          TARGET_NAMES="${{ inputs.names }}" TARGET_ADDRS="${{ inputs.addrs }}" \
+            "$GHIDRA/support/analyzeHeadless" /tmp/gp proj -import "$SO" -scriptPath "$PWD/gs" \
+            -postScript Decomp2.java -deleteProject 2>&1 | tail -12
+          echo "=== 行数: $(wc -l < /tmp/out2.txt 2>/dev/null) ==="
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decomp2
+          path: /tmp/out2.txt
+          if-no-files-found: warn
