@@ -95,7 +95,7 @@ jobs:
               }
           }
           JEOF
-          mkdir -p gs && cp /tmp/Decomp2.java gs/Decomp2.java
+          mkdir -p gs /tmp/gp && cp /tmp/Decomp2.java gs/Decomp2.java
           SO=$(ls libso/*.so 2>/dev/null | head -1)
           echo "目标: $SO"
           TARGET_NAMES="${{ inputs.names }}" TARGET_ADDRS="${{ inputs.addrs }}" \
