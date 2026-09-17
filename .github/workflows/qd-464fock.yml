@@ -1,0 +1,65 @@
+name: qd-464-fock
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps + redroid + frida
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 40); do adb connect localhost:5555 >/dev/null 2>&1; S=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          adb -s localhost:5555 shell "echo BOOT_OK"
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fs-server 2>/dev/null; chmod +x fs-server
+          adb -s localhost:5555 push fs-server /data/local/tmp/frida-server >/dev/null 2>&1
+          adb -s localhost:5555 shell chmod 755 /data/local/tmp/frida-server
+          adb -s localhost:5555 shell "nohup /data/local/tmp/frida-server >/dev/null 2>&1 &"
+          sleep 8
+          adb -s localhost:5555 forward tcp:27042 tcp:27042
+          exit 0
+
+      - name: 装 464 + 探 FockUtil
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 1800 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 35
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "App PID=[$PID]"
+          [ -z "$PID" ] && { echo NO_APP; exit 0; }
+          echo "=== 探 FockUtil（464）==="
+          timeout 90 frida -H 127.0.0.1:27042 -p "$PID" -l step_probe464.js -q > /tmp/p464.txt 2>&1
+          grep -oE "\{'m': '[^']*'" /tmp/p464.txt | sed "s/^{'m': '//" | head -40
+          echo "--- 原始 ---"
+          head -20 /tmp/p464.txt
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fock464
+          path: /tmp/p464.txt
+          if-no-files-found: warn
