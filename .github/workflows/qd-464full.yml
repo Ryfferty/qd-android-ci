@@ -1,0 +1,106 @@
+name: qd-464full
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+          exit 0
+
+      - name: redroid + 装 464 + 跳过隐私 + 跳登录 + 等初始化
+        run: |
+          set +e
+          B=localhost:5555
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=[$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')]"
+          curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 30 adb -s $B wait-for-device
+          echo "=== 跳过隐私弹窗（写 app_sp.xml）==="
+          bash write_consent.sh 2>&1 | tail -4
+          echo "=== 启动 464 ==="
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 25
+          echo "=== 关弹窗 + 跳登录（最多 5 轮）==="
+          for i in 1 2 3 4 5; do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            ACT=$(timeout 8 adb -s $B shell "dumpsys activity activities | grep ResumedActivity" | tr -d '\r' | grep -oE '[A-Za-z]+Activity' | head -1)
+            echo "  轮$i activity=$ACT"
+            timeout 10 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+            python3 uitext.py /tmp/u2.xml 2>/dev/null | head -6
+            for ID in btnAgree upgrade_dialog_close_btn btn_negative tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u2.xml $ID 2>/dev/null | head -1)
+              if [ -n "$XY" ]; then echo "    点 $ID @ $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 4; fi
+            done
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            echo "    MMKV 大小=$SZ"
+            case "$ACT" in *GuidanceActivity*|*SplashActivity*) : ;; *) echo "    ✓ 已离开首屏"; break ;; esac
+          done
+          echo "=== 等 App 初始化（MMKV 变大，最多 90 秒）==="
+          for i in $(seq 1 9); do
+            sleep 10
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            P=$(timeout 6 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            echo "  t=$((i*10))s PID=[$P] MMKV=${SZ}B"
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && { echo "  ✓ MMKV 已初始化"; break; }
+          done
+          echo "=== MMKV 里的 QIMEI 痕迹 ==="
+          timeout 20 adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils" 2>/dev/null | tr -d '\r' | strings | grep -iE 'QIMEI|54:00' | head -6
+          exit 0
+
+      - name: 改名起 frida + 探测（QIMEI / Fock / unlock）
+        run: |
+          set +e
+          B=localhost:5555
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fsd 2>/dev/null; chmod +x fsd
+          timeout 60 adb -s $B push fsd /data/local/tmp/fsd >/dev/null 2>&1
+          timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fsd"
+          timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 20 adb -s $B forward tcp:27042 tcp:27042
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "起 frida 后 PID=[$P]"
+          [ -z "$P" ] && { echo "App 被 frida 杀了"; exit 0; }
+          SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py > /dev/null 2>&1
+          cp /tmp/params.json /tmp/pj.json 2>/dev/null
+          timeout 60 adb -s $B push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
+          echo "=== 探测（stepG_qimei）==="
+          ( sleep 150 ) | timeout 220 frida -H 127.0.0.1:27042 -p "$P" -l stepG_qimei.js > /tmp/probeG.txt 2>&1
+          grep -oE "\{'m': '[^']*'" /tmp/probeG.txt | sed "s/^{'m': '//" | head -60
+          echo "--- 原始前 20 行 ---"; head -20 /tmp/probeG.txt
+          cp /tmp/probeG.txt /tmp/logcat.txt 2>/dev/null
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full464
+          path: |
+            /tmp/probeG.txt
+            /tmp/logcat.txt
+          if-no-files-found: warn
