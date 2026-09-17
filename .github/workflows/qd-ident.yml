@@ -81,38 +81,47 @@ jobs:
           ls -la /tmp/mmkv.bin
           exit 0
 
-      - name: 用设备真实身份跑协议 + 对照 Key
-        env:
-          DEV_ANDROID_ID: ${{ env.DEV_ANDROID_ID }}
-          DEV_MODEL: ${{ env.DEV_MODEL }}
-          DEV_IMEI: ${{ env.DEV_IMEI }}
+      - name: 用设备真实身份跑协议（纯协议取数）
         run: |
           set +e
-          echo "=== 用抓到的设备身份跑协议 ==="
-          echo "DEV_ANDROID_ID=[$DEV_ANDROID_ID] DEV_MODEL=[$DEV_MODEL] DEV_IMEI=[$DEV_IMEI]"
-          SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py 2>&1 | tail -15
-          echo "=== 身份矩阵测试（Q 用设备真实值 / androidId / 两者混合）==="
-          cp /tmp/params.json /tmp/params_default.json 2>/dev/null
-          for COMBO in "qimei16|qimei16" "qimei16|androidid" "androidid|qimei16" "qimei16|empty"; do
-            QV=$(echo $COMBO | cut -d'|' -f1); IV=$(echo $COMBO | cut -d'|' -f2)
-            case "$QV" in qimei16) QVAL="$DEV_Q16";; androidid) QVAL="$DEV_ANDROID_ID";; *) QVAL="";; esac
-            case "$IV" in qimei16) IVAL="$DEV_Q16";; androidid) IVAL="$DEV_ANDROID_ID";; *) IVAL="";; esac
-            echo ""
-            echo "########## 组合 Q=$QV($QVAL) IMEI=$IV($IVAL) ##########"
-            DEV_ANDROID_ID="$QVAL" DEV_IMEI="$IVAL" DEV_MODEL="$DEV_MODEL" \
-              SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py > /dev/null 2>&1
-            python3 check_key.py
-          done
-          echo ""
-          echo "########## 用命中身份（Q=设备QIMEI16）取最终密文 ##########"
-          Q16="$DEV_Q16" SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 python3 argus_final.py 2>&1 | tail -8
+          echo "DEV_Q16=[$DEV_Q16] DEV_ANDROID_ID=[$DEV_ANDROID_ID]"
+          Q16="$DEV_Q16" SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_final.py 2>&1 | tail -8
           python3 check_key.py
-          cp /tmp/params.json /tmp/pj.json 2>/dev/null
-          echo "--- 最终 params 概要 ---"
-          python3 summarize_params.py
-          echo "--- 最终密文留存 ---"
           cp /tmp/params.json /tmp/final_params.json 2>/dev/null
-          python3 -c "import json;d=json.load(open('/tmp/final_params.json'));print('blob_b64 len=%d' % len(d.get('blob_b64','')))"
+          python3 summarize_params.py
+          exit 0
+
+      - name: 同源密文 → 设备解密（终局）
+        run: |
+          set +e
+          B=localhost:5555
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fsd 2>/dev/null; chmod +x fsd
+          timeout 60 adb -s $B push fsd /data/local/tmp/fsd >/dev/null 2>&1
+          timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fsd"
+          timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 20 adb -s $B forward tcp:27042 tcp:27042
+          # 把【同源密文】推到设备
+          python3 - <<'PY2'
+import json
+d=json.load(open('/tmp/params.json'))
+d['chapter_id']='903350205'
+json.dump(d, open('/tmp/pj.json','w'))
+print('推送 params: Key len=%d blob len=%d' % (len(d.get('Key','')), len(d.get('blob_b64',''))))
+PY2
+          timeout 60 adb -s $B push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=[$P]"
+          [ -z "$P" ] && { timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 25; P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); }
+          echo "=== 同步 attach 解密（同源密文 + 设备密钥）==="
+          ( sleep 90 ) | timeout 160 frida -H 127.0.0.1:27042 -p "$P" -l stepH_unlock.js > /tmp/dec.txt 2>&1
+          grep -oE "\{'m': '[^']*'" /tmp/dec.txt | sed "s/^{'m': '//" | head -50
+          echo "--- 设备端明文 ---"
+          timeout 30 adb -s $B pull /data/local/tmp/plain_464_FINAL.txt /tmp/plain_464_FINAL.txt >/dev/null 2>&1 && { echo "明文大小: $(wc -c < /tmp/plain_464_FINAL.txt)B"; head -c 1500 /tmp/plain_464_FINAL.txt; echo; }
+          cp /tmp/dec.txt /tmp/win_out.txt 2>/dev/null
           exit 0
 
       - name: Upload
@@ -123,4 +132,7 @@ jobs:
           path: |
             /tmp/mmkv.bin
             /tmp/params.json
+            /tmp/dec.txt
+            /tmp/plain_464_FINAL.txt
+            /tmp/win_out.txt
           if-no-files-found: warn
