@@ -1,0 +1,88 @@
+name: qd-dev
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps + redroid
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl unzip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          timeout 30 adb -s localhost:5555 root >/dev/null 2>&1; sleep 5
+          pip install -q pycryptodome 2>&1 | tail -1
+          exit 0
+
+      - name: 装 464 + 初始化 + 读身份
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 20 adb -s $B shell "mkdir -p /data/data/com.qidian.QDReader/shared_prefs && echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml"
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          for i in $(seq 1 10); do
+            sleep 12
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            for ID in btnAgree tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
+            done
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            echo "  t=$((i*12))s MMKV=${SZ}B"
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break
+          done
+          timeout 60 adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils" > /tmp/mmkv.bin 2>/dev/null
+          Q16=$(strings /tmp/mmkv.bin | grep -oE 'O_STAR_Q_IMEI_16%\$[0-9a-f]{20,40}' | head -1 | sed 's/.*\$//')
+          AID=$(timeout 10 adb -s $B shell settings get secure android_id | tr -d '\r')
+          DEVID=$(timeout 30 adb -s $B shell "cat /data/data/com.qidian.QDReader/shared_prefs/RMonitor_SP.xml 2>/dev/null" | tr -d '\r' | grep -oE '"deviceid":"[0-9a-f]{32}"' | head -1 | sed 's/.*:"//;s/"//')
+          [ -z "$DEVID" ] && DEVID=$(timeout 30 adb -s $B shell "grep -rho 'last_save_unique_id\">[0-9a-f]*' /data/data/com.qidian.QDReader/shared_prefs/ 2>/dev/null" | head -1 | sed 's/.*>//')
+          echo "★ QIMEI16=[$Q16]"
+          echo "★ android_id=[$AID]"
+          echo "★ deviceId=[$DEVID]"
+          timeout 20 adb -s $B shell "cat /data/data/com.qidian.QDReader/shared_prefs/QV1com.ola.star.sdk.OstarSDK07590fcb1c95ff60.xml 2>/dev/null" | tr -d '\r' | grep -oE 'name="UUID">[^<]*' | head -2
+          echo "Q16=$Q16" >> $GITHUB_ENV
+          echo "AID=$AID" >> $GITHUB_ENV
+          echo "DEVID=$DEVID" >> $GITHUB_ENV
+          echo "DEV_Q16=$Q16" >> $GITHUB_ENV
+          echo "DEV_ANDROID_ID=$AID" >> $GITHUB_ENV
+          echo "DEV_MODEL=redroid11_arm64" >> $GITHUB_ENV
+          echo "DEV_DEVICEID=$DEVID" >> $GITHUB_ENV
+          exit 0
+
+      - name: ★ 取数（QDInfo 带 deviceId）
+        run: |
+          set +e
+          echo "身份: Q=[$DEV_Q16] AID=[$DEV_ANDROID_ID] DEVID=[$DEV_DEVICEID]"
+          mkdir -p /tmp/sess
+          echo "${{ secrets.QD_SESS_900069660351 }}" | base64 -d > /tmp/sess/s.json 2>/dev/null
+          SESS=/tmp/sess/s.json BOOK=1049120379 CID=903350205 timeout 120 python3 argus_final.py 2>&1 | tail -8
+          python3 check_key.py 2>/dev/null
+          cp /tmp/params.json /tmp/params_dev.json 2>/dev/null
+          echo "DEVID=$DEV_DEVICEID" > /tmp/devid.txt
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dev
+          path: |
+            /tmp/params_dev.json
+            /tmp/devid.txt
+          if-no-files-found: warn
