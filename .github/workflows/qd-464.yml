@@ -32,8 +32,8 @@ jobs:
           set +e
           B=localhost:5555
           echo "=== 下载 464 ==="
-          curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464_slim.apk" || \
-          curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          # ★ 用【原版未瘦身】的 464 —— 瘦身版删了 lib/armeabi-v7a 的库，导致 v2 签名校验失败
+          curl -sSL --max-time 1800 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
           ls -la q464.apk; file q464.apk | head -1
           echo "=== 先删旧的 ==="
           adb -s $B uninstall com.qidian.QDReader 2>&1 | tail -1
