@@ -52,7 +52,11 @@ Java.perform(function(){
     var rk1=callBytes('addKeypool',[kb, 1639985422]); S({m:'② addKeypool(key,ver:int) → '+(rk1.ok?'OK':rk1.err)});
     var rk2=callBytes('addKeypool',[kb, Ver]);        S({m:'② addKeypool(key,ver:String) → '+(rk2.ok?'OK':rk2.err)});
     var rk3=callBytes('addKeypool',[Key, Ver]);       S({m:'② addKeypool(key:String,ver:String) → '+(rk3.ok?'OK':rk3.err)});
-    var rv=callBytes('addedKeyVersions',[]); if(rv.ok){ try{ S({m:'② addedKeyVersions='+Java.use('java.util.Arrays').toString(rv.ret))}catch(e){ S({m:'② addedKeyVersions(数组)'})} }
+    var rv=callBytes('addedKeyVersions',[]);
+    if(rv.ok){
+      try{ S({m:'② addedKeyVersions='+Java.use('java.util.Arrays').toString(rv.ret)}); }
+      catch(e){ S({m:'② addedKeyVersions(数组,无法打印)'}); }
+    }
     // ③ uk：真签名全试
     var cand=[['uk',[db, chId]],['uk',[db, ub]],['uk',[db, 903350205]],['uk',[db, ub, 0]],['uk',[db, 903350205, 0]]];
     for(var i=0;i<cand.length;i++){
