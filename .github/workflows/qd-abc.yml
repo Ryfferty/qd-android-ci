@@ -59,7 +59,13 @@ jobs:
           adb -s $B logcat -c 2>/dev/null
           nohup adb -s $B logcat -v time > /tmp/lc.txt 2>&1 &
 
-          if [ "$M" = "d" ]; then
+          if [ "$M" = "e" ]; then
+            echo "########## E: Python frida 客户端（spawn+attach+反自杀）##########"
+            MODE=e TARGET_PKG=com.qidian.QDReader WAIT_SEC=60 timeout 300 python3 frida_driver.py > /tmp/outE.txt 2>&1
+            echo "--- 原始 ---"; cat /tmp/outE.txt | head -60
+            grep -E "存活|PROBE_RESULT|★★|已挂|相关" /tmp/outE.txt | head -40
+            cp /tmp/outE.txt /tmp/outA.txt 2>/dev/null
+          elif [ "$M" = "d" ]; then
             echo "########## D: spawn + 挂钩自杀点 ##########"
             ( sleep 60 ) | timeout 120 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l stepD_antikill.js > /tmp/outD.txt 2>&1
             echo "--- 原始 ---"; head -30 /tmp/outD.txt
