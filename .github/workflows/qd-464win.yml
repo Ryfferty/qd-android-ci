@@ -53,7 +53,7 @@ jobs:
           for i in $(seq 1 6); do sleep 10; SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r'); echo "  init t=$((i*10))s MMKV=${SZ}B"; [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break; done
           exit 0
 
-      - name: CLI 决胜（设 userKey → 同身份取密文 → unlock）
+      - name: 抓 App 自己的 unlock（同源密文）
         run: |
           set +e
           B=localhost:5555
@@ -69,20 +69,18 @@ jobs:
           P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "PID=[$P]"
           [ -z "$P" ] && { echo "重启 App"; timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 25; P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); }
-          # ★ 统一身份：用实测到的 userKey 值（两边相同 ⇒ 同源）
-          FIXED="a151b60fb5ae06b3562ca1dd10001cf1a911"
-          echo "使用固定 userKey=$FIXED"
-          timeout 20 adb -s $B shell "printf '%s' '$FIXED' > /data/local/tmp/fixeduk.txt"
-          # 用同一身份取密文
-          DEV_ANDROID_ID=$FIXED DEV_IMEI=$FIXED DEV_MODEL=redroid11_arm64 SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 timeout 90 python3 argus_fetch.py 2>&1 | tail -6
-          cp /tmp/params.json /tmp/pj.json 2>/dev/null
-          timeout 60 adb -s $B push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
-          echo "=== CLI attach 解锁 ==="
-          ( sleep 90 ) | timeout 150 frida -H 127.0.0.1:27042 -p "$P" -l stepJ_win.js > /tmp/final.txt 2>&1
-          grep -oE "\{'m': '[^']*'" /tmp/final.txt | sed "s/^{'m': '//" | head -60
-          echo "--- 明文 ---"
-          timeout 30 adb -s $B pull /data/local/tmp/plain_WIN.txt /tmp/plain_WIN.txt >/dev/null 2>&1 && { echo "明文大小: $(wc -c < /tmp/plain_WIN.txt)B"; head -c 1200 /tmp/plain_WIN.txt; echo; }
-          cp /tmp/final.txt /tmp/win_out.txt 2>/dev/null
+          timeout 20 adb -s $B shell "rm -f /data/local/tmp/CAPTURED_* /data/local/tmp/plain_K.txt"
+          echo "=== 保持 attach 150 秒，捕获 App 自己的调用 ==="
+          ( sleep 150 ) | timeout 220 frida -H 127.0.0.1:27042 -p "$P" -l stepK_capture.js > /tmp/k.txt 2>&1
+          grep -oE "\{'m': '[^']*'" /tmp/k.txt | sed "s/^{'m': '//" | head -60
+          echo "--- 设备端捕获物 ---"
+          timeout 20 adb -s $B shell "ls -la /data/local/tmp/CAPTURED_* /data/local/tmp/plain_K.txt 2>/dev/null" | head -8
+          for f in CAPTURED_unlock_data.txt CAPTURED_unlock_ak.txt CAPTURED_uk.txt plain_K.txt; do
+            timeout 30 adb -s $B pull /data/local/tmp/$f /tmp/$f >/dev/null 2>&1 && echo "  $f = $(wc -c < /tmp/$f)B"
+          done
+          echo "--- 明文预览 ---"
+          [ -f /tmp/plain_K.txt ] && { head -c 1000 /tmp/plain_K.txt; echo; }
+          cp /tmp/k.txt /tmp/win_out.txt 2>/dev/null
           exit 0
 
       - name: Upload
@@ -92,6 +90,8 @@ jobs:
           name: win464
           path: |
             /tmp/win_out.txt
-            /tmp/plain_WIN.txt
-            /tmp/params.json
+            /tmp/CAPTURED_unlock_data.txt
+            /tmp/CAPTURED_unlock_ak.txt
+            /tmp/CAPTURED_uk.txt
+            /tmp/plain_K.txt
           if-no-files-found: warn
