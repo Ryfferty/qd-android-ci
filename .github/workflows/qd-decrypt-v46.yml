@@ -187,8 +187,26 @@ jobs:
           sleep 30
           run_step keymap2
           run_step afterkey
-          # ★ v54：hook FockUtil，捕获 App 自己调用时的真实参数
-          run_step hookfock
+          # ★ v56：hook FockUtil 并【保持 attach 90 秒】，捕获 App 自己读章时的真实调用
+          echo "=== 步骤 hookfock (保持 attach 版) ==="
+          ensure_app
+          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "  PID=$PID"
+          if [ -n "$PID" ]; then
+            adb -s $B shell "rm -f /data/local/tmp/fock_trace.txt /data/local/tmp/captured_unlock_data.txt" 2>/dev/null
+            timeout 140 frida -H 127.0.0.1:27042 -p "$PID" -l step_hookfock.js > /tmp/fock.log 2>&1 &
+            FPID=$!
+            sleep 95
+            kill $FPID 2>/dev/null
+            echo "  --- frida 捕获日志 ---"
+            grep -E "App 调|hook .* 装上|deeplink|★★" /tmp/fock.log | head -25
+            sleep 2
+            echo "  --- 设备端 fock_trace ---"
+            adb -s $B pull /data/local/tmp/fock_trace.txt /tmp/fock_trace.txt >/dev/null 2>&1 && { wc -c /tmp/fock_trace.txt; head -c 2500 /tmp/fock_trace.txt; echo; } || echo "  (无 fock_trace)"
+            adb -s $B pull /data/local/tmp/captured_unlock_data.txt /tmp/captured_unlock_data.txt >/dev/null 2>&1 && { echo "  密文大小: $(wc -c < /tmp/captured_unlock_data.txt)B"; head -c 200 /tmp/captured_unlock_data.txt; echo; } || echo "  (无 captured_unlock_data)"
+          else
+            echo "  无进程，跳过"
+          fi
 
           echo
           echo "########## 明文 ##########"
