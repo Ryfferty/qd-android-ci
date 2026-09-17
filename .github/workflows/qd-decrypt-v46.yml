@@ -114,16 +114,32 @@ jobs:
           adb -s $B push /tmp/sess.json /data/local/tmp/sess.json
           adb -s $B shell chmod 644 /data/local/tmp/sess.json
           adb -s $B shell "am force-stop com.qidian.QDReader" 2>/dev/null
-          sleep 4
-          adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
-          sleep 22
-          PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          sleep 5
+          # ★ 启动重试循环（monkey / am start 双路，最多 8 次）
+          PID=""
+          for k in 1 2 3 4 5 6 7 8; do
+            echo "  启动尝试 $k ..."
+            adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1
+            sleep 8
+            PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -z "$PID" ]; then
+              adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+              sleep 10
+              PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            fi
+            [ -n "$PID" ] && { echo "  ✓ 第 $k 次拿到 PID=[$PID]"; break; }
+          done
           echo "注入前 PID=[$PID]"
-          [ -z "$PID" ] && { echo NO_APP; exit 0; }
-          ( sleep 20; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1040025277/794290414" >/dev/null 2>&1 ) &
-          timeout 110 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v16_inject_session.js -q > /tmp/inj.txt 2>&1
-          echo "--- 注入结果 ---"
-          grep -E "載入|载入 sess|CookieManager|NONEMPTY|EMPTY|失败" /tmp/inj.txt | head -8
+          if [ -z "$PID" ]; then
+            echo "NO_APP —— 无法启动，跳过注入（本轮数据作废）"
+          else
+            ( sleep 25; adb -s $B shell "am start -a android.intent.action.VIEW -d QDReader://OpenBook/1040025277/794290414" >/dev/null 2>&1 ) &
+            timeout 130 frida -H 127.0.0.1:27042 -p "$PID" -l hook_v16_inject_session.js -q > /tmp/inj.txt 2>&1
+            echo "--- 注入结果 ---"
+            grep -E "载入 sess|CookieManager|NONEMPTY|EMPTY|失败|✗" /tmp/inj.txt | head -10
+            # ★ 二次确认：再 attach 一次读 CookieManager
+            timeout 60 frida -H 127.0.0.1:27042 -p "$PID" -e "Java.perform(function(){var c=Java.use('android.webkit.CookieManager').getInstance();send({m:'复查 CookieManager: '+(c.getCookie('https://qidian.com')||'EMPTY').slice(0,120)});});" -q 2>&1 | grep -E '复查|CookieManager' | head -3
+          fi
           echo "--- force-stop + 重启（让登录态生效）---"
           adb -s $B shell "am force-stop com.qidian.QDReader"
           sleep 5
