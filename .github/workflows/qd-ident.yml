@@ -110,30 +110,31 @@ jobs:
           # 把【同源密文】推到设备
           python3 prepare_pj.py
           timeout 60 adb -s $B push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
-          # ★ 重试 4 轮：App 不在就重启，attach 失败就重试
-          for try in 1 2 3 4; do
+          # ★ 正确顺序：先在设备上跑稳 App，再起 frida，再立刻 attach（重试 3 轮）
+          for try in 1 2 3; do
+            echo "  --- try$try ---"
             P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             if [ -z "$P" ]; then
-              echo "  try$try: App 不在，重启"
+              echo "    App 不在，启动并等它初始化 30 秒"
               timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
               sleep 30
-              continue
+              P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             fi
-            echo "  try$try: PID=[$P]，尝试 attach"
-            ( sleep 80 ) | timeout 140 frida -H 127.0.0.1:27042 -p "$P" -l stepN_sig.js > /tmp/dec.txt 2>&1
-            if grep -q '=== M:' /tmp/dec.txt 2>/dev/null; then
-              echo "  ✓ try$try 成功拿到输出"; break
-            fi
-            echo "  try$try 未拿到输出（$(head -c 100 /tmp/dec.txt | tr -d '\n')），重试"
+            echo "    PID=[$P]"
+            [ -z "$P" ] && continue
+            # 此时才起 frida-server（避免它先于 App 常驻导致自毁）
+            timeout 20 adb -s $B shell "pkill -f fsd 2>/dev/null; true"
+            timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+            sleep 6
+            timeout 20 adb -s $B forward tcp:27042 tcp:27042 >/dev/null 2>&1
+            ( sleep 70 ) | timeout 130 frida -H 127.0.0.1:27042 -p "$P" -l stepN_sig.js > /tmp/dec.txt 2>&1
+            if grep -q '=== N:' /tmp/dec.txt 2>/dev/null; then echo "    ✓ 拿到输出"; break; fi
+            echo "    未拿到（$(head -c 80 /tmp/dec.txt | tr -d '\n')）"
             sleep 10
           done
           echo "=== 解密输出 ==="
           grep -oE "\{'m': '[^']*'" /tmp/dec.txt 2>/dev/null | sed "s/^{'m': '//" | head -60
           echo "--- 原始前 12 行 ---"; head -12 /tmp/dec.txt 2>/dev/null
-          grep -oE "\{'m': '[^']*'" /tmp/dec.txt | sed "s/^{'m': '//" | head -50
-          echo "--- 设备端明文 ---"
-          timeout 30 adb -s $B pull /data/local/tmp/plain_N.txt /tmp/plain_N.txt >/dev/null 2>&1 && { echo "明文大小: $(wc -c < /tmp/plain_N.txt)B"; head -c 1500 /tmp/plain_N.txt; echo; }
-          cp /tmp/dec.txt /tmp/win_out.txt 2>/dev/null
           exit 0
 
       - name: Upload
