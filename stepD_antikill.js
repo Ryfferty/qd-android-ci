@@ -15,11 +15,9 @@ setImmediate(function(){
             onEnter:function(a){
               var extra='';
               try{
-                if(nm==='android_set_abort_message'||nm==='__android_log_assert'){
-                  extra=' msg='+a[0].readCString();
-                } else if(nm==='kill'||nm==='pthread_kill'||nm==='raise'){
-                  extra=' sig='+(nm==='kill'?a[1].toInt32():a[0].toInt32());
-
+                if(nm==='android_set_abort_message'||nm==='__android_log_assert'){ extra=' msg='+a[0].readCString(); }
+                else if(nm==='kill'){ extra=' sig='+a[1].toInt32(); }
+                else if(nm==='pthread_kill'||nm==='raise'){ extra=' arg0='+a[0].toInt32(); }
               }catch(e){ extra=' (读取失败)'; }
               S({m:'★★ ['+nm+'] 被调用'+extra});
             }
