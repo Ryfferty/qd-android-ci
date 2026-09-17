@@ -159,6 +159,12 @@ jobs:
         run: |
           set +e
           B=localhost:5555
+          # ★ v64：先确认模拟器里能连上起点的服务端
+          echo "########## 模拟器联网检查 ##########"
+          adb -s $B shell "ping -c 2 -W 3 bravev6.if.qidian.com" 2>&1 | tail -3
+          adb -s $B shell "ping -c 2 -W 3 www.qidian.com" 2>&1 | tail -3
+          adb -s $B shell "getprop | grep -iE 'net.dns|wlan0'" 2>&1 | head -4
+
           # ★ v57：后台抓 logcat，崩溃原因可查
           adb -s $B logcat -c 2>/dev/null
           adb -s $B logcat -v time > /tmp/logcat.txt 2>&1 &
@@ -193,6 +199,8 @@ jobs:
           echo "  等 App 自己完成密钥请求（30 秒）..."
           sleep 30
           run_step keymap2
+          # ★ v64：可靠遍历密钥 Map
+          run_step mapdump3
           run_step afterkey
           # ★ v61：init 让引擎从 MMKV 载入 Key，随后立刻 unlock
           run_step initload
