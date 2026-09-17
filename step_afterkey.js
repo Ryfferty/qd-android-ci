@@ -38,8 +38,18 @@ Java.perform(function(){
         while(it.hasNext()&&c<8){var en=it.next();arr.push(String(en.getKey())+'='+clip(en.getValue(),24));c++;}
         S({m:'★ getKeyMap 条目='+c+' → '+arr.join(' | ')});} else S({m:'getKeyMap=null'});
     }catch(e){ S({m:'getKeyMap 异常 '+String(e).slice(0,120)}); }
-    var uk=inst.getPreUserKey();
-    try{ var r=inst.unlock(blobB64, uk); S({m:'unlock: '+desc(r)}); }
-    catch(e){ S({m:'unlock 异常 '+String(e).slice(0,200)}); }
+    // ★ 第二参数（additionalKey）矩阵：章节 ID 优先（App 实测用法），再试 QIMEI/空串
+    var cands=[
+      ['章节ID('+chId+')', chId],
+      ['QIMEI', String(inst.getPreUserKey()||'')],
+      ['空串', '']
+    ];
+    for(var i=0;i<cands.length;i++){
+      var tag=cands[i][0], ak=cands[i][1];
+      try{
+        var r=inst.unlock(blobB64, ak);
+        S({m:'unlock['+tag+']: '+desc(r)});
+      }catch(e){ S({m:'unlock['+tag+'] 异常 '+String(e).slice(0,150)}); }
+    }
   }catch(e){ S({m:'✗ 顶层异常 '+String(e).slice(0,200)}); }
 });
