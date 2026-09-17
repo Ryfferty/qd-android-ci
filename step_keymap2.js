@@ -15,7 +15,9 @@ Java.perform(function(){
     S({m:'getKey='+clip(inst.getKey(),40)+' isHasKey='+inst.isHasKey()});
     // ① getKeyMap
     try{
-      var km=inst.getKeyMap(ctx);
+      var km=null;
+      try{ km=inst.getKeyMap.overload('android.content.Context').call(inst, ctx); }
+      catch(e1){ try{ km=inst.getKeyMap(ctx); }catch(e2){ S({m:'getKeyMap 解析失败 overload='+String(e1).slice(0,80)+' 直调='+String(e2).slice(0,80)}); } }
       if(km===null){S({m:'getKeyMap = null'});}
       else{
         var sz=km.size();
@@ -30,7 +32,9 @@ Java.perform(function(){
     }catch(e){ S({m:'getKeyMap 异常 '+String(e).slice(0,150)}); }
     // ② loadLocalKey
     try{
-      var lk=inst.loadLocalKey(ctx);
+      var lk=null;
+      try{ lk=inst.loadLocalKey.overload('android.content.Context').call(inst, ctx); }
+      catch(e1){ try{ lk=inst.loadLocalKey(ctx); }catch(e2){} }
       if(lk===null){S({m:'loadLocalKey = null'});}
       else{
         var sz2=lk.size(); S({m:'★ loadLocalKey: size='+sz2+' class='+lk.getClass().getName()});
