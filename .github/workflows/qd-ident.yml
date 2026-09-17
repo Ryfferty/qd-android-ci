@@ -109,14 +109,7 @@ jobs:
           python3 check_key.py
           cp /tmp/params.json /tmp/pj.json 2>/dev/null
           echo "--- 最终 params 概要 ---"
-          python3 -c "
-import json
-d=json.load(open('/tmp/params.json'))
-print(' Key len=%d head=%s' % (len(d.get('Key','')), d.get('Key','')[:40]))
-print(' Version=%s' % d.get('Version'))
-print(' blob_b64 len=%d' % len(d.get('blob_b64','')))
-print(' chapter_id=%s' % d.get('chapter_id'))
-"
+          python3 summarize_params.py
           exit 0
 
       - name: Upload
