@@ -1,0 +1,24 @@
+name: qd-vip2
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 准备会话
+        run: |
+          mkdir -p /tmp/ci
+          printf '%s' "$QD_SESS" > /tmp/ci/sess.json
+          wc -c /tmp/ci/sess.json
+        env:
+          QD_SESS: ${{ secrets.QD_SESS_900069660351 }}
+
+      - name: 测 VIP 端点（CI IP）
+        run: python3 ci/vip_test.py
+        env:
+          SESS: /tmp/ci/sess.json
+          DEV_ANDROID_ID: 7489ce4eb6aa591652700cf910001671a911
