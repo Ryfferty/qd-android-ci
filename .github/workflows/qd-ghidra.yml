@@ -22,7 +22,9 @@ jobs:
           sudo -S -p '' apt-get update -qq || true
           sudo -S -p '' apt-get install -y -qq openjdk-17-jre-headless unzip curl python3-pip || echo APT_PARTIAL
           java -version 2>&1 | head -2
-          GH_URL=$(curl -sL "https://api.github.com/repos/NationalSecurityAgency/ghidra/releases/latest" | python3 gh_url.py)
+          # ★ 硬编码 release URL（GitHub API 会限流，导致 GH_URL 为空 → 装不上 Ghidra）
+          GH_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip"
+          echo "用固定 URL: $GH_URL"
           echo "Ghidra: $GH_URL"
           curl -sSL --max-time 900 -o ghidra.zip "$GH_URL"
           ls -la ghidra.zip
