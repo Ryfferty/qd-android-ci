@@ -91,52 +91,43 @@ jobs:
           python3 summarize_params.py
           exit 0
 
-      - name: 同源密文 → 设备解密（终局）
+      - name: spawn 注入抓 sn 签名（App 发请求前就钩住）
         run: |
           set +e
           B=localhost:5555
-          echo "=== 装 frida（之前漏了，导致 frida: No such file or directory）==="
-          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
-          which frida || python3 -m pip show frida-tools | head -2
-          FR=16.7.19
-          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
-          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
-          mv -f fs fsd 2>/dev/null; chmod +x fsd
-          timeout 60 adb -s $B push fsd /data/local/tmp/fsd >/dev/null 2>&1
-          timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fsd"
-          timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
-          sleep 8
-          timeout 20 adb -s $B forward tcp:27042 tcp:27042
-          # 把【同源密文】推到设备
-          python3 prepare_pj.py
-          timeout 60 adb -s $B push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
-          # ★ 正确顺序：先在设备上跑稳 App，再起 frida，再立刻 attach（重试 3 轮）
-          for try in 1 2 3; do
-            echo "  --- try$try ---"
-            P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "=== 先确认 App 已初始化（MMKV>500）==="
+          for i in 1 2 3 4 5 6 7 8; do
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            P=$(timeout 6 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            echo "  t=$((i*10))s PID=[$P] MMKV=${SZ}B"
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break
             if [ -z "$P" ]; then
-              echo "    App 不在，启动并等它初始化 30 秒"
               timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
-              sleep 30
-              P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              sleep 12
+              timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+              timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+              for ID in btnAgree tvSkip; do
+                XY=$(python3 tap_id.py /tmp/u2.xml $ID 2>/dev/null | head -1)
+                [ -n "$XY" ] && { timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
+              done
             fi
-            echo "    PID=[$P]"
-            [ -z "$P" ] && continue
-            # 此时才起 frida-server（避免它先于 App 常驻导致自毁）
-            # ★ 只在 fsd 没在跑时才启动（重启它会触发壳的看门狗把 App 杀掉）
-            if ! timeout 10 adb -s $B shell "ps -A | grep -c fsd" | tr -d '\r' | grep -qv '^0'; then
-              timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
-              sleep 6
-            fi
-            timeout 20 adb -s $B forward tcp:27042 tcp:27042 >/dev/null 2>&1
-            ( sleep 70 ) | timeout 130 frida -H 127.0.0.1:27042 -p "$P" -l stepR_sn.js > /tmp/dec.txt 2>&1
-            if grep -q '=== R:' /tmp/dec.txt 2>/dev/null; then echo "    ✓ 拿到输出"; break; fi
-            echo "    未拿到（$(head -c 80 /tmp/dec.txt | tr -d '\n')）"
             sleep 10
           done
-          echo "=== 解密输出 ==="
-          grep -oE "\{'m': '[^']*'" /tmp/dec.txt 2>/dev/null | sed "s/^{'m': '//" | head -60
-          echo "--- 原始前 12 行 ---"; head -12 /tmp/dec.txt 2>/dev/null
+          echo "=== 起 frida（改名，App 已在跑）==="
+          if ! timeout 10 adb -s $B shell "ps -A | grep -c fsd" 2>/dev/null | tr -d '\r' | grep -qv '^0'; then
+            timeout 20 adb -s $B shell "setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+            sleep 6
+          fi
+          timeout 20 adb -s $B forward tcp:27042 tcp:27042 >/dev/null 2>&1
+          timeout 20 adb -s $B shell "rm -f /data/local/tmp/SN_DUMP.txt"
+          echo "=== spawn 注入（保持 stdin 100 秒）==="
+          ( sleep 100 ) | timeout 160 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l stepR_sn.js > /tmp/sn.txt 2>&1
+          echo "--- 原始前 15 行 ---"; head -15 /tmp/sn.txt
+          echo "--- hook 与捕获 ---"
+          grep -E "=== R:|hook |IN \[|OUT |URL=|deeplink" /tmp/sn.txt | head -50
+          echo "--- 设备端 SN_DUMP ---"
+          timeout 30 adb -s $B pull /data/local/tmp/SN_DUMP.txt /tmp/SN_DUMP.txt >/dev/null 2>&1 && { wc -c /tmp/SN_DUMP.txt; head -60 /tmp/SN_DUMP.txt; }
+          cp /tmp/sn.txt /tmp/dec.txt 2>/dev/null
           exit 0
 
       - name: Upload
