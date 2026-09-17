@@ -16,6 +16,7 @@ HOST = 'https://bravev6.if.qidian.com'
 IMEI  = os.environ.get('DEV_IMEI')       or '5a271be5da434be'
 Q     = os.environ.get('DEV_ANDROID_ID') or 'b3b295be58644158'
 MODEL = os.environ.get('DEV_MODEL')      or 'V2329A'
+DEVICEID = os.environ.get('DEV_DEVICEID') or ''
 print('设备身份 DEV: IMEI=%s Q=%s MODEL=%s' % (IMEI, Q, MODEL))
 
 
@@ -29,7 +30,7 @@ B64 = lambda b: base64.b64encode(b).decode()
 
 def qdinfo(u='0'):
     ts = str(int(time.time() * 1000))
-    f = [IMEI, APPVER, '720', '1184', ASRC, '14', '1', MODEL, VC, ASRC, '4', u, ts, '1', Q, '', '', '', '0']
+    f = [IMEI, APPVER, '720', '1184', ASRC, '14', '1', MODEL, VC, ASRC, DEVICEID or '4', u, ts, '1', Q, '', '', '', '0']
     k = b'0821CAAD409B8402'
     return B64(enc('|'.join(f).encode(), k + k[:8], b'\x00' * 8))
 
