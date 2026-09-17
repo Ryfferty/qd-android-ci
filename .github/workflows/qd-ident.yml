@@ -105,11 +105,14 @@ jobs:
           done
           echo ""
           echo "########## 用命中身份（Q=设备QIMEI16）取最终密文 ##########"
-          Q16="$DEV_Q16" python3 argus_final.py 2>&1 | tail -8
+          Q16="$DEV_Q16" SESS=/tmp/sess.json BOOK=1049120379 CID=903350205 python3 argus_final.py 2>&1 | tail -8
           python3 check_key.py
           cp /tmp/params.json /tmp/pj.json 2>/dev/null
           echo "--- 最终 params 概要 ---"
           python3 summarize_params.py
+          echo "--- 最终密文留存 ---"
+          cp /tmp/params.json /tmp/final_params.json 2>/dev/null
+          python3 -c "import json;d=json.load(open('/tmp/final_params.json'));print('blob_b64 len=%d' % len(d.get('blob_b64','')))"
           exit 0
 
       - name: Upload
