@@ -81,17 +81,7 @@ jobs:
           cp /tmp/params.json /tmp/params_app.json 2>/dev/null
           cp /tmp/params_app.json /tmp/params_dev.json 2>/dev/null
           echo
-          echo "=== 两份密文是否相同（相同=结构不影响绑定）==="
-          python3 - <<'PY2'
-import json
-a=json.load(open('/tmp/params_legacy.json')); b=json.load(open('/tmp/params_app.json'))
-print('  legacy blob head:', (a.get('blob_b64') or '')[:48])
-print('  app    blob head:', (b.get('blob_b64') or '')[:48])
-print('  相同?', (a.get('blob_b64') or '')[:64]==(b.get('blob_b64') or '')[:64])
-print('  Key 相同?', a.get('Key')==b.get('Key'))
-PY2
-          echo "DEVID=$DEV_DEVICEID" > /tmp/devid.txt
-          exit 0
+          python3 compare_struct.py
 
       - name: Upload
         if: always()
