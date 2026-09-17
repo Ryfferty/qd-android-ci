@@ -1,0 +1,47 @@
+name: qd-bionic
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: redroid 起来后拉 bionic 库
+        run: |
+          set +e
+          B=localhost:5555
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=[$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')]"
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 30 adb -s $B wait-for-device
+          mkdir -p /tmp/bionic
+          for f in libc.so libm.so libdl.so liblog.so libandroid.so libstdc++.so libz.so linker64 libc++_shared.so; do
+            timeout 60 adb -s $B pull /system/lib64/$f /tmp/bionic/$f >/dev/null 2>&1 && echo "  ✓ $f $(stat -c%s /tmp/bionic/$f)B" || echo "  ✗ $f"
+          done
+          echo "=== 也拉 32 位的（万一需要）==="
+          for f in libc.so libm.so libdl.so liblog.so; do
+            timeout 60 adb -s $B pull /system/lib/$f /tmp/bionic/32_$f >/dev/null 2>&1 && echo "  ✓ 32_$f" || true
+          done
+          ls -la /tmp/bionic/ | head -15
+          tar czf /tmp/bionic.tar.gz -C /tmp bionic 2>/dev/null
+          ls -la /tmp/bionic.tar.gz
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bionic
+          path: /tmp/bionic.tar.gz
+          if-no-files-found: warn
