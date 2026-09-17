@@ -129,8 +129,8 @@ jobs:
               sleep 6
             fi
             timeout 20 adb -s $B forward tcp:27042 tcp:27042 >/dev/null 2>&1
-            ( sleep 70 ) | timeout 130 frida -H 127.0.0.1:27042 -p "$P" -l stepP_uk.js > /tmp/dec.txt 2>&1
-            if grep -q '=== P:' /tmp/dec.txt 2>/dev/null; then echo "    ✓ 拿到输出"; break; fi
+            ( sleep 70 ) | timeout 130 frida -H 127.0.0.1:27042 -p "$P" -l stepQ_hookall.js > /tmp/dec.txt 2>&1
+            if grep -q '=== Q:' /tmp/dec.txt 2>/dev/null; then echo "    ✓ 拿到输出"; break; fi
             echo "    未拿到（$(head -c 80 /tmp/dec.txt | tr -d '\n')）"
             sleep 10
           done
