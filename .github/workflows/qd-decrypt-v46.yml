@@ -196,6 +196,8 @@ jobs:
           run_step afterkey
           # ★ v61：init 让引擎从 MMKV 载入 Key，随后立刻 unlock
           run_step initload
+          # ★ v63：主线程调用（native 必须在主线程，否则行为异常）
+          run_step mainthread
           # ★ v56：hook FockUtil 并【保持 attach 90 秒】，捕获 App 自己读章时的真实调用
           echo "=== 步骤 hookfock (保持 attach 版) ==="
           ensure_app
