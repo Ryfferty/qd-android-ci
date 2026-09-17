@@ -5,7 +5,7 @@ function readText(p){try{var f=Java.use('java.io.File').$new(p);if(!f.exists())r
  var buf=Java.array('byte',new Array(65536).fill(0));var n;while((n=fis.read(buf))>0)b.write(buf,0,n);fis.close();
  return Java.use('java.lang.String').$new(b.toByteArray(),'UTF-8')+'';}catch(e){return null;}}
 function clip(s,n){try{s=String(s);return s.length>n?s.slice(0,n)+'…['+s.length+']':s;}catch(e){return '?';}}
-setImmediate(function(){
+Java.perform(function(){
   try{
     var P={};
     try{P=JSON.parse(readText(DIR+'params.json')||'{}');}catch(e){}
