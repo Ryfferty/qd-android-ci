@@ -105,13 +105,7 @@ jobs:
           sleep 8
           timeout 20 adb -s $B forward tcp:27042 tcp:27042
           # 把【同源密文】推到设备
-          python3 - <<'PY2'
-import json
-d=json.load(open('/tmp/params.json'))
-d['chapter_id']='903350205'
-json.dump(d, open('/tmp/pj.json','w'))
-print('推送 params: Key len=%d blob len=%d' % (len(d.get('Key','')), len(d.get('blob_b64',''))))
-PY2
+          python3 prepare_pj.py
           timeout 60 adb -s $B push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
           P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "PID=[$P]"
