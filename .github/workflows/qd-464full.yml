@@ -89,7 +89,7 @@ jobs:
           cp /tmp/params.json /tmp/pj.json 2>/dev/null
           timeout 60 adb -s $B push /tmp/pj.json /data/local/tmp/params.json >/dev/null 2>&1
           echo "=== 探测（stepG_qimei）==="
-          ( sleep 150 ) | timeout 220 frida -H 127.0.0.1:27042 -p "$P" -l stepG_qimei.js > /tmp/probeG.txt 2>&1
+          ( sleep 150 ) | timeout 220 frida -H 127.0.0.1:27042 -p "$P" -l stepH_unlock.js > /tmp/probeG.txt 2>&1
           grep -oE "\{'m': '[^']*'" /tmp/probeG.txt | sed "s/^{'m': '//" | head -60
           echo "--- 原始前 20 行 ---"; head -20 /tmp/probeG.txt
           cp /tmp/probeG.txt /tmp/logcat.txt 2>/dev/null
