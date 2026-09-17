@@ -18,7 +18,7 @@ function desc(r){ if(r===null||r===undefined)return 'null';
       f2.write(Java.use('java.lang.String').$new(s2).getBytes('UTF-8'));f2.close();S({m:'★ 明文已落盘'});}catch(e){}}
    } else o[fs[i].getName()]=clip(v,60);}
   return JSON.stringify(o);}catch(e){return 'refErr:'+e;}}
-setImmediate(function(){
+Java.perform(function(){
   try{
     var P={};
     try{P=JSON.parse(readText(DIR+'params.json')||'{}');}catch(e){}
