@@ -78,11 +78,11 @@ jobs:
           echo "=== frida-ps ==="
           frida-ps -H 127.0.0.1:27042 2>&1 | head -5
 
-          # ★ v3: attach 模式 + 双 RegisterNatives hook + Java 反射兜底
-          timeout 150 python3 frida_regnative_driver_v3.py $STABLE_PID
+          # ★ Oracle: 直接在 App 内调用 Fock.unlock 解密
+          timeout 120 python3 frida_oracle_driver.py $STABLE_PID
 
           echo "=== 结果摘要 ==="
-          cat /tmp/regnative_result.txt 2>/dev/null | grep -E '★★|>>>|fock|Fock|unlock|native|找到|✓|✗|★' | head -60
+          cat /tmp/fock_oracle_result.txt 2>/dev/null | grep -E '★★★|★★|unlock|Fock|✓|✗|★|status|data|content|field' | head -60
 
           adb -s $B logcat -d > /tmp/logcat.txt 2>/dev/null
           exit 0
@@ -91,8 +91,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: regnative-result
+          name: oracle-result
           path: |
-            /tmp/regnative_result.txt
+            /tmp/fock_oracle_result.txt
             /tmp/logcat.txt
           if-no-files-found: warn
