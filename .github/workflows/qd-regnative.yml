@@ -35,9 +35,12 @@ jobs:
           adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1; adb -s localhost:5555 shell getenforce
           adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+          # ★ 先起 frida-server（step2 需要）
+          adb -s localhost:5555 shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 5
           exit 0
 
-      - name: 装 464 + spawn 模式 hook RegisterNatives
+      - name: 装 464 + 启动 App + 立即 attach hook
         run: |
           set +e
           B=localhost:5555
@@ -48,18 +51,22 @@ jobs:
           adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
           adb -s $B logcat -c 2>/dev/null
 
-          # ★ 先起 frida-server（spawn 模式需要先就绪）
-          adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
-          sleep 8
+          # ★ frida-server 已在 step1 起好，确认就绪
           adb -s $B forward tcp:27042 tcp:27042
           echo "=== frida-ps ==="
           frida-ps -H 127.0.0.1:27042 2>&1 | head -5
 
-          # ★ spawn 模式：从 App 启动前注入，确保不遗漏任何 RegisterNatives 调用
-          timeout 150 python3 frida_regnative_driver_v2.py
+          # ★ 启动 App
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+
+          # ★ 等 8 秒让进程起来，然后立即 attach（抢在 libfock 第二批注册前）
+          sleep 8
+
+          # ★ v3: attach 模式 + 双 RegisterNatives hook + Java 反射兜底
+          timeout 150 python3 frida_regnative_driver_v3.py
 
           echo "=== 结果摘要 ==="
-          cat /tmp/regnative_result.txt 2>/dev/null | grep -E '★★|>>>|fock|FockUtil|unlock|相关模块|已加载|native|找到' | head -50
+          cat /tmp/regnative_result.txt 2>/dev/null | grep -E '★★|>>>|fock|Fock|unlock|native|找到|✓|✗|★' | head -60
 
           adb -s $B logcat -d > /tmp/logcat.txt 2>/dev/null
           exit 0
