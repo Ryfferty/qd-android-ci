@@ -10,7 +10,7 @@ def main():
     
     pid = int(sys.argv[1])
     
-    for p in ["hook_fock_oracle_v4.js", "ci/hook_fock_oracle_v4.js", "hook_fock_oracle_v3.js", "ci/hook_fock_oracle_v3.js"]:
+    for p in ["hook_fock_passive.js", "ci/hook_fock_passive.js", "hook_fock_oracle_v4.js", "ci/hook_fock_oracle_v4.js"]:
         if os.path.exists(p):
             with open(p) as f:
                 js = f.read()
