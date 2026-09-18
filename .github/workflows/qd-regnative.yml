@@ -35,9 +35,8 @@ jobs:
           adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1; adb -s localhost:5555 shell getenforce
           adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
-          # ★ 先起 frida-server（step2 需要）
-          adb -s localhost:5555 shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
-          sleep 5
+          # ★ 不在此起 frida-server！加固会检测 frida 进程导致 App 秒退
+          # 改为 step2 让 App 先稳定再起 frida
           exit 0
 
       - name: 装 464 + 启动 App + 立即 attach hook
@@ -51,16 +50,33 @@ jobs:
           adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
           adb -s $B logcat -c 2>/dev/null
 
-          # ★ frida-server 已在 step1 起好，确认就绪
+          # ★ 启动 App（不先起 frida-server，避免加固检测）
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+
+          # ★ 等 App 稳定（v1 验证过：25 秒后 App PID 稳定）
+          STABLE_PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
+                STABLE_PID=$P
+                echo "App 稳定 PID=$STABLE_PID"
+                break
+              fi
+            fi
+          done
+
+          [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
+
+          # ★ App 稳定后才起 frida-server（v1 策略）
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
           adb -s $B forward tcp:27042 tcp:27042
           echo "=== frida-ps ==="
           frida-ps -H 127.0.0.1:27042 2>&1 | head -5
-
-          # ★ 启动 App
-          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
-
-          # ★ 等 8 秒让进程起来，然后立即 attach（抢在 libfock 第二批注册前）
-          sleep 8
 
           # ★ v3: attach 模式 + 双 RegisterNatives hook + Java 反射兜底
           timeout 150 python3 frida_regnative_driver_v3.py
