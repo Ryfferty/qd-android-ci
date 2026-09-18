@@ -46,8 +46,8 @@ def main():
     script.on('message', on_message)
     script.load()
 
-    print("收集 60 秒...", flush=True)
-    time.sleep(60)
+    print("收集 90 秒...", flush=True)
+    time.sleep(90)
 
     with open("/tmp/fock_oracle_result.txt", "w") as f:
         f.write("\n".join(results))
