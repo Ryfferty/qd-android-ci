@@ -1,0 +1,108 @@
+name: qd-regnative
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps + redroid + frida
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          adb -s localhost:5555 shell "echo BOOT_OK"
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fs-server 2>/dev/null; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6; timeout 30 adb -s localhost:5555 wait-for-device || true
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1; adb -s localhost:5555 shell getenforce
+          # ★ frida-server 改名推送（避免按进程名扫的检测）
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+          exit 0
+
+      - name: 装 464 + 首启 + 稳定后起 frida + hook RegisterNatives
+        run: |
+          set +e
+          B=localhost:5555
+
+          # 下载并安装 464 原版
+          curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          adb -s $B logcat -c 2>/dev/null
+
+          # ★ 先写隐私同意状态，跳过首启弹窗
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+
+          # ★ 等待 App 稳定（至少 25 秒）
+          echo "等待 App 启动..."
+          STABLE_PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
+                STABLE_PID=$P
+                echo "App 稳定 PID=$STABLE_PID (等待 ${i}x3s)"
+                break
+              fi
+            fi
+          done
+
+          if [ -z "$STABLE_PID" ]; then
+            echo "✗ App 未稳定，尝试强制启动..."
+            adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+            sleep 15
+            STABLE_PID=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          fi
+
+          echo "STABLE_PID=$STABLE_PID"
+          [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
+
+          # ★ App 稳定后才起 frida-server（改名版）
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+          echo "=== frida-ps ==="
+          frida-ps -H 127.0.0.1:27042 2>&1 | head -5
+
+          # ★ 用 Python frida API 驱动（CLI 在无 TTY 时会秒退）
+          timeout 120 python3 frida_regnative_driver.py $STABLE_PID
+
+          echo "=== 结果摘要 ==="
+          cat /tmp/regnative_result.txt 2>/dev/null | grep -E '★★|>>>|fock|FockUtil|unlock|相关模块|已加载' | head -40
+
+          # 也保存完整 logcat
+          adb -s $B logcat -d > /tmp/logcat.txt 2>/dev/null
+
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regnative-result
+          path: |
+            /tmp/regnative_result.txt
+            /tmp/logcat.txt
+          if-no-files-found: warn
