@@ -79,7 +79,7 @@ jobs:
           frida-ps -H 127.0.0.1:27042 2>&1 | head -5
 
           # ★ v3: attach 模式 + 双 RegisterNatives hook + Java 反射兜底
-          timeout 150 python3 frida_regnative_driver_v3.py
+          timeout 150 python3 frida_regnative_driver_v3.py $STABLE_PID
 
           echo "=== 结果摘要 ==="
           cat /tmp/regnative_result.txt 2>/dev/null | grep -E '★★|>>>|fock|Fock|unlock|native|找到|✓|✗|★' | head -60
