@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""frida_regnative_driver_v3.py — attach 模式，am start 后立即 attach
-用法: python3 frida_regnative_driver_v3.py
+"""frida_regnative_driver_v3.py — attach 模式，接收 PID 参数
+用法: python3 frida_regnative_driver_v3.py <PID>
 """
 import frida, sys, time, json, os
 
 def main():
+    if len(sys.argv) < 2:
+        print("ERROR: need PID argument"); sys.exit(1)
+    
+    pid = int(sys.argv[1])
+    
     for p in ["hook_regnative_v3.js", "ci/hook_regnative_v3.js"]:
         if os.path.exists(p):
             with open(p) as f:
@@ -15,31 +20,13 @@ def main():
         print("ERROR: script not found"); sys.exit(1)
 
     device = frida.get_device_manager().add_remote_device("127.0.0.1:27042")
-    pkg = "com.qidian.QDReader"
-
-    # 找已运行的进程
-    pid = None
-    for p in device.enumerate_processes():
-        if p.name == pkg:
-            pid = p.pid
-            break
-
-    if pid is None:
-        print(f"{pkg} not running, waiting...", flush=True)
-        for _ in range(10):
-            time.sleep(2)
-            for p in device.enumerate_processes():
-                if p.name == pkg:
-                    pid = p.pid
-                    break
-            if pid:
-                break
-
-    if pid is None:
-        print("ERROR: process not found"); sys.exit(1)
 
     print(f"Attaching to PID={pid}", flush=True)
-    session = device.attach(pid)
+    try:
+        session = device.attach(pid)
+    except Exception as e:
+        print(f"Attach failed: {e}", flush=True)
+        sys.exit(1)
 
     results = []
     def on_message(msg, data):
