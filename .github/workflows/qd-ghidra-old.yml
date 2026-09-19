@@ -4,7 +4,7 @@ on:
     inputs:
       names:
         description: '符号名（逗号分隔）'
-        default: 'fock_61087493,fock_71564283,fock_67123940,fock_20184765,fock_95417386,fock_32456098'
+        default: 'fock_40971283,fock_61087493,fock_71564283,fock_32456098'
       addrs:
         description: '地址（逗号分隔，如 9404,bad0,a900）'
         default: '9404,bad0,a848,a874,af14,ac20'
