@@ -1,0 +1,79 @@
+name: qd-ghidra-old
+on:
+  workflow_dispatch:
+    inputs:
+      names:
+        description: '符号名（逗号分隔）'
+        default: 'fock_43254543,fock_uk,fock_ak,fock_it,fock_sn'
+      addrs:
+        description: '地址（逗号分隔，如 817c,7f84,6980,69a0,a900）'
+        default: '817c,7f84,809c,8358,83bc,6980,69a0,6d60,6d90,6fb0,7000,6fe0,7080,a900,ab6c,ac20,ac60,aca0,ace0,ad00,ad40,ad80,adc0,ae00,ae40,ae80,aec0,af00'
+      probe:
+        description: '是否运行 Python 常量探针'
+        default: 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 JDK + Ghidra + Python 依赖
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq openjdk-17-jre-headless unzip curl python3-pip || echo APT_PARTIAL
+          pip install -q lief capstone unicorn 2>&1 | tail -1
+          python3 -c "import lief, capstone; print('lief', lief.__version__, 'capstone', capstone.__version__)"
+          spanish_gh=$([ -d /opt/ghidra_12.1.3_PUBLIC ] && echo yes || echo no)
+          if [ "$spanish_gh" = "no" ]; then
+            GH_URL="https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip"
+            curl -sSL --max-time 900 -o ghidra.zip "$GH_URL"
+            ls -la ghidra.zip
+            unzip -q ghidra.zip -d /opt/ 2>&1 | tail -1
+          fi
+          ls -d /opt/ghidra_* | head -2
+          exit 0
+
+      - name: Ghidra headless 反编译老版 libfock.so 核心函数
+        run: |
+          set +e
+          GH=$(ls -d /opt/ghidra_* | head -1)
+          echo "GH=$GH"
+          # 老版 so 直接导入（不抽新 APK）
+          cp old_so/libfock_old_arm64.so libfock_old.so
+          export TARGET_NAMES="${{ inputs.names }}"
+          export TARGET_ADDRS="${{ inputs.addrs }}"
+          echo "NAMES=$TARGET_NAMES ADDRS=$TARGET_ADDRS"
+          timeout 2400 "$GH/support/analyzeHeadless" /tmp ghproj_old \
+            -import libfock_old.so -scriptPath "$PWD/ghidra_scripts" -postScript DecompFock.java \
+            -deleteProject > /tmp/decomp_old.txt 2>&1
+          echo "=== 输出行数: $(wc -l < /tmp/decomp_old.txt) ==="
+          # 关键函数清单
+          grep -nE '^###|fock_43254543|fock_uk|fock_ak|fock_it|fock_sn|0x817c|0x7f84|0x6980|0x69a0|0xa900' /tmp/decomp_old.txt | head -80
+          # 分离 C 代码到单独文件
+          awk '/^=====/{f=1} f' /tmp/decomp_old.txt > /tmp/decomp_old_c.txt 2>/dev/null
+          echo "C代码行数: $(wc -l < /tmp/decomp_old_c.txt)"
+          exit 0
+
+      - name: Python 静态探针（dump 派生常量 + keypool 结构 + RC4 表）
+        if: ${{ inputs.probe == 'true' }}
+        run: |
+          set +e
+          python3 rc4_probe.py 2>&1 | head -120
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decomp-old
+          path: |
+            /tmp/decomp_old.txt
+            /tmp/decomp_old_c.txt
+            /tmp/rc4_probe.txt
+          if-no-files-found: warn
