@@ -6,8 +6,8 @@ on:
         description: '符号名（逗号分隔）'
         default: 'fock_43254543,fock_uk,fock_ak,fock_it,fock_sn'
       addrs:
-        description: '地址（逗号分隔，如 817c,7f84,6980,69a0,a900）'
-        default: '817c,7f84,809c,8358,83bc,6980,69a0,6d60,6d90,6fb0,7000,6fe0,7080,a900,ab6c,ac20,ac60,aca0,ace0,ad00,ad40,ad80,adc0,ae00,ae40,ae80,aec0,af00'
+        description: '地址（逗号分隔，如 9404,bad0,a900）'
+        default: '9404,bad0,a848,a874,af14,ac20'
       probe:
         description: '是否运行 Python 常量探针'
         default: 'true'
