@@ -36,6 +36,20 @@ Java.perform(function(){
               S({m:'★★★★★ Fock.unlock('+sig+') 被调用!'});
               S({m:'  cipher='+clip(args[0],110)});
               for(var j=1;j<args.length-1;j++){ if(args[j]!==undefined&&args[j]!==null) S({m:'  arg'+j+'='+clip(String(args[j]),60)}); }
+              // ★ 换入自己的捕获 handler (skill 9.17): 保留原 handler 转发, 再收诊断
+              try{
+                var origH=args[args.length-1];
+                var Cap=Java.registerClass({ name:'com.example.CapH'+Date.now(),
+                  implements:[Java.use('com.yuewen.fock.Fock$ErrorLogHandler')],
+                  methods:{ onError:function(j){
+                    S({m:'███████ 捕获 onError 诊断 ███████'});
+                    try{var o=JSON.parse(String(j));for(var k in o){S({m:'  ['+k+']='+clip(String(o[k]),300)});}}
+                    catch(e2){S({m:'  raw='+clip(String(j),900)});}
+                    // 原样转发给 App 自己的 handler
+                    try{ if(origH) Java.cast(origH, Java.use('com.yuewen.fock.Fock$ErrorLogHandler')).onError(j);}catch(e3){}
+                  }}});
+                args[args.length-1]=Cap.$new();
+              }catch(e){ S({m:'  造 handler 失败 '+String(e).slice(0,90)}); }
               var r=this.unlock.apply(this,args);
               dumpRes('unlock('+args.length+'p)',r);
               return r;
@@ -106,6 +120,30 @@ Java.perform(function(){
     }catch(e){S({m:'- addKeypool: '+String(e).slice(0,90)});}
 
     try{ F.setup.overload('java.lang.String').implementation=function(k){S({m:'★ setup('+clip(k,40)+')'});return this.setup(k);}; }catch(e){}
+
+    // ★ 464: Fock.add(String,String) (FockUtil.add 的底层, encryptedKeys复数)
+    try{
+      F.add.overload('java.lang.String','java.lang.String').implementation=function(a,b){
+        S({m:'★★★ F.add(encryptedKeys,version)'});
+        S({m:'  keys='+clip(a,180)+' ver='+clip(b,16)});
+        return this.add(a,b);
+      };
+      S({m:'+ add hooked'});
+    }catch(e){S({m:'- add: '+String(e).slice(0,90)});}
+
+    // ★★ ErrorLogHandler.onError(JSONObject) — 464 自带诊断: k1/k2/k3/kp/data/addk/code 全量
+    try{
+      var H=Java.use('com.yuewen.fock.Fock$ErrorLogHandler');
+      H.onError.overload('org.json.JSONObject').implementation=function(j){
+        S({m:'███████ ErrorLogHandler.onError 诊断 JSON ███████'});
+        try{
+          var o=JSON.parse(String(j));
+          for(var key in o){ S({m:'  ['+key+']='+clip(String(o[key]),300)}); }
+        }catch(e){ S({m:'  raw='+clip(String(j),900)}); }
+        return this.onError(j);
+      };
+      S({m:'+ ErrorLogHandler hooked'});
+    }catch(e){S({m:'- ErrorLogHandler: '+String(e).slice(0,110)});}
   }catch(e){S({m:'✗ Fock 类: '+String(e).slice(0,140)});}
 
   // FockUtil 2参

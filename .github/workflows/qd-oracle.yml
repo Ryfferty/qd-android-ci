@@ -1,12 +1,13 @@
 name: qd-oracle
-# 抓 App 自己成功解密的 ground-truth 配对: unlock 全重载入参+返回明文, uk/it/addKeypool/setup
-# ★ 时序纪律(09-18实测): App 先稳定运行, frida-server 后起 — 否则 464 启动即自毁
+# 抓 App 自己成功解密的 ground-truth: unlock 全重载入参+返回明文+onError 诊断 JSON
+# ★ 464 原版 + §9.13 时序: App 先稳定(跳隐私) → frida-server 改名后起 → attach → 深链免费章
+# 断线防御: 每轮开一个 frida 会话, PID 变了下一轮自动重挂
 on:
   workflow_dispatch:
     inputs:
       apk:
-        description: APK release url
-        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk
+        description: APK url (默认 464 原版)
+        default: https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk
         required: false
       book:
         description: bookId(免费章)
@@ -24,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: redroid boot
+      - name: redroid boot + install 464 + 稳定首启
         run: |
           set +e
           sudo apt-get update -qq || true
@@ -39,33 +40,35 @@ jobs:
             androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
           adb start-server >/dev/null 2>&1; sleep 5
           for i in $(seq 1 40); do adb connect localhost:5555 >/dev/null 2>&1; S=$(adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
-          adb -s localhost:5555 shell getprop sys.boot_completed | tr -d '\r'
-
-      - name: install APK + 预置隐私同意 + 首启稳定
-        run: |
-          set +e
           B=localhost:5555
-          curl -sSL --max-time 900 -o qd.apk "${{ inputs.apk }}"
+          echo "=== 装 464 原版 ==="
+          for i in 1 2 3; do curl -sSL --max-time 1500 -o qd.apk "${{ inputs.apk }}" && SZ=$(stat -c%s qd.apk) && [ "$SZ" -gt 50000000 ] && break; sleep 10; done
+          echo "apk size=$(stat -c%s qd.apk 2>/dev/null)"
           adb -s $B push qd.apk /data/local/tmp/qd.apk >/dev/null 2>&1
           adb -s $B shell "pm install -r -d -t /data/local/tmp/qd.apk" 2>&1 | tail -1
           adb -s $B root >/dev/null 2>&1; sleep 6; adb -s $B wait-for-device
           adb -s $B shell "setenforce 0" 2>/dev/null
-          # app_sp 直写跳过隐私弹窗 (按 skill 实测配方)
           UID_=$(adb -s $B shell "dumpsys package com.qidian.QDReader | grep -oE 'userId=[0-9]+' | head -1 | cut -d= -f2" | tr -d '\r')
-          adb -s $B shell "mkdir -p /data/data/com.qidian.QDReader/shared_prefs"
-          adb -s $B shell "printf '<?xml version=\"1.0\" encoding=\"utf-8\"?><map><boolean name=\"is_agree_privacy\" value=\"true\"/></map>' > /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml && chown u0_a$UID_:u0_a$UID_ /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml && chmod 660 /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml"
+          adb -s $B shell "mkdir -p /data/data/com.qidian.QDReader/shared_prefs && printf '<?xml version=\"1.0\" encoding=\"utf-8\"?><map><boolean name=\"is_agree_privacy\" value=\"true\"/></map>' > /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml && chown u0_a$UID_:u0_a$UID_ /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml && chmod 660 /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml"
+          # 首启, 让 App 自己稳定跑起来 (frida 还没起)
           adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
-          # 拿稳定 PID (App 先跑起来, frida 还没起)
+          sleep 30
           STABLE=""
-          for i in $(seq 1 30); do
+          for i in $(seq 1 10); do
             P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-            sleep 4
+            sleep 8
             P2=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             if [ -n "$P" ] && [ "$P" = "$P2" ]; then STABLE=$P; break; fi
           done
-          echo "STABLE_PID=$STABLE"
+          echo "STABLE=$STABLE"
           echo "STABLE=$STABLE" >> $GITHUB_ENV
-          # ★ 现在才起 frida-server (改名 fsrv)
+          adb -s $B shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/ 2>/dev/null | head -6" | tr -d '\r'
+
+      - name: 起 frida-server + 循环 attach + 深链触发
+        run: |
+          set +e
+          B=localhost:5555
+          # ★ App 已稳定, 现在才起 frida-server (改名 fsrv)
           FR=16.7.19
           curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
           unxz -f fs.xz; mv -f fs fsrv; chmod +x fsrv
@@ -75,28 +78,31 @@ jobs:
           adb -s $B forward tcp:27042 tcp:27042
           pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
           frida-ps -H 127.0.0.1:27042 2>&1 | head -3
-
-      - name: attach + 深链触发 + 收集 4 分钟
-        run: |
-          set +e
-          B=localhost:5555
-          ( sleep 250 ) | timeout 260 frida -H 127.0.0.1:27042 -p "$STABLE" -l ci/hook_oracle_final.js > /tmp/oracle.txt 2>&1 &
-          FPID=$!
-          sleep 15
-          # 深链触发阅读免费章 (App 走自己 requestKey→download→unlock)
-          for t in 1 2; do
-            adb -s $B shell "am start -a android.intent.action.VIEW -d 'QDReader://OpenBook/${{ inputs.book }}/${{ inputs.chap }}'" >/dev/null 2>&1
-            sleep 25
+          echo "=== 循环 attach (PID 变则重挂), 总窗口 5 分钟 ==="
+          END=$(( $(date +%s) + 300 ))
+          TRIG=0
+          while [ $(date +%s) -lt $END ]; do
+            NOWP=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -z "$NOWP" ]; then
+              echo "[$(date +%T)] App 不在, relaunch" >> /tmp/oracle.txt
+              adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+              sleep 30; continue
+            fi
+            ( sleep 100 ) | timeout 105 frida -H 127.0.0.1:27042 -p "$NOWP" -l ci/hook_oracle_final.js >> /tmp/oracle.txt 2>&1 &
+            FPID=$!
+            sleep 12
+            echo "[$(date +%T)] attach PID=$NOWP 触发#$TRIG" >> /tmp/oracle.txt
+            adb -s $B shell "am start -a android.intent.action.VIEW -d 'QDReader://OpenBook/${{ inputs.book }}/${{ inputs.chap }}'" >> /tmp/oracle.txt 2>&1
+            TRIG=$((TRIG+1))
+            sleep 60
+            NEWP=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            [ "$NEWP" != "$NOWP" ] && echo "[$(date +%T)] PID 变化 $NOWP -> $NEWP" >> /tmp/oracle.txt
+            kill $FPID 2>/dev/null
+            wait $FPID 2>/dev/null
           done
-          # 状态诊断: 当前界面 + 是否真走到了阅读页
-          adb -s $B shell "dumpsys activity activities | grep -E 'mResumedActivity|mFocusedActivity' | head -2" | tr -d '\r' >> /tmp/oracle.txt
-          adb -s $B shell "ps -A | grep qidian" | head -3 >> /tmp/oracle.txt
-          sleep 160
-          kill $FPID 2>/dev/null
-          echo "===== ORACLE 关键行 ====="
-          grep -E '★★★★★|★★★|status=|addKey=|明文前|addedKeyVersions|it\(len|setup\(|hooks done' /tmp/oracle.txt | head -80
-          echo "===== 原始头 40 行 ====="
-          head -40 /tmp/oracle.txt
+          adb -s $B shell "dumpsys activity activities | grep -E 'mResumedActivity' | head -2" | tr -d '\r' >> /tmp/oracle.txt
+          echo "===== 关键行 ====="
+          grep -E '★★★★★|★★★|███████|status=|addKey|onError|明文|addedKeyVersions|hooks done|F\.it|F\.add|setup\(|PID 变化|触发#' /tmp/oracle.txt | head -140
           exit 0
 
       - name: Upload
