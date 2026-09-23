@@ -78,12 +78,30 @@ Java.perform(function(){
   var m4=null,m5=null;
   try{m4=FK.unlock.overload('java.lang.String','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');}catch(e){L('- m4: '+String(e).slice(0,80));}
   try{m5=FK.unlock.overload('java.lang.String','java.lang.String','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');}catch(e){L('- m5: '+String(e).slice(0,80));}
+  // ★ 反射抓 ErrorContext (native 内部上下文: setupUserKey/unlockUserKey/keypool/additionalKey 全是引擎实际值)
+  var EC=null;
+  try{
+    var ECcls=Java.use('com.yuewen.fock.ErrorContext');
+    EC=ECcls.$new();
+  }catch(e){L('ErrorContext 不可反射: '+String(e).slice(0,100));}
+  function javaMapSize(m){if(!m)return -1;try{var it=m.keySet().iterator();var o=[];while(it.hasNext()){var k=it.next()+'';o.push(k+'='+clip(String(m.get(k)),28));}L('  keypool:{'+o.join(', ')+'}');return o.length;}catch(e){return -1;}}
+  if(EC){ try{ L('★ EC 初值 setup='+clip(EC.getSetupUserKey(),30)+' unl='+clip(EC.getUnlockUserKey(),30)); }catch(e){L('EC 读失败 '+String(e).slice(0,90)); EC=null;} }
   for(var i=0;i<ADDKS.length;i++){
     var a=String(ADDKS[i][0]||''), b=String(ADDKS[i][1]||'');
     L('--- ③['+i+'] add=(' +clip(a,26)+','+clip(b,34)+')');
-    if(m4){ try{ dumpRes(m4.invoke? m4(BLOB,a,b,hnd): null, 'unlock4['+i+']'); }catch(e){ L('  m4 异常 '+String(e).slice(0,110)); } }
-    else if(m5){ try{ dumpRes(m5(BLOB,a,b,'',hnd), 'unlock5['+i+']'); }catch(e){ L('  m5 异常 '+String(e).slice(0,110)); } }
+    if(m4){ try{ dumpRes(m4(BLOB,a,b,hnd), 'unlock4['+i+']'); }catch(e){ L('  m4 异常 '+String(e).slice(0,110)); } }
+    if(EC){ try{ L('  EC: err='+EC.getErrorCode()+' setup='+clip(EC.getSetupUserKey(),26)+' unl='+clip(EC.getUnlockUserKey(),26)+' addk='+clip(EC.getAdditionalKey(),30)+' kpool#='+javaMapSize(EC.getKeypool())); }catch(e){} }
   }
+  // ③b unlockData 路径: 直接喂解码后的字节, 绕过 4参的 base64 猜测
+  try{
+    var Base64=Java.use('android.util.Base64');
+    var blobBytes=Base64.decode(BLOB,0);
+    var mud=FK.unlockData.overload('byte[]','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');
+    for(var i2=0;i2<ADDKS.length;i2++){
+      var a2=String(ADDKS[i2][0]||''), b2=String(ADDKS[i2][1]||'');
+      try{ var rr=mud(blobBytes,a2,b2,hnd); dumpRes(rr,'unlockData['+i2+']'); }catch(e){ L('unlockData['+i2+'] 异常 '+String(e).slice(0,110)); }
+    }
+  }catch(e){L('- unlockData 路径: '+String(e).slice(0,110));}
   // ④ FockUtil.unlock 3参对照 (cipher, str2, str3)
   try{
     var FU2=Java.use('com.qidian.QDReader.component.util.FockUtil');
