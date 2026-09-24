@@ -17,26 +17,37 @@ Java.perform(function(){
   S({m:'JSON='+jstr.length+'B'});
   var JO;
   try{ JO=Java.use('org.json.JSONObject').$new(jstr); }catch(e){ S({m:'JSON parse 失败 '+String(e).slice(0,80)+' head='+clipX(jstr,80)}); return; }
-  // ① 全顶层字段
+  // ① 递归收集所有叶子字符串 (Content/Blocks/Resources 可能是嵌套 object/array!)
   var keys=[];
   var it=JO.keys();
   while(it.hasNext()){ var k=''+it.next(); keys.push(k); }
   S({m:'顶层字段: '+keys.join(' | ')});
   var strs=[];
-  for(var ki=0;ki<keys.length;ki++){
+  function walk(v,path,depth){
     try{
-      var v=JO.get(keys[ki]);
+      var t=typeof v; var cls=(v&&v.$className)||'';
+      if(t==='string'||cls==='java.lang.String'){ if((''+v).length>50){ strs.push([path,''+v]); S({m:'◆叶子['+path+'] len='+(''+v).length+' head='+clipX(''+v,70)}); } return; }
+      if(cls==='[B'||cls==='byte[]'){ S({m:'◆bytes['+path+'] len='+v.length}); return; }
       var vs=''+v;
-      S({m:'◆['+keys[ki]+'] type='+(typeof v)+' len='+vs.length+' head='+clipX(vs,60)});
-      if(typeof v==='string'||v.$className==='java.lang.String'){ if(vs.length>50) strs.push([keys[ki],vs]); }
-      // 嵌套一层 (AuthorComments 是对象)
-      try{
-        if(vs.charAt(0)==='{'){
-          var J2=Java.use('org.json.JSONObject').$new(vs); var it2=J2.keys();
-          while(it2.hasNext()){ var k2=''+it2.next(); try{var v2=''+J2.get(k2); if(v2.length>50){strs.push([keys[ki]+'.'+k2,v2]); S({m:'  ·['+keys[ki]+'.'+k2+'] len='+v2.length+' head='+clipX(v2,60)});} }catch(e3){} }
-        }
-      }catch(e4){}
-    }catch(e){S({m:'['+keys[ki]+'] 读失败'});}
+      if(vs.charAt(0)==='['){
+        var JA=Java.cast(v,Java.use('org.json.JSONArray'));
+        S({m:'·数组['+path+'] n='+JA.length()});
+        for(var i=0;i<Math.min(JA.length(),12);i++) walk(JA.get(i),path+'['+i+']',depth+1);
+        return;
+      }
+      if(vs.charAt(0)==='{'){
+        var J2=Java.cast(v,Java.use('org.json.JSONObject'));
+        var it2=J2.keys(); var ks2=[];
+        while(it2.hasNext())ks2.push(''+it2.next());
+        S({m:'·对象['+path+'] {'+ks2.join(', ')+'}'});
+        if(depth<4)for(var j=0;j<ks2.length;j++) walk(J2.get(ks2[j]),path+'.'+ks2[j],depth+1);
+        return;
+      }
+      S({m:'·值['+path+'] = '+clipX(vs,60)});
+    }catch(e){ S({m:'['+path+'] walk异常 '+String(e).slice(0,50)}); }
+  }
+  for(var ki=0;ki<keys.length;ki++){
+    try{ walk(JO.get(keys[ki]),keys[ki],0); }catch(e){S({m:'['+keys[ki]+'] 读失败'});}
   }
   // ② 每个大字符串 × unlock 形态; ★bad base-64 证明 unlock 内部先 b64 解码 data → 同时试 原串/b64(原串)
   var FU=Java.use('com.qidian.QDReader.component.util.FockUtil').INSTANCE.value;
