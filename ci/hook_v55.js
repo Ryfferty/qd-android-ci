@@ -41,25 +41,33 @@ Java.perform(function(){
     var URLc=Java.use('java.net.URL'); var conn=URLc.$new(url).openConnection();
     conn.setConnectTimeout(15000); conn.setReadTimeout(20000);
     conn.setRequestProperty('User-Agent','Mozilla/5.0');
+    // ★ 根因(v15 三次实测): GZIPInputStream.$new 构造吞 2 字节探测头(50 4B), 不匹配抛异常后流已残缺
+    //   → 不做 gzip 探测, 直接读原文 (COS 直链返回原始 zip)
     var ins=conn.getInputStream();
-    try{ins=Java.use('java.util.zip.GZIPInputStream').$new(ins);S({m:'② (gzipped)'});}catch(e0){S({m:'② (raw)'})}
     var bos=Java.use('java.io.ByteArrayOutputStream').$new();
     var abuf=Java.array('byte',new Array(65536).fill(0));var rn;
     while((rn=ins.read(abuf))>0) bos.write(abuf,0,rn);
     var zipBytes=bos.toByteArray();
-    S({m:'② 下载 '+zipBytes.length+'B magic='+hx(zipBytes,4)});
-    // ZIP 提取 (常规)
+    S({m:'② 下载 java len='+zipBytes.length});
+    // ZIP 提取: FileOutputStream 原样落盘 + ZipFile(path) 全 Java 路径 (无 JS 字节转换)
     try{
-      var ZIS=Java.use('java.util.zip.ZipInputStream');
-      var zis=ZIS.$new(Java.use('java.io.ByteArrayInputStream').$new(zipBytes));
-      var ent;
-      while((ent=zis.getNextEntry())!==null){
-        S({m:'② 条目: '+ent.getName()+' ('+ent.getSize()+')'});
-        var eb=Java.use('java.io.ByteArrayOutputStream').$new(); var x;
-        while((x=zis.read(abuf))>0) eb.write(abuf,0,x);
-        qd=eb.toByteArray();
+      var fos=Java.use('java.io.FileOutputStream').$new('/data/local/tmp/ch.zip');
+      fos.write(zipBytes); fos.close();
+      var ZF=Java.use('java.util.zip.ZipFile').$new('/data/local/tmp/ch.zip');
+      var enu=ZF.entries();
+      while(enu.hasMoreElements()){
+        var ent=enu.nextElement();
+        S({m:'② 条目: '+ent.getName()+' size='+ent.getSize()});
+        if(ent.getName().toString().indexOf('.qd')>=0){
+          var eis=ZF.getInputStream(ent);
+          var eb=Java.use('java.io.ByteArrayOutputStream').$new(); var x;
+          while((x=eis.read(abuf))>0) eb.write(abuf,0,x);
+          qd=eb.toByteArray();
+        }
       }
-    }catch(e){S({m:'② ZIS fail: '+String(e).slice(0,80)});}
+      ZF.close();
+      S({m:'② ZipFile .qd len='+(qd?qd.length:0)});
+    }catch(e){S({m:'② ZipFile fail: '+String(e).slice(0,100)});}
     // 兜底: 设备端下载缺 "PK" 两字节 (magic 直接从 03 04 起) → 补回后手解 local header
     if(!qd||qd.length===0){
       try{
