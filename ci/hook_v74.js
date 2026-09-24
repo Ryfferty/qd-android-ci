@@ -38,26 +38,28 @@ Java.perform(function(){
       }catch(e4){}
     }catch(e){S({m:'['+keys[ki]+'] 读失败'});}
   }
-  // ② 每个大字符串 × unlock 形态
+  // ② 每个大字符串 × unlock 形态; ★bad base-64 证明 unlock 内部先 b64 解码 data → 同时试 原串/b64(原串)
   var FU=Java.use('com.qidian.QDReader.component.util.FockUtil').INSTANCE.value;
   var U4=FU.unlock.overload('java.lang.String','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');
   S({m:'★候选字符串字段 '+strs.length+' 个'});
+  function b64e(sv){ try{ return Java.use('android.util.Base64').encodeToString(Java.use('java.lang.String').$new(sv).getBytes('UTF-8'),2)+''; }catch(e){ return sv; } }
   for(var si=0;si<strs.length;si++){
     var tag=strs[si][0], val=strs[si][1];
+    var datas=[[val+'',0],[b64e(val),1]];
     var combos=[[cid+'',book+'_'+cid],[book+'',book+'_'+cid]];
-    for(var m=0;m<2;m++){
+    for(var di=0;di<2;di++)for(var m=0;m<2;m++){
       try{
-        var r=U4.call(FU,val,combos[m][0],combos[m][1],null);
+        var r=U4.call(FU,datas[di][0],combos[m][0],combos[m][1],null);
         var st=r.status.value, sz=r.dataSize.value;
-        S({m:'⟨'+tag+'|'+m+'⟩status='+st+(sz>0?' sz='+sz+' head='+clipX(''+Java.use('java.lang.String').$new(r.data,'UTF-8'),50):'')});
+        S({m:'⟨'+tag+'|d'+di+'|c'+m+'⟩status='+st+(sz>0?' sz='+sz+' head='+clipX(''+Java.use('java.lang.String').$new(r.data,'UTF-8'),60):'')});
         if(st===0){
           var d=r.data, a2=[]; for(var j2=0;j2<sz&&j2<80000;j2++)a2.push(d[j2]);
           var b64=Java.use('android.util.Base64').encodeToString(Java.array('byte',a2),2)+'';
-          S({m:'████████ 正文命中!! field='+tag+' combo='+m, b64:b64});
+          S({m:'████████ 正文命中!! field='+tag+' data'+di+' combo'+m, b64:b64});
           return;
         }
-      }catch(e){S({m:'⟨'+tag+'|'+m+'⟩异常 '+String(e).slice(0,70)});}
-      Java.use('java.lang.Thread').sleep(30);
+      }catch(e){ if(di+m<2)S({m:'⟨'+tag+'|d'+di+'|c'+m+'⟩异常 '+String(e).slice(0,60)}); }
+      Java.use('java.lang.Thread').sleep(25);
     }
   }
   // ③ 整串 JSON 也喂一次
