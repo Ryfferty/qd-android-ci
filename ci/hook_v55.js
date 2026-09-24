@@ -48,17 +48,47 @@ Java.perform(function(){
     while((rn=ins.read(abuf))>0) bos.write(abuf,0,rn);
     var zipBytes=bos.toByteArray();
     S({m:'② 下载 '+zipBytes.length+'B magic='+hx(zipBytes,4)});
-    // ZIP 提取
-    var ZIS=Java.use('java.util.zip.ZipInputStream');
-    var zis=ZIS.$new(Java.use('java.io.ByteArrayInputStream').$new(zipBytes));
-    var ent;
-    while((ent=zis.getNextEntry())!==null){
-      S({m:'② 条目: '+ent.getName()+' ('+ent.getSize()+')'});
-      var eb=Java.use('java.io.ByteArrayOutputStream').$new(); var x;
-      while((x=zis.read(abuf))>0) eb.write(abuf,0,x);
-      qd=eb.toByteArray();
+    // ZIP 提取 (常规)
+    try{
+      var ZIS=Java.use('java.util.zip.ZipInputStream');
+      var zis=ZIS.$new(Java.use('java.io.ByteArrayInputStream').$new(zipBytes));
+      var ent;
+      while((ent=zis.getNextEntry())!==null){
+        S({m:'② 条目: '+ent.getName()+' ('+ent.getSize()+')'});
+        var eb=Java.use('java.io.ByteArrayOutputStream').$new(); var x;
+        while((x=zis.read(abuf))>0) eb.write(abuf,0,x);
+        qd=eb.toByteArray();
+      }
+    }catch(e){S({m:'② ZIS fail: '+String(e).slice(0,80)});}
+    // 兜底: 设备端下载缺 "PK" 头 → 手动解析 local file header (签名 \x03\x04 起)
+    if(!qd||qd.length===0){
+      try{
+        var z=zipBytes; var off=0;
+        var sig=-1;
+        for(var i3=0;i3<Math.min(z.length-30,4096);i3++){ if((z[i3]&255)===0x03&&(z[i3+1]&255)===0x04){sig=i3;break;} }
+        if(sig<0) sig=0;
+        if(sig===0&&(z[0]&255)===0x50&&(z[1]&255)===0x4b){off=4;sig=0;}
+        var csize=(z[off+18]&255)|((z[off+19]&255)<<8)|((z[off+20]&255)<<16)|((z[off+21]&255)<<24);
+        var ulen =(z[off+22]&255)|((z[off+23]&255)<<8)|((z[off+24]&255)<<16)|((z[off+25]&255)<<24);
+        var nlen  =(z[off+26]&255)|((z[off+27]&255)<<8);
+        var elen  =(z[off+28]&255)|((z[off+29]&255)<<8);
+        var method=(z[off+8]&255)|((z[off+9]&255)<<8);
+        var nameArr=Array.prototype.slice.call(z,off+30,off+30+nlen);
+        var nameStr=Java.use('java.lang.String').$new(Java.array('byte',nameArr.map(function(c){return c>127?c-256:c;})),'UTF-8')+'';
+        S({m:'② 手动zip: sig@'+sig+' method='+method+' csize='+csize+' usize='+ulen+' name='+nameStr});
+        var dataStart=off+30+nlen+elen;
+        var raw=z.slice(dataStart,dataStart+(csize||ulen));
+        if(method===0){ qd=Java.array('byte',Array.from(raw).map(function(c){return c>127?c-256:c;})); }
+        else if(method===8){
+          var INF=Java.use('java.util.zip.InflaterInputStream').$new(Java.use('java.io.ByteArrayInputStream').$new(Java.array('byte',Array.from(raw).map(function(c){return c>127?c-256:c;}))),Java.use('java.util.zip.Inflater').$new(-15));
+          var ib=Java.use('java.io.ByteArrayOutputStream').$new(); var yy;
+          while((yy=INF.read(abuf))>0) ib.write(abuf,0,yy);
+          qd=ib.toByteArray();
+        }
+        S({m:'② 手动 .qd len='+(qd?qd.length:0)+' head='+(qd?hx(qd,16):'-')});
+      }catch(e2){S({m:'② 手动zip失败 '+String(e2).slice(0,100)});}
     }
-    if(qd) S({m:'② .qd len='+qd.length+' head='+hx(qd,16)+' tail='+hx(qd.slice(qd.length-16),16)});
+    if(qd&&qd.length>0) S({m:'② .qd len='+qd.length+' head='+hx(qd,16)+' tail='+hx(qd.slice(qd.length-16),16)});
   }catch(e){S({m:'② 下载/解压失败 '+String(e).slice(0,140)});}
   if(!qd){S({m:'无 .qd, 终止'});return;}
 
