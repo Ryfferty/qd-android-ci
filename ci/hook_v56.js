@@ -3,6 +3,7 @@ function S(o){try{send(o);}catch(e){}}
 function clip(s,n){try{s=String(s);}catch(e){try{s=s.toString();}catch(e2){return '[bytes]';}}return s.length>n?s.slice(0,n)+'…':s;}
 function hx(b,n){try{var x=new Uint8Array(b);var s='';var m=n;if(!m)m=x.length;for(var i=0;i<m;i=i+1){var v=x[i].toString(16);if(v.length<2)v='0'+v;s+=v;}return s;}catch(e){return 'ERR';}}
 function asc(a,n){try{var s='';var m=n;if(!m)m=80;if(a.length<m)m=a.length;for(var i=0;i<m;i=i+1){var c=a[i]&255;if(c>=32&&c<127){s+=String.fromCharCode(c);}else{s+='.';}}return s;}catch(e){return '?';}}
+function readText(p){try{var f=Java.use('java.io.File').$new(p);if(!f.exists())return null;var fis=Java.use('java.io.FileInputStream').$new(f);var bos=Java.use('java.io.ByteArrayOutputStream').$new();var buf=Java.array('byte',new Array(8192).fill(0));var r;while((r=fis.read(buf))>0)bos.write(buf,0,r);fis.close();return Java.use('java.lang.String').$new(bos.toByteArray(),'UTF-8')+'';}catch(e){return null;}}
 var TAG='com.yuewen.fock.Fock';
 Java.perform(function(){
   Java.choose('java.lang.ApplicationLoaders',{
@@ -12,7 +13,7 @@ Java.perform(function(){
     },onComplete:function(){}
   });
   var FK;try{FK=Java.use(TAG);}catch(e){S({m:'✗ Fock: '+String(e).slice(0,100)});return;}
-  var P=JSON.parse(Java.use('java.lang.String').$new(Java.use('java.nio.file.Files').readAllBytes(Java.use('java.nio.file.Paths').get('/data/local/tmp/v16_params.json',Java.array('java.lang.String',[]))))+'');
+  var P=JSON.parse(readText('/data/local/tmp/v16_params.json')||'{}');
   S({m:'=== v16 正文矩阵 start nP='+P.nP+' ==='});
   function hex2arr(h){var a=[];for(var i=0;i<h.length;i=i+2)a.push(parseInt(h.substr(i,2),16));return a;}
   function s2arr(s){var out=[];for(var i=0;i<s.length;i++){var c=s.charCodeAt(i);out.push(c&255);}return out;}
@@ -33,7 +34,15 @@ Java.perform(function(){
       if(d&&d.length>0){var arr=Array.from(d);
         var pr=arr.slice(0,200).filter(function(c){c=c&0xff;return (c>=32&&c<127)||c===9||c===10||c===13;}).length/Math.min(200,d.length);
         S({m:'★ '+tag+' status='+st+' len='+d.length+' print='+pr.toFixed(2)+' : '+asc(arr,100)});
-        if(pr>0.85){var fs=Java.use('java.io.FileOutputStream').$new('/data/local/tmp/body_plain.bin');fs.write(d);fs.close();S({m:'████ 命中! 已存 /data/local/tmp/body_plain.bin'});}
+        if(pr>0.85){
+          var fpath='/data/user/0/com.qidian.QDReader/cache/body_plain.bin';
+          try{var cdir=Java.use('android.app.ActivityThread').currentApplication().getCacheDir();fpath=cdir.getAbsolutePath().toString()+'/body_plain.bin';}catch(e0){}
+          var fs=Java.use('java.io.FileOutputStream').$new(fpath);fs.write(d);fs.close();
+          S({m:'████ 命中! 已存 '+fpath});
+          // 同时直传前 2KB base64 (防 pull 不到)
+          var part = d.length>2048 ? Java.array('byte', Array.from(d).slice(0,2048).map(function(c){return c>127?c-256:c;})) : d;
+          S({m:'★PLAIN_B64='+Java.use('android.util.Base64').encodeToString(part,2)+''});
+        }
       } else S({m:tag+' status='+st+' len=0'});
     }catch(e){S({m:tag+' 解析失败 '+String(e).slice(0,70)});}
   }
