@@ -36,15 +36,15 @@ Java.perform(function(){
   S({m:'uid候选='+Object.keys(uids).length+' qimei候选='+Object.keys(qimeis).join(',')});
 
   // ② a.b.b 直调 (libload-jni; 不碰 libfock 自检面)
-  var AB=null,ab=null;
-  try{ AB=Java.use('a.b'); ab=AB.b.overload('long','long','[B','long','java.lang.String'); S({m:'★a.b.b 拿到了'}); }catch(e){S({m:'a.b.b 拿不到 '+String(e).slice(0,90)});}
+  var AB=null,ab=null,ABi=null;
+  try{ AB=Java.use('a.b'); ab=AB.b.overload('long','long','[B','long','java.lang.String'); try{ABi=AB.$new();}catch(e0){S({m:'a.b 实例化失败 '+String(e0).slice(0,70)});} S({m:'★a.b.b 拿到了'}); }catch(e){S({m:'a.b.b 拿不到 '+String(e).slice(0,90)});}
   var jsonHit=false, content=null;
   if(ab){
     var us=Object.keys(uids), qs=Object.keys(qimeis);
     for(var qi=0;qi<qs.length&&!jsonHit;qi++){
       for(var ui=0;ui<us.length&&!jsonHit;ui++){
         try{
-          var out=ab.call(null, parseInt(book), parseInt(cid), PAY, parseInt(uids[us[ui]]), qimeis[qs[qi]]);
+          var out=ab.call(ABi||null, parseInt(book), parseInt(cid), PAY, parseInt(uids[us[ui]]), qimeis[qs[qi]]);
           if(out!==null&&out.length>8){
             var pr=printable(out,40);
             S({m:'▷a.b.b['+qs[qi]+'|'+us[ui]+'] len='+out.length+' '+pr});
