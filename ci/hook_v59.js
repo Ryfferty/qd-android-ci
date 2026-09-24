@@ -24,8 +24,58 @@ Java.perform(function(){
   if(SNM)SNM.setAccessible(true); if(AKM)AKM.setAccessible(true);
   function readText(p){try{var f=Java.use('java.io.File').$new(p);if(!f.exists())return null;var br=Java.use('java.io.BufferedReader').$new(Java.use('java.io.FileReader').$new(f));var sb=Java.use('java.lang.StringBuilder').$new();var ln;while((ln=br.readLine())!==null)sb.append(ln);br.close();return sb.toString()+'';}catch(e){return null;}}
   var P=JSON.parse(readText('/data/local/tmp/v16_params.json')||'{}');
-  var PAY=Java.array('byte',(function(){var raw=Java.use('android.util.Base64').decode(P.payload_b64,2);var a=[];for(var i=0;i<raw.length;i++)a.push(raw[i]);return a;})());
+  S({m:'params: blob='+((P.blob_b64||'').length)+' payload预取='+((P.payload_b64||'').length)+' book='+P.book});
   var book=P.book+'', cid=P.cid+'';
+  var PAY=null;
+  function bytesFromJava(jb){var a=[];for(var i=0;i<jb.length;i++)a.push(jb[i]);return Java.array('byte',a);}
+  // ★ payload 优先设备侧自取 (runner 到不了 COS 时 blob_b64 仍在 params 里)
+  try{
+    var UD=C.unlockData.overload('[B','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');
+    var blobb=Java.use('android.util.Base64').decode(P.blob_b64,2);
+    var r0=UD.call(C,bytesFromJava(blobb),book,book+'_'+cid,null);
+    S({m:'⓪ unlockData(blob) st='+r0.status.value+' len='+r0.length.value});
+    if(r0.status.value===0){
+      var urlS=(''+r0.data.value)+'';  // data 是 byte[]? .value 返回 Java 对象 → toString 不可靠, 直接按字节转 String
+      var urlB=r0.data.value, urlLen=r0.length.value;
+      var us='';for(var q=0;q<urlLen;q++){us+=String.fromCharCode(urlB[q]&255);}
+      S({m:'⓪ URL='+us.slice(0,70)});
+      var con=Java.use('java.net.URL').$new(us).openConnection();
+      con.setConnectTimeout(15000);con.setReadTimeout(25000);
+      con.setRequestProperty('User-Agent','okhttp/4.9.0');
+      var is=con.getInputStream();
+      var bo=Java.use('java.io.ByteArrayOutputStream').$new();
+      var buf=Java.array('byte',new Array(8192).fill(0));var rd;
+      while((rd=is.read(buf,0,8192))>0)bo.write(buf,0,rd);
+      var zbytes=bo.toByteArray();
+      S({m:'⓪ zip='+zbytes.length+'B'});
+      // 存文件 → ZipFile 解 (byte 精确)
+      var fos=Java.use('java.io.FileOutputStream').$new('/data/data/com.qidian.QDReader/cache/ch.zip');
+      fos.write(zbytes);fos.close();
+      var zf=Java.use('java.util.zip.ZipFile').$new('/data/data/com.qidian.QDReader/cache/ch.zip');
+      var en=zf.entries();var qdBytes=null;
+      while(en.hasMoreElements()){
+        var ent=en.nextElement();
+        if((''+ent.getName()).endsWith('.qd')){
+          var eis=zf.getInputStream(ent);var eb=Java.use('java.io.ByteArrayOutputStream').$new();var er;
+          while((er=eis.read(buf,0,8192))>0)eb.write(buf,0,er);
+          qdBytes=eb.toByteArray();
+        }
+      }
+      zf.close();
+      if(qdBytes){
+        // u32 nP at [4..8)
+        var nPv=(qdBytes[4]&255)|((qdBytes[5]&255)<<8)|((qdBytes[6]&255)<<16)|((qdBytes[7]&255)<<24);
+        if(nPv<=0||nPv>qdBytes.length-8)nPv=qdBytes.length-24;
+        var carr=[];for(var g=8;g<8+nPv;g++)carr.push(qdBytes[g]);
+        PAY=Java.array('byte',carr);
+        S({m:'⓪★ PAY 设备侧自取='+PAY.length+'B head='+asc(carr,16)});
+      } else S({m:'⓪ zip 无 .qd 条目'});
+    }
+  }catch(e){S({m:'⓪ 设备侧取 payload 失败: '+String(e).slice(0,120)});}
+  if(!PAY){ // 回退 runner 预取
+    PAY=Java.array('byte',(function(){var raw=Java.use('android.util.Base64').decode(P.payload_b64,2);return Array.from(Array.from({length:raw.length},function(_,i){return raw[i];}));})());
+    S({m:'⓪ 回退 runner payload='+PAY.length+'B'});
+  }
   var bkno=(P.batch_key||'').replace(/-/g,'');
   // 候选第3参 keys
   var Ks={'book':bArr(book),'pair':bArr(book+'_'+cid),'bkUUID':bArr(P.batch_key||''),'bkhex':bArr(bkno),
