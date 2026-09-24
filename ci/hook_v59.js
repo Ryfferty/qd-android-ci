@@ -78,10 +78,8 @@ Java.perform(function(){
   }
   var bkno=(P.batch_key||'').replace(/-/g,'');
   // 候选第3参 keys
-  var Ks={'book':bArr(book),'pair':bArr(book+'_'+cid),'bkUUID':bArr(P.batch_key||''),'bkhex':bArr(bkno),
-          'md5':bArr(P.md5||''),'trailer':bArr(P.trailer_hex||''),'ver':bArr(P.Version||''),
-          'ukstr':bArr(P.userKey||''),'nulllit':bArr('null'),'empty':Java.array('byte',[]),
-          'k16b':(function(){var s='';for(var i=0;i<16;i++){var v=bkno.substr(i*2,2);s+=String.fromCharCode(parseInt(v,16));}return Java.array('byte',Array.from(s).map(function(ch){var c=ch.charCodeAt(0);return c>127?c-256:c;}));})()};
+  var Ks={'book':bArr(book),'pair':bArr(book+'_'+cid),'bkUUID':bArr(P.batch_key||''),
+          'md5':bArr(P.md5||''),'empty':Java.array('byte',[])};
   function fr(tag,r){
     if(r===null||r===undefined){S({m:tag+' → null'});return;}
     try{
@@ -115,8 +113,9 @@ Java.perform(function(){
     try{ if(fr('② uk(PAY|'+kn+')',UK.invoke(null,PAY,PAY.length,Ks[kn],Ks[kn].length)))hit=1; }catch(e){S({m:'② uk|'+kn+' 异常 '+String(e).slice(0,90)});}
   }
   // ③ resf / lk / sn (直接返回体, 无 FockResult)
+  var kn3=0;
   for(var kn2 in Ks){
-    if(!RESF)break;
+    if(!RESF||kn3++>3)break;
     try{var out=RESF.invoke(null,PAY,PAY.length,Ks[kn2]);
       if(out&&out.length>0)S({m:'③ resf|'+kn2+' len='+out.length+' asc='+asc(out,80)});
       else S({m:'③ resf|'+kn2+' 空/null'});
