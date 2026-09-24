@@ -15,9 +15,14 @@ function fr(tag,r){
 }
 (function(){
   var P={};
-  try{ P=JSON.parse(Java.use('java.lang.String').$new(Java.use('java.io.FileInputStream').$new('/data/local/tmp/v16_params.json').readAllBytes())+''); }catch(e0){
-    try{var fis=Java.use('java.io.FileInputStream').$new('/data/local/tmp/v16_params.json');var bos=Java.use('java.io.ByteArrayOutputStream').$new();var buf=Java.array('byte',new Array(8192));var r;while((r=fis.read(buf))>0)bos.write(buf,0,r);fis.close();P=JSON.parse(bos.toString('UTF-8')+'');}catch(e1){S({m:'params 读取失败 '+String(e1).slice(0,80)});}
-  }
+  try{
+    var f=Java.use('java.io.File').$new('/data/local/tmp/v16_params.json');
+    var br=Java.use('java.io.BufferedReader').$new(Java.use('java.io.FileReader').$new(f));
+    var sb=Java.use('java.lang.StringBuilder').$new(); var ln;
+    while((ln=br.readLine())!==null) sb.append(ln);
+    br.close();
+    P=JSON.parse(sb.toString()+'');
+  }catch(e1){S({m:'params 读取失败 '+String(e1).slice(0,90)});}
   if(!P.payload_b64){S({m:'无 payload, 退出'});return;}
   var book=P.book+'',cid=P.cid+'';
   var b64=Java.use('android.util.Base64').encodeToString(Java.array('byte',(function(){var d=Java.use('android.util.Base64').decode(P.payload_b64,2);var a=[];for(var i=0;i<d.length;i++)a.push(d[i]);return a;})()),2)+'';
