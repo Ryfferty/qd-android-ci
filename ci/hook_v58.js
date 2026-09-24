@@ -36,11 +36,12 @@ Java.perform(function(){
   var n=0,fail={};
   for(var an in adds){
     n++;
-    try{ dumpR('uk(PAY|'+an+')', UK(PAY,PAY.length,adds[an],adds[an].length)); }catch(e){S({m:'uk|'+an+' err'});}
-    // uksf 三种位型
-    try{ dumpR('uksf(PAY|'+an+'|空)', UKSF(PAY,PAY.length,adds[an],adds[an].length,EMPTY)); }catch(e){}
-    try{ dumpR('uksf(PAY|空|'+an+')', UKSF(PAY,PAY.length,EMPTY,0,adds[an])); }catch(e){}
+    try{ dumpR('uk(PAY|'+an+')', UK(PAY,PAY.length,adds[an],adds[an].length)); }
+    catch(e){S({m:'uk|'+an+' 异常: '+String(e).slice(0,200)});}
+    try{ dumpR('uksf(PAY|'+an+'|空)', UKSF(PAY,PAY.length,adds[an],adds[an].length,EMPTY)); }catch(e){S({m:'uksf1|'+an+' 异常: '+String(e).slice(0,140)});}
+    try{ dumpR('uksf(PAY|空|'+an+')', UKSF(PAY,PAY.length,EMPTY,0,adds[an])); }catch(e){S({m:'uksf2|'+an+' 异常: '+String(e).slice(0,140)});}
   }
+  S({m:'UK类型: '+(typeof UK)+' UKSF: '+(typeof UKSF)});
   // 头/尾特殊: 整 qd (含 8B 头) 当 data
   var QD=Java.array('byte',hex2arr((P.qd_full_hex||'').slice(0, 2*13000)));
   if(P.qd_full_hex){
