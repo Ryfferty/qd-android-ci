@@ -29,13 +29,17 @@ print('URL ok=%s len=%d' % (url.startswith('https://'), len(url)), flush=True)
 if not url.startswith('https://'):
     print('URL 解析失败 head=', fin[:40]); sys.exit(3)
 
-data = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=60).read()
-z = zipfile.ZipFile(io.BytesIO(data))
-name = [n for n in z.namelist() if n.endswith('.qd')][0]
-qd = z.read(name)
-nP = struct.unpack('<I', qd[4:8])[0]
-payload = qd[8:8+nP]
-print('zip=%dB .qd=%d payload=%d trailer=%s' % (len(data), len(qd), nP, qd[8+nP:].hex()), flush=True)
+try:
+    data = urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'}), timeout=40).read()
+    z = zipfile.ZipFile(io.BytesIO(data))
+    name = [n for n in z.namelist() if n.endswith('.qd')][0]
+    qd = z.read(name)
+    nP = struct.unpack('<I', qd[4:8])[0]
+    payload = qd[8:8+nP]
+    print('zip=%dB .qd=%d payload=%d trailer=%s' % (len(data), len(qd), nP, qd[8+nP:].hex()), flush=True)
+except Exception as e:
+    payload = b''; nP = 0
+    print('runner 下不动 COS (%s) → payload 交设备侧' % str(e)[:90], flush=True)
 
 params = {
     'userKey': af.IMEI, 'book': book, 'cid': cid,
