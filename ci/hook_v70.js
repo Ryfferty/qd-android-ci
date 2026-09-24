@@ -25,7 +25,46 @@ function report(tag,r){
 }
 Java.perform(function(){
   var P=JSON.parse(readText('/data/local/tmp/v16_params.json')||'{}');
-  if(!P.payload_b64){S({m:'无 payload'});return;}
+  if(!P.payload_b64&&P.blob_b64){
+    // 设备侧自取: unlockData(blob)→URL→下载→ZipFile→payload (v66/v15d 已验证链)
+    try{
+      var FKd=Java.use('com.yuewen.fock.Fock');
+      var bbk=Java.use('android.util.Base64').decode(P.blob_b64,2);
+      var r0=FKd.unlockData.overload('[B','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler').call(FKd,bbk,P.book+'',P.book+'_'+P.cid,null);
+      var st0=jint(fget(r0,'status'));
+      if(st0===0){
+        var db=Java.cast(fget(r0,'data'),Java.use('[B'));
+        var s='';for(var q=0;q<db.length;q++){var c=db[q]&255;if(c>=33&&c<=126)s+=String.fromCharCode(c);else if(s.length>10)break;}
+        var si=s.indexOf('https://'); var url=si>=0?s.slice(si):'';
+        S({m:'⓪设备侧 url len='+url.length});
+        if(url){
+          var zipPath='/data/data/com.qidian.QDReader/cache/ch31.zip';
+          var con=Java.use('java.net.URL').$new(url+'').openConnection();
+          con.setConnectTimeout(20000); con.setReadTimeout(30000); con.setRequestProperty('User-Agent','okhttp/4.9.0');
+          var ins=con.getInputStream();
+          var fos=Java.use('java.io.FileOutputStream').$new(zipPath);
+          var buf=Java.array('byte',new Array(8192)); var n,tot=0;
+          while((n=ins.read(buf))>0){fos.write(buf,0,n);tot+=n;}
+          fos.close(); ins.close();
+          var ZF=Java.use('java.util.zip.ZipFile').$new(zipPath);
+          var en=ZF.entries(); var e0=null;
+          while(en.hasMoreElements()){var e=en.nextElement(); if((''+e.getName()).indexOf('.qd')>=0)e0=e;}
+          if(!e0){var en2=ZF.entries(); while(en2.hasMoreElements())e0=en2.nextElement();}
+          var is=ZF.getInputStream(e0);
+          var zbuf=Java.array('byte',new Array(65536)); var zout=Java.use('java.io.ByteArrayOutputStream').$new(); var zn;
+          while((zn=is.read(zbuf))>0)zout.write(zbuf,0,zn);
+          is.close(); ZF.close();
+          var qdB=Java.cast(zout.toByteArray(),Java.use('[B'));
+          function u32x(idx){return ((qdB[idx]&255)|((qdB[idx+1]&255)<<8)|((qdB[idx+2]&255)<<16)|((qdB[idx+3]&255)<<24))>>>0;}
+          var nPv=u32x(4);
+          var carr=[];for(var g8=8;g8<8+nPv;g8++)carr.push(qdB[g8]);
+          P.payload_b64=Java.use('android.util.Base64').encodeToString(Java.array('byte',carr),2)+'';
+          S({m:'⓪★ 设备侧 payload='+carr.length+'B'});
+        }
+      } else S({m:'⓪ unlockData status='+st0});
+    }catch(e0x){S({m:'⓪ 设备侧链异常 '+String(e0x).slice(0,90)});}
+  }
+  if(!P.payload_b64){S({m:'无 payload(双路皆败)'});return;}
   var book=P.book+'', cid=P.cid+'';
   var d=Java.use('android.util.Base64').decode(P.payload_b64,2);
   var b64=Java.use('android.util.Base64').encodeToString(d,2)+'';
