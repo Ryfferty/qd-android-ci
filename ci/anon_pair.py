@@ -29,6 +29,7 @@ if not durl:
 params = {
     'Key': key_b64, 'Version': str(version), 'blob_b64': durl,
     'userKey': af.IMEI,
+    'batch_key': d.get('Key') or '', 'md5': d.get('Md5') or '',
     'addks': [
         [cid, book + '_' + cid],   # n0.search 形态: (str2, str3)
         [book + '_' + cid, ''],
