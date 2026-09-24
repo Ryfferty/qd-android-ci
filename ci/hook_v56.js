@@ -21,9 +21,11 @@ Java.perform(function(){
   // payload: base64 → java byte[]
   var PAY=B64.decode(P.payload_b64,0);
   S({m:'① PAY len='+PAY.length+' head='+hx(PAY,16)});
-  var K16=Java.array('byte',hex2arr(P.bk.replace(/-/g,'').slice(0,32)));
-  var KF  =Java.array('byte',hex2arr(P.bk.replace(/-/g,'')));
-  var MD5 =Java.array('byte',hex2arr(P.md5));
+  var bkraw=(P.batch_key||P.bk||'')+'';
+  var book=(P.book||'1049120379')+'', cid=(P.cid||'903350205')+'';
+  var K16=Java.array('byte',hex2arr(bkraw.replace(/-/g,'').slice(0,32)));
+  var KF  =Java.array('byte',hex2arr(bkraw.replace(/-/g,'')));
+  var MD5 =Java.array('byte',hex2arr(P.md5||''));
   var DK  =Java.array('byte',hex2arr(P.dk));
   var EMPTY=Java.array('byte',[]);
   var EMPTYS='';
