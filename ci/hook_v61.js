@@ -31,18 +31,21 @@ Java.perform(function(){
   }catch(e){S({m:'FockResult 字段枚举失败 '+String(e).slice(0,100)});}
   S({m:'◆FR字段 '+fields.join(' | ')});
   function fget(obj,name){try{var f=obj.getClass().getDeclaredField(name);f.setAccessible(true);return f.get(obj);}catch(e){return null;}}
+  function jint(v){if(v===null||v===undefined)return null;try{return v.intValue();}catch(e){try{return parseInt(''+v,10);}catch(e2){return null;}}}
   function report(tag,r){
     if(r===null||r===undefined){S({m:tag+' → null'});return;}
     try{
-      var ec=fget(r,'errCode');
+      var st=jint(fget(r,'status')); if(st===null)st=jint(fget(r,'errCode'));
       var data=fget(r,'data');
+      var ds=jint(fget(r,'dataSize'));
       var msg=fget(r,'message');
-      var ecN=(ec===null)?'?':(''+ec.valueOf());
-      if(!data){S({m:tag+' errCode='+ecN+' data=null msg='+(''+(msg||'')).slice(0,60)});return;}
-      var jb=Java.cast(data,Java.use('[B'));
+      var stN=(st===null)?'?':(''+st);
+      if(!data){S({m:tag+' status='+stN+' dataSize='+ds+' data=null msg='+(''+(msg||'')).slice(0,60)});return;}
+      var jb;
+      try{jb=Java.cast(data,Java.use('[B'));}catch(e1){jb=data;}
       var h=headAscii(jb,120);
-      var star=(ecN==='0'||h.pr>0.8)?'★ ':'';
-      S({m:star+tag+' errCode='+ecN+' len='+h.tot+' print='+h.pr.toFixed(2)+' asc='+h.s+' msg='+(''+(msg||'')).slice(0,40)});
+      var star=(stN==='0'||h.pr>0.8)?'★ ':'';
+      S({m:star+tag+' status='+stN+' dataSize='+ds+' len='+h.tot+' print='+h.pr.toFixed(2)+' asc='+h.s+' msg='+(''+(msg||'')).slice(0,40)});
       if(star){
         var n=h.tot>4096?4096:h.tot, arr=[];
         for(var k=0;k<n;k++)arr.push(jb[k]);
