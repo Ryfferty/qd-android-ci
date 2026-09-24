@@ -40,6 +40,8 @@ print('zip=%dB .qd=%d payload=%d trailer=%s' % (len(data), len(qd), nP, qd[8+nP:
 params = {
     'userKey': af.IMEI, 'book': book, 'cid': cid,
     'dk': dk.hex(), 'md5': d.get('Md5') or '', 'batch_key': d.get('Key') or '',
+    'keypool_b64': dd0.get('Key') or '', 'Version': str(dd0.get('Version') or ''),
+    'blob_b64': durl,
     'nP': int(nP), 'payload_b64': base64.b64encode(payload).decode(),
     'trailer_hex': qd[8+nP:].hex(), 'qd_name': name,
 }
