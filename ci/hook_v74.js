@@ -73,6 +73,18 @@ Java.perform(function(){
       Java.use('java.lang.Thread').sleep(25);
     }
   }
+  // ★②.5 全量 Content/JSON 回传 (定局件: Content 已是明文正文)
+  for(var fi=0;fi<strs.length;fi++){
+    if(strs[fi][0]==='Content'||strs[fi][0]==='AuthorComments.AuthorComments'){
+      try{
+        var cb=Java.use('java.lang.String').$new(strs[fi][1]).getBytes('UTF-8');
+        var ab2=[];for(var ci=0;ci<cb.length;ci++)ab2.push(cb[ci]);
+        S({m:'★FULL['+strs[fi][0]+'] len='+cb.length, b64:Java.use('android.util.Base64').encodeToString(Java.array('byte',ab2),2)+''});
+      }catch(e){S({m:'FULL 失败 '+String(e).slice(0,60)});}
+    }
+  }
+  try{ var jb=[];for(var jj=0;jj<out.length;jj++)jb.push(out[jj]);
+    S({m:'★FULL[JSON]', b64:Java.use('android.util.Base64').encodeToString(Java.array('byte',Java.array('byte',jb)),2)+''}); }catch(e){}
   // ③ 整串 JSON 也喂一次
   try{
     var r3=U4.call(FU,jstr,cid,book+'_'+cid,null);
