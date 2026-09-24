@@ -72,6 +72,10 @@ Java.perform(function(){
   var FU=FUc.INSTANCE.value;
   var ctx=Java.use('android.app.ActivityThread').currentApplication().getApplicationContext();
   S({m:'v31 开跑 payload='+d.length+'B'});
+  // ★ 诊断: 引擎身份 vs 协议身份 (v31 判读: -5=INCONSISTENT_USER_KEY, 不是缺键!)
+  try{ S({m:'◆◆ currentUserKey='+Java.use('com.yuewen.fock.Fock').currentUserKey()}); }catch(e){S({m:'ck 异常'});}
+  try{ S({m:'◆◆ addedKeyVersions='+Java.use('com.yuewen.fock.Fock').addedKeyVersions()}); }catch(e){}
+  S({m:'◆◆ 协议侧 userKey(params)='+P.userKey});
 
   // ⓪ 键池: overload 正确拿法
   var mapKeys={};
@@ -86,7 +90,7 @@ Java.perform(function(){
       while(en.hasNext()&&n<30){
         var e=Java.cast(en.next(),Java.use('java.util.Map$Entry'));
         var k=''+e.getKey(); var v=''+e.getValue();
-        S({m:'◇'+tag+' ['+(k.length>26?k.slice(0,26)+'…':k)+'] = '+(v.length>80?v.slice(0,80)+'…':v)});
+        S({m:'◇'+tag+' ['+(k.length>26?k.slice(0,26)+'…':k)+'] len='+v.length+' = '+(v.length>120?v.slice(0,120)+'…':v)});
         mapKeys[k]=v; n++;
       }
       S({m:'◇'+tag+' 共 '+mp.size()+' 项'});
