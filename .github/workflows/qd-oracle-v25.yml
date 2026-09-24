@@ -1,0 +1,104 @@
+name: qd-oracle-v25
+# v9: 池子因果实验 (addKeypool 换池 → dk 变不变) + App 池子原文 + 双 blob 对照
+on:
+  workflow_dispatch:
+    inputs:
+      book:
+        description: bookId(免费章)
+        default: '1049120379'
+        required: false
+      chap:
+        description: chapterId(免费章)
+        default: '903350205'
+        required: false
+
+jobs:
+  oracle:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: redroid boot + install 464 + 初始化
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          B=localhost:5555
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect $B >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')"
+          for i in 1 2 3; do curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk" && [ $(stat -c%s q464.apk) -gt 100000000 ] && break; sleep 10; done
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 30 adb -s $B wait-for-device
+          timeout 20 adb -s $B shell "setenforce 0" 2>/dev/null
+          bash write_consent.sh 2>&1 | tail -2
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 30
+          for i in $(seq 1 12); do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+            for ID in btnAgree upgrade_dialog_close_btn btn_negative tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u2.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { echo "  轮$i 点 $ID"; timeout 10 adb -s $B shell "input tap $XY"; sleep 4; }
+            done
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            echo "  轮$i MMKV=${SZ:-0}B"
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break
+            sleep 8
+          done
+
+      - name: 读设备身份 + runner 本地全链抓 payload (anon_payload)
+        run: |
+          set +e
+          B=localhost:5555
+          Q16=$(timeout 8 adb -s $B shell "strings /data/data/com.qidian.QDReader/files/mmkv/pref_utils | grep -oE 'IMEI_16[^0-9a-f]*[0-9a-f]{16}' | head -1" | tr -d '\r' | grep -oE '[0-9a-f]{16}' | tail -1)
+          MODEL=$(timeout 8 adb -s $B shell "getprop ro.product.model" | tr -d '\r')
+          ANDID=$(timeout 8 adb -s $B shell "settings get secure android_id" | tr -d '\r')
+          Q36=$(timeout 8 adb -s $B shell "strings /data/data/com.qidian.QDReader/files/mmkv/pref_utils | grep -oE '[0-9a-f]{36}' | head -1" | tr -d '\r')
+          echo "DEV Q16=$Q16 Q36=$Q36 MODEL=$MODEL ANDID=$ANDID"
+          pip install -q pycryptodome 2>&1 | tail -1
+          export DEV_IMEI=$Q36 DEV_ANDROID_ID=$Q16 DEV_MODEL="$MODEL" DEV_DEVICEID="$ANDID"
+          timeout 120 python3 ci/anon_payload.py ${{ inputs.book }} ${{ inputs.chap }} /tmp/v16_params.json 2>&1 | tail -4
+          timeout 30 adb -s $B push /tmp/v16_params.json /data/local/tmp/v16_params.json >/dev/null 2>&1
+          timeout 15 adb -s $B shell "chmod 666 /data/local/tmp/v16_params.json"
+
+      - name: frida + v10 池子原文+因果实验
+        run: |
+          set +e
+          B=localhost:5555
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fsd; chmod +x fsd
+          timeout 60 adb -s $B push fsd /data/local/tmp/fsd >/dev/null 2>&1
+          timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fsd; setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 20 adb -s $B forward tcp:27042 tcp:27042
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "attach PID=$P"
+          ( sleep 50; timeout 20 adb -s $B shell "am start -a android.intent.action.VIEW -d 'QDReader://OpenBook/1049120379/903350205' com.qidian.QDReader" > /tmp/deeplink.log 2>&1; sleep 45; timeout 20 adb -s $B shell "am start -a android.intent.action.VIEW -d 'QDReader://OpenBook/1049120379/903350204' com.qidian.QDReader" >/dev/null 2>&1 ) &
+          ( sleep 165 ) | timeout 180 frida -H 127.0.0.1:27042 -p "$P" -l ci/hook_v64.js > /tmp/oracle25.txt 2>&1
+          echo "===== 全消息 ====="
+          python3 -c "import re;t=open('/tmp/oracle25.txt',errors='replace').read();[print(m[:320]) for m in re.findall(r\"'m': '((?:[^\']|\'\')*)'\", t)]" | head -90
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oracle25
+          path: |
+            /tmp/oracle25.txt
+            /tmp/v16_params.json
+            /tmp/dev_pool.xml
+          if-no-files-found: warn
