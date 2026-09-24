@@ -46,42 +46,67 @@ Java.perform(function(){
       } else S({m:tag+' status='+st+' len=0'});
     }catch(e){S({m:tag+' 解析失败 '+String(e).slice(0,70)});}
   }
-  // ② 私有 native m67572uk([B I [B I)
+  // ② 安全优先: Fock.unlock 4参 String(b64) — App 正常路径, 不会崩
+  function dumpR2(tag,r){
+    if(r===null){S({m:tag+' → null'});return;}
+    try{
+      var st=r.status.value, d=r.data.value;
+      if(d&&d.length>0){var arr=Array.from(d);
+        var pr=arr.slice(0,200).filter(function(c){c=c&0xff;return (c>=32&&c<127)||c===9||c===10||c===13;}).length/Math.min(200,d.length);
+        S({m:'★ '+tag+' status='+st+' len='+d.length+' print='+pr.toFixed(2)+' : '+asc(arr,100)});
+        save(pr,d);
+      } else S({m:tag+' status='+st+' len=0'});
+    }catch(e){S({m:tag+' 解析失败 '+String(e).slice(0,70)});}
+  }
+  function save(pr,d){
+    if(pr>0.85){
+      var fpath='body_plain.bin';
+      try{fpath=Java.use('android.app.ActivityThread').currentApplication().getCacheDir().getAbsolutePath().toString()+'/body_plain.bin';}catch(e0){}
+      try{var fs=Java.use('java.io.FileOutputStream').$new(fpath);fs.write(d);fs.close();S({m:'████ 命中! 已存 '+fpath});}catch(e1){}
+      var part = d.length>2048 ? Java.array('byte', Array.from(d).slice(0,2048).map(function(c){return c>127?c-256:c;})) : d;
+      S({m:'★PLAIN_B64='+Java.use('android.util.Base64').encodeToString(part,2)+''});
+    }
+  }
+  try{
+    var b64str=B64.encodeToString(PAY,2)+'';
+    var U4=FK.unlock.overload('java.lang.String','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');
+    var U3=FK.unlock.overload('java.lang.String','java.lang.String','java.lang.String');
+    var pairs=[[book,book+'_'+cid],[cid,''],[book,''],[book+'_'+cid,''],['','']];
+    for(var i4=0;i4<pairs.length;i4++){
+      S({m:'~ pre F4p['+i4+']'});
+      try{ dumpR2('F4p['+pairs[i4][0].slice(0,12)+'|'+pairs[i4][1].slice(0,12)+']', U4(b64str,pairs[i4][0],pairs[i4][1],null)); }catch(e){S({m:'F4p['+i4+'] err '+String(e).slice(0,60)});}
+      if(U3){ S({m:'~ pre F3p['+i4+']'});
+        try{ dumpR2('F3p['+pairs[i4][0].slice(0,12)+'|'+pairs[i4][1].slice(0,12)+']', U3(b64str,pairs[i4][0],pairs[i4][1])); }catch(e){S({m:'F3p['+i4+'] err '+String(e).slice(0,60)});}
+      }
+    }
+  }catch(e){S({m:'② unlock String 重载: '+String(e).slice(0,90)});}
+  // ③ 私有 native m67572uk([B I [B I) — 可能崩进程, 放最后, 预打 tag
   try{
     var UK=FK.m67572uk.overload('[B','int','[B','int');
     var named={'K16':K16,'Kfull':KF,'MD5':MD5,'dk':DK,'EMPTY':EMPTY};
-    for(var kn in named){
-      for(var an in named){ if(an==='EMPTY'&&kn==='EMPTY')continue;
-        try{ dumpR('uk['+kn+'|'+an+']', UK(PAY,PAY.length,named[an],named[an].length)); }catch(e){S({m:'uk['+kn+'|'+an+'] err '+String(e).slice(0,60)});}
-      }
-      // addKey 字符串形态的字节版
-      try{ dumpR('uk['+kn+'|book]', UK(PAY,PAY.length,Java.array('byte',s2arr('1049120379')),10)); }catch(e){}
+    var seq=[];
+    for(var kn in named){ for(var an in named){ if(!(an==='EMPTY'&&kn==='EMPTY'))seq.push([kn,an]); } }
+    for(var q=0;q<seq.length;q++){
+      var k=seq[q][0], a=seq[q][1];
+      S({m:'~ pre uk['+k+'|'+a+'] '+q+'/'+seq.length});
+      try{ dumpR2('uk['+k+'|'+a+']', UK(PAY,PAY.length,named[a],named[a].length)); }catch(e){S({m:'uk err '+String(e).slice(0,60)});}
     }
-  }catch(e){S({m:'② uk 拿不到: '+String(e).slice(0,90)});}
+    S({m:'~ uk 全轮完成'});
+  }catch(e){S({m:'③ uk 拿不到: '+String(e).slice(0,90)});}
   // ③ uksf([B I [B I [B)
   try{
     var UKSF=FK.uksf.overload('[B','int','[B','int','[B');
     var named2={'K16':K16,'MD5':MD5,'dk':DK,'Kfull':KF};
     for(var k2 in named2){
-      try{ dumpR('uksf[空|'+k2+']', UKSF(PAY,PAY.length,EMPTY,0,named2[k2])); }catch(e){}
-      try{ dumpR('uksf['+k2+'|空]', UKSF(PAY,PAY.length,named2[k2],named2[k2].length,EMPTY)); }catch(e){}
+      try{ dumpR2('uksf[空|'+k2+']', UKSF(PAY,PAY.length,EMPTY,0,named2[k2])); }catch(e){}
+      try{ dumpR2('uksf['+k2+'|空]', UKSF(PAY,PAY.length,named2[k2],named2[k2].length,EMPTY)); }catch(e){}
     }
   }catch(e){S({m:'③ uksf 拿不到: '+String(e).slice(0,90)});}
-  // ④ Fock.unlock 4/5参 String(b64) 版 — 池子已装的真实引擎路径
-  try{
-    var b64str=B64.encodeToString(PAY,2)+'';
-    var U4=FK.unlock.overload('java.lang.String','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');
-    var book='1049120379', cid='903350205';
-    var pairs=[[book,book+'_'+cid],[cid,''],[book,''],[book+'_'+cid,'']];
-    for(var i4=0;i4<pairs.length;i4++){
-      try{ dumpR('F4p['+pairs[i4][0].slice(0,12)+'|'+pairs[i4][1].slice(0,12)+']', U4(b64str,pairs[i4][0],pairs[i4][1],null)); }catch(e){S({m:'F4p err '+String(e).slice(0,60)});}
-    }
-  }catch(e){S({m:'④ unlock4 '+String(e).slice(0,80)});}
   // ⑤ FockUtil.unlock(String,String) 2参 (v10 签名表: 2参 String,String)
   try{
     var FU=Java.use('com.qidian.QDReader.component.util.FockUtil').INSTANCE.value;
     var U2=FU.unlock.overload('java.lang.String','java.lang.String');
-    try{ dumpR('FU2[book]', U2(b64str,'1049120379')); }catch(e){S({m:'FU2 err '+String(e).slice(0,80)});}
+    try{ dumpR2('FU2[book]', U2(b64str,'1049120379')); }catch(e){S({m:'FU2 err '+String(e).slice(0,80)});}
   }catch(e){S({m:'⑤ FU2 '+String(e).slice(0,80)});}
   S({m:'=== v16 done ==='});
 });
