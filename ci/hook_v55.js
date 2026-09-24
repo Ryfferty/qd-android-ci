@@ -115,6 +115,20 @@ Java.perform(function(){
     var b64url=B64.encodeToString(payload,2); // NO_WRAP
     var st=FU.unlock(b64url,book,book+'_'+cid);
     S({m:'FU.unlock(3参) status='+st});
+    var r2=FU.unlock(b64url,book,book+'_'+cid,null);
+    if(r2&&r2.data&&r2.data.value&&r2.data.value.length>0){var arr2=Array.from(r2.data.value);S({m:'★ FU4参 status='+r2.status.value+' print='+arr2.slice(0,150).filter(function(c){c=c&255;return c>=32&&c<127;}).length/150+' '+asc(arr2,90)});}
   }catch(e){S({m:'FU.unlock err '+String(e).slice(0,90)});}
+  // Fock.unlock 4/5 参 (String 版, str 先过 Base64.decode)
+  try{
+    var b64str=B64.encodeToString(payload,2)+'';
+    var U4=FK.unlock.overload('java.lang.String','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');
+    var U5=FK.unlock.overload('java.lang.String','java.lang.String','java.lang.String','java.lang.String','com.yuewen.fock.Fock$ErrorLogHandler');
+    var addks=P.addks||[];
+    for(var q=0;q<Math.min(addks.length,5);q++){
+      var a2=addks[q][0],a3=addks[q][1];
+      try{ dumpR('F4p['+a2.slice(0,14)+'|'+a3.slice(0,14)+']', U4(b64str,a2||'',a3||'',null)); }catch(e){}
+      try{ dumpR('F5p['+a2.slice(0,14)+'|'+a3.slice(0,14)+']', U5(b64str,a2||'',a3||'',BK,null)); }catch(e){}
+    }
+  }catch(e){S({m:'Fock.unlock 重载 '+String(e).slice(0,80)});}
   S({m:'=== v15 done ==='});
 });
