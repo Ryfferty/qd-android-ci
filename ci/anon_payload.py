@@ -42,7 +42,7 @@ except Exception as e:
     print('runner 下不动 COS (%s) → payload 交设备侧' % str(e)[:90], flush=True)
 
 params = {
-    'userKey': af.IMEI, 'book': book, 'cid': cid,
+    'userKey': af.IMEI, 'imei16': af.Q, 'book': book, 'cid': cid,
     'dk': dk.hex(), 'md5': d.get('Md5') or '', 'batch_key': d.get('Key') or '',
     'keypool_b64': dd0.get('Key') or '', 'Version': str(dd0.get('Version') or ''),
     'blob_b64': blob, 'cos_url': url, 'qd_name': name,
