@@ -38,14 +38,14 @@ try:
     payload = qd[8:8+nP]
     print('zip=%dB .qd=%d payload=%d trailer=%s' % (len(data), len(qd), nP, qd[8+nP:].hex()), flush=True)
 except Exception as e:
-    payload = b''; nP = 0
+    payload = b''; nP = 0; qd = b''; name = ''
     print('runner 下不动 COS (%s) → payload 交设备侧' % str(e)[:90], flush=True)
 
 params = {
     'userKey': af.IMEI, 'book': book, 'cid': cid,
     'dk': dk.hex(), 'md5': d.get('Md5') or '', 'batch_key': d.get('Key') or '',
     'keypool_b64': dd0.get('Key') or '', 'Version': str(dd0.get('Version') or ''),
-    'blob_b64': durl,
+    'blob_b64': url,
     'nP': int(nP), 'payload_b64': base64.b64encode(payload).decode(),
     'trailer_hex': qd[8+nP:].hex(), 'qd_name': name,
 }
