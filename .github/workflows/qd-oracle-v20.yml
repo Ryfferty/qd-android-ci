@@ -86,7 +86,7 @@ jobs:
           pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
           P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "attach PID=$P"
-          ( sleep 110 ) | timeout 120 frida -H 127.0.0.1:27042 -p "$P" -l ci/hook_v59.js > /tmp/oracle20.txt 2>&1
+          ( sleep 165 ) | timeout 180 frida -H 127.0.0.1:27042 -p "$P" -l ci/hook_v59.js > /tmp/oracle20.txt 2>&1
           echo "===== 全消息 ====="
           python3 -c "import re;t=open('/tmp/oracle20.txt',errors='replace').read();[print(m[:320]) for m in re.findall(r\"'m': '((?:[^\']|\'\')*)'\", t)]" | head -90
           exit 0
