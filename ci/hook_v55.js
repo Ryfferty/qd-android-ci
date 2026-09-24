@@ -60,33 +60,31 @@ Java.perform(function(){
         qd=eb.toByteArray();
       }
     }catch(e){S({m:'② ZIS fail: '+String(e).slice(0,80)});}
-    // 兜底: 设备端下载缺 "PK" 头 → 手动解析 local file header (签名 \x03\x04 起)
+    // 兜底: 设备端下载缺 "PK" 两字节 (magic 直接从 03 04 起) → 补回后手解 local header
     if(!qd||qd.length===0){
       try{
-        var z=zipBytes; var off=0;
-        var sig=-1;
-        for(var i3=0;i3<Math.min(z.length-30,4096);i3++){ if((z[i3]&255)===0x03&&(z[i3+1]&255)===0x04){sig=i3;break;} }
-        if(sig<0) sig=0;
-        if(sig===0&&(z[0]&255)===0x50&&(z[1]&255)===0x4b){off=4;sig=0;}
-        var csize=(z[off+18]&255)|((z[off+19]&255)<<8)|((z[off+20]&255)<<16)|((z[off+21]&255)<<24);
-        var ulen =(z[off+22]&255)|((z[off+23]&255)<<8)|((z[off+24]&255)<<16)|((z[off+25]&255)<<24);
-        var nlen  =(z[off+26]&255)|((z[off+27]&255)<<8);
-        var elen  =(z[off+28]&255)|((z[off+29]&255)<<8);
-        var method=(z[off+8]&255)|((z[off+9]&255)<<8);
-        var nameArr=Array.prototype.slice.call(z,off+30,off+30+nlen);
-        var nameStr=Java.use('java.lang.String').$new(Java.array('byte',nameArr.map(function(c){return c>127?c-256:c;})),'UTF-8')+'';
-        S({m:'② 手动zip: sig@'+sig+' method='+method+' csize='+csize+' usize='+ulen+' name='+nameStr});
-        var dataStart=off+30+nlen+elen;
-        var raw=z.slice(dataStart,dataStart+(csize||ulen));
-        if(method===0){ qd=Java.array('byte',Array.from(raw).map(function(c){return c>127?c-256:c;})); }
+        var z=zipBytes; var pre=(z[0]&255)===0x03&&(z[1]&255)===0x04?2:0;
+        var method=(z[pre+6]&255)|((z[pre+7]&255)<<8);
+        var csize=(z[pre+14]&255)|((z[pre+15]&255)<<8)|((z[pre+16]&255)<<16)|((z[pre+17]&255)<<24);
+        var ulen =(z[pre+18]&255)|((z[pre+19]&255)<<8)|((z[pre+20]&255)<<16)|((z[pre+21]&255)<<24);
+        var nlen =(z[pre+22]&255)|((z[pre+23]&255)<<8);
+        var elen =(z[pre+24]&255)|((z[pre+25]&255)<<8);
+        var carr=[]; for(var q2=0;q2<nlen;q2++)carr.push(z[pre+26+q2]);
+        var nameStr=Java.use('java.lang.String').$new(Java.array('byte',carr.map(function(c){return c>127?c-256:c;})),'UTF-8')+'';
+        S({m:'② 补PK手解: method='+method+' csize='+csize+' usize='+ulen+' name='+nameStr});
+        var dstart=pre+26+nlen+elen;
+        var dlen=csize>0?csize:(z.length-dstart);
+        var barr=[]; for(var q3=0;q3<dlen;q3++)barr.push(z[dstart+q3]);
+        var jarr=Java.array('byte',barr.map(function(c){return c>127?c-256:c;}));
+        if(method===0){ qd=jarr; }
         else if(method===8){
-          var INF=Java.use('java.util.zip.InflaterInputStream').$new(Java.use('java.io.ByteArrayInputStream').$new(Java.array('byte',Array.from(raw).map(function(c){return c>127?c-256:c;}))),Java.use('java.util.zip.Inflater').$new(-15));
+          var INF=Java.use('java.util.zip.InflaterInputStream').$new(Java.use('java.io.ByteArrayInputStream').$new(jarr),Java.use('java.util.zip.Inflater').$new(-15));
           var ib=Java.use('java.io.ByteArrayOutputStream').$new(); var yy;
           while((yy=INF.read(abuf))>0) ib.write(abuf,0,yy);
           qd=ib.toByteArray();
         }
-        S({m:'② 手动 .qd len='+(qd?qd.length:0)+' head='+(qd?hx(qd,16):'-')});
-      }catch(e2){S({m:'② 手动zip失败 '+String(e2).slice(0,100)});}
+        S({m:'② 补PK .qd len='+(qd?qd.length:0)+' head='+(qd?hx(qd,16):'-')});
+      }catch(e2){S({m:'② 补PK失败 '+String(e2).slice(0,120)});}
     }
     if(qd&&qd.length>0) S({m:'② .qd len='+qd.length+' head='+hx(qd,16)+' tail='+hx(qd.slice(qd.length-16),16)});
   }catch(e){S({m:'② 下载/解压失败 '+String(e).slice(0,140)});}
