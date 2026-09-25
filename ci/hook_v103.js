@@ -8,11 +8,10 @@ Java.perform(function(){
   var BD=JSON.parse(readText('/data/local/tmp/v60_bundle.json')||readText('/data/local/tmp/v16_params.json'));
   var CTb=Java.use('android.util.Base64').decode(BD.CT,10); // URL_SAFE
   var Kraw=Java.use('android.util.Base64').decode(BD.K128,0);
-  var bkBytes=Java.use('java.lang.String').$new(BD.batchKey,'UTF-8').getBytes('UTF-8');
-  S({m:'v63 载 CT='+CTb.length+'B Kraw='+Kraw.length+'B'});
+  var CTs=''+Java.use('java.lang.String').$new(CTb);
+  S({m:'v63 载 CT='+CTb.length+'B CTs='+CTs.length});
   var Fock=Java.use('com.yuewen.fock.Fock');
   var cidS='799920041', pair='1040025277|799920041';
-  var CTs=''+Java.use('java.lang.String').$new(CTb,'UTF-8');
   function FR(r,tag){ try{ var st=r.status.value; S({m:'◆'+tag+' st='+st}); if(st===0){ var d=r.data; var sb=[]; for(var z=0;z<Math.min(120,d.length);z++){ sb.push(String.fromCharCode(d[z]&0xff)); } S({m:'█'+tag+' DATA='+sb.join('').replace(/[\r\n]+/g,' ').slice(0,110)}); } }catch(e){S({m:'◆'+tag+' 读败 '+String(e).slice(0,60)});} }
   // ① unlockData 静态: (byte[] data, String cid, String pair, handler) — 直喂字节绕开 bad-base64 层!
   try{ S({m:'ud4 overload: '+(!!Fock.unlockData.overload)}); }catch(e){}
