@@ -20,7 +20,7 @@ Java.perform(function(){
   // Key 变体库
   var hx=KEYV.replace(/-/g,'');
   var rawB=[]; for(var i=0;i<hx.length;i+=2)rawB.push(parseInt(hx.substr(i,2),16));
-  var raw=A.array('byte',rawB);
+  var raw=Java.array('byte',rawB);
   var B64=Java.use('android.util.Base64');
   var v_b64hex=B64.encodeToString(raw,2)+'';                 // 28B→38字符
   var v_b64hex_nopad=v_b64hex.replace(/=+$/,'');
