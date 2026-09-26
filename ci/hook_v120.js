@@ -4,7 +4,7 @@
 Java.perform(function(){
   function S(o){try{send(o);}catch(e){}}
   function readText(p){try{var f=Java.use('java.io.File').$new(p);if(!f.exists())return null;var r=Java.use('java.io.BufferedReader').$new(Java.use('java.io.InputStreamReader').$new(Java.use('java.io.FileInputStream').$new(f),'UTF-8'));var s='',l;while((l=r.readLine())!=null)s+=l;r.close();return s;}catch(e){return null;}}
-  var BD=JSON.parse(readText('/data/local/tmp/v79_bundle.json'));
+  var BD=JSON.parse(readText('/data/local/tmp/v80_bundle.json'));
   var Fock=Java.use('com.yuewen.fock.Fock');
   var pair=BD.book+'_'+BD.cid;
   var uk=function(){try{return ''+Fock.currentUserKey();}catch(e){return 'ERR';}};
