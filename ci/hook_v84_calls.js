@@ -48,8 +48,6 @@
       S({m:'fileManager MANUAL scripts='+list.size()});
     }
   }catch(e){ S({m:'fm 探测败 '+String(e).slice(0,50)}); }
-  // d([B, String, String) → FockRT$Result 探测（解锁评估入口）
-  try{ var r2 = NB.d(blob, '2', cfgNow||''); S({m:'◆d → '+(r2===null?'null':JSON.stringify(''+r2).substring(0,80))}); }catch(e){ S({m:'d 败 '+String(e).slice(0,60)}); }
   // ① 枚举 FRT 运行时真方法名（jadx 改名≠dex真名）
   try{
     var dm = Java.use('com.yuewen.fockrt.FockRT').class.getDeclaredMethods();
