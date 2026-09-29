@@ -23,17 +23,26 @@
   var ui   = rdBytes('/data/local/tmp/ui.bin');
   if(blob){ S({m:'blob='+blob.length+'B ui='+(ui?ui.length:'null')}); }
   // s([B, long, [B, String) → String：多 cfg 组合
-  var cfgs = [cfgNow, '', 'x', null];
+  // setup 已把 f72914a='qjsprobe'；s 第4参须与之一致。primitive 直传（勿 valueOf）
+  var cfgs = ['qjsprobe', cfgNow, ''];
   for(var i=0;i<cfgs.length;i++){
     (function(cfgv, i){
       try{
-        var r = NB.s(blob, Java.use('java.lang.Long').valueOf(2), ui, cfgv===null?null:Java.use('java.lang.String').valueOf(''+cfgv));
-        if(cfgv===null) r = NB.s(blob, 2, ui, null);
-        S({m:'◆s#'+i+' cfg=['+(cfgv===null?'null':cfgv)+'] → '+(r===null?'null':(''+r).substring(0,70)+' ('+(''+r).length+'B)')});
+        var r = NB.s(blob, 2, ui, cfgv===null?null:cfgv);
+        S({m:'◆s#'+i+' cfg=['+cfgv+'] → '+(r===null?'null':(''+r).substring(0,70)+' ('+(''+r).length+'B)')});
         if(r && (''+r).length>50) save('script_s_'+i+'.js', r);
-      }catch(e){ S({m:'s#'+i+' 败 '+String(e).slice(0,70)}); }
+      }catch(e){ S({m:'s#'+i+' 败 '+String(e).slice(0,90)}); }
     })(cfgs[i], i);
   }
+  // desc.e 可能不是2：试 fileManager 路径拿真 desc
+  try{
+    var FRT2=Java.use('com.yuewen.fockrt.FockRT');
+    var fm=FRT2.fileManager.value;
+    if(fm){
+      var list=fm.m67608b(Java.use('com.yuewen.fockrt.enums.EnumC18704c').MANUAL.value, false);
+      S({m:'fileManager MANUAL scripts='+list.size()});
+    }
+  }catch(e){ S({m:'fm 探测败 '+String(e).slice(0,50)}); }
   // d([B, String, String) → FockRT$Result 探测（解锁评估入口）
   try{ var r2 = NB.d(blob, '2', cfgNow||''); S({m:'◆d → '+(r2===null?'null':JSON.stringify(''+r2).substring(0,80))}); }catch(e){ S({m:'d 败 '+String(e).slice(0,60)}); }
   S({m:'v84 完成，观察 jsout'});
