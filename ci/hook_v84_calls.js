@@ -12,6 +12,9 @@
   }
   var NB=Java.use('com.yuewen.fockrt.NativeBinding');
   var ctx=Java.use('android.app.ActivityThread').currentApplication().getApplicationContext();
+  // ★ 先跑 FRT.setup：建 fileManager/executor + 触发 libfockrt 全局表填充（表不填 s 必崩）
+  try{ var FRT=Java.use('com.yuewen.fockrt.FockRT'); FRT.setup(ctx,'qjsprobe',false); S({m:'★FRT.setup ok'}); }catch(e){ S({m:'setup败 '+String(e).slice(0,70)}); }
+  Java.use('java.lang.Thread').sleep(5000);
   // cfg 候选：C18706g.f72914a 当前值（setup 第2参喂入的业务串）
   var cfgNow = '';
   try{ var G=Java.use('com.yuewen.fockrt.C18706g'); cfgNow = G.f72914a.value; S({m:'f72914a 现值=['+(cfgNow===null?'null':cfgNow)+']'}); }catch(e){ S({m:'g类名混淆，试别的 '+String(e).slice(0,40)}); }

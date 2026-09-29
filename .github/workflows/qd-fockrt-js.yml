@@ -96,6 +96,29 @@ jobs:
           echo "===== ⑥ 网络域名（logcat 找 fockrt.yuewen.com 请求） =====" | tee -a /tmp/ojs/report.txt
           adb -s $B shell "logcat -d 2>/dev/null | grep -iE 'fockrt|yuewen.com/[a-z]*api|anyability' | tail -30" | tee -a /tmp/ojs/report.txt
 
+      - name: frida 主动调用 NB.s 解 dblob
+        run: |
+          set +e
+          B=localhost:5555
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fsd; chmod +x fsd
+          timeout 60 adb -s $B push fsd /data/local/tmp/fsd >/dev/null 2>&1
+          timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fsd; setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 20 adb -s $B forward tcp:27042 tcp:27042
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          timeout 30 adb -s $B push ci/dblob.bin /data/local/tmp/dblob.bin >/dev/null 2>&1 && echo dblob pushed
+          timeout 30 adb -s $B push ci/ui.bin /data/local/tmp/ui.bin >/dev/null 2>&1 && echo ui pushed
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "attach PID=$P"
+          ( sleep 100 ) | timeout 150 frida -H 127.0.0.1:27042 -p "$P" -l ci/hook_v84_calls.js > /tmp/js84.txt 2>&1 || echo FRIDA_FAIL
+          grep -aE 'SAVED|◆|★|败|方法数|f72914' /tmp/js84.txt | head -30
+          adb -s $B shell "ls -la /data/local/tmp/jsout/ 2>/dev/null"
+          mkdir -p /tmp/ojs
+          adb -s $B pull /data/local/tmp/jsout /tmp/ojs/jsout 2>/dev/null
+          for f in /tmp/ojs/jsout/*; do echo "== $f =="; head -c 300 "$f"; echo; done 2>/dev/null
+          exit 0
       - name: 上传归档
         uses: actions/upload-artifact@v4
         with:
