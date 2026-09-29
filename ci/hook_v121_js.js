@@ -49,6 +49,7 @@ Java.perform(function(){
         S({m:'★SLOTS['+label+'|'+tag+'] '+h});
       }
       hexrange(m.base, 0x1b000, 0x40, 'v7a@1b000');
+      hexrange(m.base, 0x26fe0, 0xe0, 'arm64@26fe0');
       hexrange(m.base, 0x27020, 0x40, 'arm64@27020');
     }catch(e){ S({m:'dump败 '+String(e).slice(0,60)}); }
   }
