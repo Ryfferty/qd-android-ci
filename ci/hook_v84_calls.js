@@ -45,6 +45,24 @@
   }catch(e){ S({m:'fm 探测败 '+String(e).slice(0,50)}); }
   // d([B, String, String) → FockRT$Result 探测（解锁评估入口）
   try{ var r2 = NB.d(blob, '2', cfgNow||''); S({m:'◆d → '+(r2===null?'null':JSON.stringify(''+r2).substring(0,80))}); }catch(e){ S({m:'d 败 '+String(e).slice(0,60)}); }
-  S({m:'v84 完成，观察 jsout'});
+  // ★★ 走 FRT 自带入口 m67574sn(str)：内部自动 m67608b 拿真 desc + 正确 e(long) 调 s
+  try{
+    var FRT3=Java.use('com.yuewen.fockrt.FockRT');
+    var out = FRT3.m67574sn('probe_ui');
+    S({m:'◆m67574sn → '+(out===null?'null':(''+out).substring(0,80)+' ('+(''+out).length+'B)')});
+    if(out && (''+out).length>50) save('sn_out.js', out);
+  }catch(e){ S({m:'sn 败 '+String(e).slice(0,80)}); }
+  // dump fileManager 里的 desc 列表（真 e 值）
+  try{
+    var fmF = Java.use('com.yuewen.fockrt.FockRT').fileManager.value;
+    if(fmF){
+      var lc = fmF.getClass().getDeclaredMethods();
+      S({m:'fm class='+fmF.getClass().getName()+' methods='+lc.length});
+      for(var q=0;q<lc.length;q++){ var mn2=lc[q].getName(); if(mn2.length<=3) S({m:'  fm.m '+mn2+' ret='+lc[q].getReturnType().getSimpleName()}); }
+      // 试 m67608b(EnumC18704c, boolean) — 枚举类名混淆，遍历找
+    }
+  }catch(e2){ S({m:'fm dump 败 '+String(e2).slice(0,60)}); }
+  S({m:'v84c 完成'});
+
 });
 })();
