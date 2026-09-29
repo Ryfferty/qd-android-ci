@@ -1,0 +1,104 @@
+name: qd-fockrt-js
+
+# 目标：redroid 跑现役版起点 App，触发 fockrt 初始化，抓 anyability JS 载荷
+# 输出：/tmp/ojs 归档 —— 目录树 + SP 清单(com.yuewen.fockrt.files) + 全部 .js 文件
+on:
+  workflow_dispatch: {}
+
+jobs:
+  grab:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup deps
+        run: |
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq android-tools-adb curl xz-utils unzip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+
+      - name: Setup redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          timeout 30 adb connect localhost:5555 || true
+          for i in $(seq 1 45); do
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && { echo "BOOT_OK try $i"; break; }
+            sleep 8
+          done
+          adb -s localhost:5555 root 2>&1 | tail -1
+          sleep 8
+
+      - name: Install 现役版(q464=7.9.378) 并触发 fockrt 初始化
+        run: |
+          set +e
+          B=localhost:5555
+          PKG=com.qidian.QDReader
+          curl -sSL --max-time 1800 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk" || \
+          curl -sSL --max-time 1800 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk"
+          adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          # 启动主页
+          adb -s $B shell "am start -n $PKG/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 30
+          # 点同意（复用 tap_consent.py）
+          for attempt in 1 2 3; do
+            adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            adb -s $B pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            XY=$(python3 tap_consent.py /tmp/u.xml 2>/dev/null)
+            echo "attempt=$attempt tap=[$XY]"
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; sleep 12; } || break
+          done
+          sleep 15
+          # 触发 FockRT 初始化：冷重启再等（初始化通常在进程启动时做）
+          adb -s $B shell "am force-stop $PKG"; sleep 3
+          adb -s $B shell "am start -n $PKG/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 60
+          adb -s $B shell "ps -A | grep qidian" | head -3
+
+      - name: 抓 fockrt 数据 + JS 载荷
+        run: |
+          set +e
+          B=localhost:5555
+          PKG=/data/data/com.qidian.QDReader
+          mkdir -p /tmp/ojs/tree /tmp/ojs/js /tmp/ojs/sp
+          echo "===== ① SP 清单 =====" | tee /tmp/ojs/report.txt
+          adb -s $B shell "ls -la $PKG/shared_prefs/ 2>/dev/null" | tee -a /tmp/ojs/report.txt
+          for f in $(adb -s $B shell "ls $PKG/shared_prefs/ 2>/dev/null" | tr -d '\r'); do
+            adb -s $B pull $PKG/shared_prefs/$f /tmp/ojs/sp/ >/dev/null 2>&1
+          done
+          adb -s $B shell "cat $PKG/shared_prefs/com.yuewen.fockrt*.xml 2>/dev/null" | tee -a /tmp/ojs/report.txt
+          echo "===== ② 全目录树 =====" | tee -a /tmp/ojs/report.txt
+          adb -s $B shell "find $PKG -type f 2>/dev/null | head -400" | tee /tmp/ojs/tree/all.txt | tee -a /tmp/ojs/report.txt
+          echo "===== ③ JS/脚本文件定位 =====" | tee -a /tmp/ojs/report.txt
+          adb -s $B shell "find $PKG -type f \( -name '*.js' -o -name '*.jsc' -o -name '*fockrt*' -o -name '*anyability*' -o -name '*ability*' \) 2>/dev/null" | tee /tmp/ojs/tree/js.txt | tee -a /tmp/ojs/report.txt
+          echo "===== ④ 下载/缓存目录 =====" | tee -a /tmp/ojs/report.txt
+          for d in files cache app_fockrt app_anyability app_script app_text files/fockrt files/script; do
+            echo "--- $d ---" | tee -a /tmp/ojs/report.txt
+            adb -s $B shell "ls -laR $PKG/$d 2>/dev/null | head -40" | tee -a /tmp/ojs/report.txt
+          done
+          echo "===== ⑤ grep 拉JS =====" | tee -a /tmp/ojs/report.txt
+          # 按内容找 JS：含 function/fock 的任意文件
+          for f in $(adb -s $B shell "grep -rl 'function' $PKG/files $PKG/cache $PKG/app_* 2>/dev/null | head -30" | tr -d '\r'); do
+            echo "JS-CAND: $f" | tee -a /tmp/ojs/report.txt
+            adb -s $B pull "$f" /tmp/ojs/js/ >/dev/null 2>&1
+          done
+          ls -la /tmp/ojs/js | tee -a /tmp/ojs/report.txt
+          echo "===== ⑥ 网络域名（logcat 找 fockrt.yuewen.com 请求） =====" | tee -a /tmp/ojs/report.txt
+          adb -s $B shell "logcat -d 2>/dev/null | grep -iE 'fockrt|yuewen.com/[a-z]*api|anyability' | tail -30" | tee -a /tmp/ojs/report.txt
+
+      - name: 上传归档
+        uses: actions/upload-artifact@v4
+        with:
+          name: oraclejs
+          path: /tmp/ojs
+          if-no-files-found: ignore
