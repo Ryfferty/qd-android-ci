@@ -92,8 +92,11 @@ jobs:
           ( timeout 200 adb -s $B logcat -v brief > /tmp/logcat61.txt 2>&1 ) &
           LCAT=$!
           sleep 3
-          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-          echo "attach PID=$P"
+          for pt in 1 2 3 4 5 6; do
+            P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ] && timeout 5 adb -s $B shell "kill -0 $P" 2>/dev/null; then echo "attach PID=$P try=$pt"; break; fi
+            echo "PID空/死 try=$pt P=[$P]"; timeout 5 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 12
+          done
           ( sleep 165 ) | timeout 180 frida -H 127.0.0.1:27042 -p "$P" -l ci/hook_v121_js.js > /tmp/oracle80.txt 2>&1
           sleep 5; kill $LCAT 2>/dev/null
           echo "===== logcat sha1key / QDReader_Jni ====="
