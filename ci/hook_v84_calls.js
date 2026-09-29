@@ -50,23 +50,32 @@
   }catch(e){ S({m:'fm 探测败 '+String(e).slice(0,50)}); }
   // d([B, String, String) → FockRT$Result 探测（解锁评估入口）
   try{ var r2 = NB.d(blob, '2', cfgNow||''); S({m:'◆d → '+(r2===null?'null':JSON.stringify(''+r2).substring(0,80))}); }catch(e){ S({m:'d 败 '+String(e).slice(0,60)}); }
-  // ★★ 走 FRT 自带入口 m67574sn(str)：内部自动 m67608b 拿真 desc + 正确 e(long) 调 s
+  // ① 枚举 FRT 运行时真方法名（jadx 改名≠dex真名）
   try{
-    var FRT3=Java.use('com.yuewen.fockrt.FockRT');
-    var out = FRT3.m67574sn('probe_ui');
-    S({m:'◆m67574sn → '+(out===null?'null':(''+out).substring(0,80)+' ('+(''+out).length+'B)')});
-    if(out && (''+out).length>50) save('sn_out.js', out);
-  }catch(e){ S({m:'sn 败 '+String(e).slice(0,80)}); }
-  // dump fileManager 里的 desc 列表（真 e 值）
+    var dm = Java.use('com.yuewen.fockrt.FockRT').class.getDeclaredMethods();
+    var ns=[]; for(var z=0;z<dm.length;z++) ns.push(dm[z].getName()+'/'+dm[z].getParameterTypes().length);
+    S({m:'FRT方法: '+ns.join(',')});
+  }catch(e){ S({m:'枚举败 '+String(e).slice(0,50)}); }
+  // ② 后台线程调 sn（m67608b 会同步等网络，主线程直调会挂死 frida）
   try{
-    var fmF = Java.use('com.yuewen.fockrt.FockRT').fileManager.value;
-    if(fmF){
-      var lc = fmF.getClass().getDeclaredMethods();
-      S({m:'fm class='+fmF.getClass().getName()+' methods='+lc.length});
-      for(var q=0;q<lc.length;q++){ var mn2=lc[q].getName(); if(mn2.length<=3) S({m:'  fm.m '+mn2+' ret='+lc[q].getReturnType().getSimpleName()}); }
-      // 试 m67608b(EnumC18704c, boolean) — 枚举类名混淆，遍历找
-    }
-  }catch(e2){ S({m:'fm dump 败 '+String(e2).slice(0,60)}); }
+    var Runnable=Java.use('java.lang.Runnable');
+    var Impl=Java.registerClass({
+      name:'com.probe.Sn84', implements:[Runnable],
+      methods:{ run: function(){
+        try{
+          var out = Java.use('com.yuewen.fockrt.FockRT').m67574sn('probe_ui');
+          send({m:'◆m67574sn → '+(out===null?'null':(''+out).substring(0,80)+' ('+(''+out).length+'B)')});
+          if(out && (''+out).length>50){
+            var f=Java.use('java.io.FileOutputStream').$new(Java.use('java.io.File').$new('/data/local/tmp/jsout/sn_out.js'));
+            var st=''+out; var arr=[]; for(var i=0;i<st.length;i++)arr.push(st.charCodeAt(i)&0xff);
+            f.write(Java.array('byte',arr)); f.close(); send({m:'★SAVED sn_out.js '+arr.length+'B'});
+          }
+        }catch(e){ send({m:'sn败 '+String(e).slice(0,80)}); }
+      }}
+    });
+    Java.use('java.lang.Thread').$new(Impl.$new()).start();
+    S({m:'sn 线程已派'});
+  }catch(e){ S({m:'线程派生败 '+String(e).slice(0,60)}); }
   S({m:'v84c 完成'});
 
 });
