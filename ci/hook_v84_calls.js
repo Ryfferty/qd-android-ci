@@ -6,9 +6,14 @@
   function save(name, s){ try{ var f=FOS.$new(File.$new(DIR,name)); var arr=[]; s=''+s; for(var i=0;i<s.length&&i<400000;i++)arr.push(s.charCodeAt(i)&0xff); f.write(Java.array('byte',arr)); f.close(); S({m:'★SAVED '+name+' '+arr.length+'B'});}catch(e){S({m:'save败 '+String(e).slice(0,60)});} }
   function rdBytes(p){
     try{
-      var FIS=Java.use('java.io.FileInputStream'); var f=FIS.$new(p); var n=File.$new(p).length();
-      var buf=Java.array('byte', new Array(n)); f.read(buf); f.close(); return buf;
-    }catch(e){ S({m:'read败 '+p+' '+String(e).slice(0,40)}); return null; }
+      var n = parseInt('' + File.$new(p).length(), 10);
+      var zeroArr = []; for(var i=0;i<n;i++) zeroArr.push(0);
+      var BA = Java.array('byte', zeroArr);
+      var FIS=Java.use('java.io.FileInputStream'); var f=FIS.$new(p);
+      var got=f.read(BA); f.close();
+      S({m:'rd '+p+' n='+n+' got='+got});
+      return BA;
+    }catch(e){ S({m:'read败 '+p+' '+String(e).slice(0,60)}); return null; }
   }
   var NB=Java.use('com.yuewen.fockrt.NativeBinding');
   var ctx=Java.use('android.app.ActivityThread').currentApplication().getApplicationContext();
