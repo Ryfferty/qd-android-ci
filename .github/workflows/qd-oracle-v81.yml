@@ -3,7 +3,6 @@ name: qd-oracle-v81
 on:
   push:
     branches: [fockrt-js-grab]
-on_orig:
   workflow_dispatch:
     inputs:
       book:
