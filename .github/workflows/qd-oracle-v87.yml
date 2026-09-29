@@ -1,4 +1,4 @@
-name: qd-oracle-v86
+name: qd-oracle-v87
 # v9: 池子因果实验 (addKeypool 换池 → dk 变不变) + App 池子原文 + 双 blob 对照
 on:
   push:
@@ -96,7 +96,7 @@ jobs:
           LCAT=$!
           sleep 3
           timeout 20 adb -s $B shell "am force-stop com.qidian.QDReader" >/dev/null 2>&1; sleep 3
-          ( sleep 150 ) | timeout 165 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l ci/hook_v86_spawn.js > /tmp/oracle80.txt 2>&1
+          ( sleep 150 ) | timeout 165 frida -H 127.0.0.1:27042 -f com.qidian.QDReader -l ci/hook_v87_url.js > /tmp/oracle80.txt 2>&1
           sleep 5; kill $LCAT 2>/dev/null
           echo "===== logcat sha1key / QDReader_Jni ====="
           grep -aiE 'sha1key|sha1id|bookid:|sign is|QDReader_Jni' /tmp/logcat61.txt | head -40
@@ -117,7 +117,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: oracle86
+          name: oracle87
           path: |
             /tmp/oracle80.txt
             /tmp/ojs
