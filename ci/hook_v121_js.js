@@ -35,27 +35,21 @@ Java.perform(function(){
   var F=Java.use('com.yuewen.fockrt.FockRT');
   var ctx=Java.use('android.app.ActivityThread').currentApplication().getApplicationContext();
   try{ F.setup(ctx,'probe',false); S({m:'◆FockRT.setup 完成'}); }catch(e){ S({m:'setup败 '+String(e).slice(0,60)}); }
-  S({m:'v121 hook 就绪，静候 120s 采 JS'});
-});
-})();
-// —— v121b: setup 后直读 libfock .bss 槽（设备内存里 JS 已执行过，槽应为真编码值）——
-(function(){ Java.perform(function(){
+  S({m:'v121 就绪'});
   function S(o){try{send(o);}catch(e){}}
   function dumpSlots(tag){
     try{
       var m = Process.findModuleByName('libfock.so');
       if(!m){ S({m:'no libfock module'}); return; }
-      var hex='';
-      for(var off=0x1b000; off<0x1b040; off+=4){
-        var w = Memory.readU32(m.base.add(off));
-        hex += ('00000000'+w.toString(16)).slice(-8)+' ';
+      function hexrange(base, off0, n, label){
+        var h='';
+        for(var off=off0; off<off0+n; off+=4){
+          try{ var w = Memory.readU32(base.add(off)); h += ('0000000'+(w>>>0).toString(16)).slice(-8)+' '; }catch(e){ h+='XXXXXXXX '; }
+        }
+        S({m:'★SLOTS['+label+'|'+tag+'] '+h});
       }
-      S({m:'★SLOTS['+tag+'] base='+m.base+' @1b000: '+hex});
-      // 顺带解出 0x1b00c/0x1b010 的 target
-      var s0c = Memory.readU32(m.base.add(0x1b00c));
-      var s10 = Memory.readU32(m.base.add(0x1b010));
-      var d0c = (s0c ^ m.base.add(0x1b00c).toUInt32? (s0c ^ (m.base.toUInt32()+0x1b00c)))>>>0;
-      S({m:'★DEC 1b00c enc='+s0c.toString(16)+' dec=0x'+d0c.toString(16)});
+      hexrange(m.base, 0x1b000, 0x40, 'v7a@1b000');
+      hexrange(m.base, 0x27020, 0x40, 'arm64@27020');
     }catch(e){ S({m:'dump败 '+String(e).slice(0,60)}); }
   }
   var F=Java.use('com.yuewen.fock.Fock');
@@ -69,4 +63,5 @@ Java.perform(function(){
   // 再试触发一次解锁评估（打开过书才有池，至少 setup 链走完）
   S({m:'v121b 完成，继续采 evaluate 60s'});
   setTimeout(function(){ dumpSlots('t+60s'); }, 60000);
-}); })();
+});
+})();
