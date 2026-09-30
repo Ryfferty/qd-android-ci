@@ -160,16 +160,35 @@ jobs:
           echo "FINAL PID=$P MAINUI=$MAINUI"
           ( sleep 240 ) | timeout 260 frida -H 127.0.0.1:27042 -p "$P" -l /tmp/hook_v200.js > /tmp/readvip200.txt 2>&1 &
           FP=$!
-          sleep 10
-          timeout 10 adb -s $B shell "am start -a android.intent.action.VIEW -d 'qdreader://app/BookDetail?bookId=${{ inputs.book }}'" >/dev/null 2>&1
-          sleep 20
-          for i in 1 2 3 4 5 6 7 8; do
-            timeout 15 adb -s $B shell "uiautomator dump /sdcard/r.xml >/dev/null 2>&1"
-            timeout 20 adb -s $B shell "cat /sdcard/r.xml" 2>/dev/null | tr -d '\r' > /tmp/r.xml
-            XY=$(grep -oE 'text="[^"]{0,20}(开始阅读|立即阅读|免费阅读|继续阅读|阅读本书)[^"]{0,20}"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/r.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
-            [ -n "$XY" ] && { echo "tap[$i] $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 12; } || { echo "轮$i 未见阅读按钮 sz=$(wc -c < /tmp/r.xml)"; sleep 6; }
+          alive(){ timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'; }
+          tapx(){ timeout 10 adb -s $B shell "input tap $1 $2"; }
+          dump(){ timeout 15 adb -s $B shell "uiautomator dump /sdcard/q.xml >/dev/null 2>&1"; timeout 20 adb -s $B shell "cat /sdcard/q.xml" 2>/dev/null | tr -d '\r' > /tmp/q.xml; wc -c < /tmp/q.xml; }
+          # 纯 UI 路径: 主界面 → 书城找书 → 点书封面 → (若到详情)点阅读 → 若失败退回书架
+          sleep 12
+          # 1) 点底部"书城"tab
+          SZ=$(dump); echo "U1 sz=$SZ alive=$(alive)"
+          XY=$(grep -oE 'text="书城"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/q.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+          [ -n "$XY" ] && { echo "点书城 $XY"; tapx $XY; sleep 12; }
+          # 2) 书城页里点任意一本书封面(RecyclerView item content-desc 含书名或 clickable FrameLayout)
+          SZ=$(dump); echo "U2 sz=$SZ alive=$(alive)"
+          XY=$(grep -oE 'content-desc="[^"]{2,30}"[^>]*clickable="true"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/q.xml | grep -vE "书城|发现|书架|我的|签到" | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+          [ -n "$XY" ] && { echo "点封面 $XY"; tapx $XY; sleep 18; }
+          # 3) 详情页: 点阅读按钮
+          SZ=$(dump); echo "U3 sz=$SZ alive=$(alive)"
+          for i in 1 2 3 4 5 6; do
+            XY=$(grep -oE 'text="[^"]{0,20}(开始阅读|立即阅读|免费阅读|继续阅读|阅读本书|阅读)[^"]{0,20}"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/q.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+            [ -n "$XY" ] && { echo "点阅读 $XY"; tapx $XY; sleep 15; break; }
+            # 找不到就往右滑翻一下再 dump
+            timeout 10 adb -s $B shell "input swipe 800 1170 200 1170" >/dev/null 2>&1; sleep 4
+            dump >/dev/null
           done
-          sleep 20
+          # 4) 阅读页里翻 3 章触发 VIP 章请求
+          for sw in 1 2 3 4; do
+            timeout 10 adb -s $B shell "input swipe 900 1170 200 1170" >/dev/null 2>&1
+            sleep 10
+          done
+          echo "末尾 alive=$(alive)"
+          sleep 10
           timeout 30 adb -s $B shell "screencap -p /sdcard/fin.png" >/dev/null 2>&1
           timeout 30 adb -s $B pull /sdcard/fin.png /tmp/fin.png >/dev/null 2>&1
           kill $FP $LCAT 2>/dev/null; sleep 2
