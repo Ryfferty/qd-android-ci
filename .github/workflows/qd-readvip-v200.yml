@@ -90,9 +90,7 @@ jobs:
           timeout 10 adb -s $B shell "iptables -t nat -A OUTPUT -p tcp --dport 80 -j DNAT --to-destination $GW:8899"
           timeout 10 adb -s $B shell "iptables -t nat -A OUTPUT -p tcp --dport 443 -j DNAT --to-destination $GW:8899"
           timeout 8 adb -s $B shell "iptables -t nat -L OUTPUT -n -v" | head -5
-          # 兜底: Android 全局代理(okhttp ProxySelector 默认会读)
-          timeout 10 adb -s $B shell "settings put global http_proxy $GW:8899"
-          timeout 10 adb -s $B shell "settings get global http_proxy"
+          # v202 教训: 预置系统代理会让加固 App 直接死掉(sz=0) —— 只用 iptables 透明 DNAT
           nohup mitmdump -p 8899 --set block_global=false -w /tmp/qd.flow --quiet >/tmp/mitm.log 2>&1 &
           sleep 3
           pgrep -a mitmdump | head -2
