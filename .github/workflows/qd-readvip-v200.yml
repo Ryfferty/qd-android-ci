@@ -119,39 +119,45 @@ jobs:
           curl -sSL -o /tmp/hook_v200.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_v200_read_vip.js"
           ls -la /tmp/hook_v200.js
 
-      - name: attach hook → deeplink 书详情 → 进阅读页
+      - name: 温和驱动到主界面 + attach + 深链读书
         run: |
           set +e
           B=localhost:5555
           timeout 8 adb -s $B shell logcat -c >/dev/null 2>&1
-          ( timeout 300 adb -s $B logcat -v brief > /tmp/lc.txt 2>&1 ) &
+          ( timeout 420 adb -s $B logcat -v brief > /tmp/lc.txt 2>&1 ) &
           LCAT=$!
-          get_pid(){ timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'; }
-          wait_mainui(){ # 轮询离开启动页(splash_layout消失且层次非空)
-            for k in $(seq 1 24); do
-              timeout 15 adb -s $B shell "uiautomator dump /sdcard/w.xml >/dev/null 2>&1"
-              timeout 20 adb -s $B shell "cat /sdcard/w.xml" 2>/dev/null | tr -d '\r' > /tmp/w.xml
-              SZ=$(wc -c < /tmp/w.xml)
-              if [ "$SZ" -gt 2000 ] && ! grep -q splash_layout /tmp/w.xml; then echo "MAINUI_OK sz=$SZ 轮$k"; return 0; fi
-              # 被系统全屏提示挡住时点 GOT IT
-              XY=$(grep -oE 'text="GOT IT"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/w.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
-              [ -n "$XY" ] && timeout 10 adb -s $B shell "input tap $XY"
-              sleep 5
-            done
-            echo MAINUI_TIMEOUT; return 1
-          }
-          P=""
-          for att in 1 2 3 4 5; do
-            timeout 8 adb -s $B shell "am force-stop com.qidian.QDReader" >/dev/null 2>&1; sleep 3
-            timeout 10 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.MainGroupActivity" >/dev/null 2>&1
-            sleep 20
-            P=$(get_pid)
-            [ -z "$P" ] && { echo "try$att APP没起来"; continue; }
-            wait_mainui || { echo "try$att 未达主界面"; timeout 10 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 12; P=$(get_pid); wait_mainui || { echo "try$att 再次失败"; continue; }; }
-            break
+          # 原则: 不 force-stop、不直启 MainGroup —— run3 证明冷启 Splash 后 App 能活
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "step3 起始 PID=$P"
+          if [ -z "$P" ]; then
+            timeout 10 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+            sleep 25
+            P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            echo "冷启后 PID=$P"
+          fi
+          [ -z "$P" ] && { echo NO_PID; kill $LCAT 2>/dev/null; exit 0; }
+          # 温和轮询主界面; 点 GOT IT / 引导按钮; App 若死立即取证并停
+          MAINUI=0
+          for k in $(seq 1 18); do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/w.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/w.xml" 2>/dev/null | tr -d '\r' > /tmp/w.xml
+            SZ=$(wc -c < /tmp/w.xml)
+            XY=$(grep -oE 'text="GOT IT"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/w.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+            [ -n "$XY" ] && { echo "k$k 点GOTIT $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
+            XY2=$(grep -oE 'text="(跳过|以后再说|暂不|我知道了|开始使用)"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/w.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+            [ -n "$XY2" ] && { echo "k$k 点引导 $XY2"; timeout 10 adb -s $B shell "input tap $XY2"; sleep 3; }
+            if [ "$SZ" -gt 4000 ] && ! grep -q splash_layout /tmp/w.xml; then echo "MAINUI_OK k$k sz=$SZ"; MAINUI=1; break; fi
+            P2=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -z "$P2" ]; then echo "k$k APP死了 停止重试"; break; fi
+            echo "k$k 等主界面 sz=$SZ"
+            sleep 10
           done
-          echo "FINAL PID=$P"
+          # 死亡/超时取证
+          timeout 30 adb -s $B shell "ls /data/tombstones/ /data/system/dropbox/ 2>/dev/null" > /tmp/deathlist.txt 2>&1
+          timeout 60 adb -s $B pull /data/system/dropbox /tmp/dropbox_pull >/dev/null 2>&1
+          P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           [ -z "$P" ] && { echo NO_PID_ABORT; kill $LCAT 2>/dev/null; exit 0; }
+          echo "FINAL PID=$P MAINUI=$MAINUI"
           ( sleep 240 ) | timeout 260 frida -H 127.0.0.1:27042 -p "$P" -l /tmp/hook_v200.js > /tmp/readvip200.txt 2>&1 &
           FP=$!
           sleep 10
@@ -160,19 +166,19 @@ jobs:
           for i in 1 2 3 4 5 6 7 8; do
             timeout 15 adb -s $B shell "uiautomator dump /sdcard/r.xml >/dev/null 2>&1"
             timeout 20 adb -s $B shell "cat /sdcard/r.xml" 2>/dev/null | tr -d '\r' > /tmp/r.xml
-            XY=$(grep -oE 'text="[^"]{0,20}(开始阅读|立即阅读|免费阅读|继续阅读|阅读本书|目录)[^"]{0,20}"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/r.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+            XY=$(grep -oE 'text="[^"]{0,20}(开始阅读|立即阅读|免费阅读|继续阅读|阅读本书)[^"]{0,20}"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/r.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
             [ -n "$XY" ] && { echo "tap[$i] $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 12; } || { echo "轮$i 未见阅读按钮 sz=$(wc -c < /tmp/r.xml)"; sleep 6; }
           done
-          sleep 15
+          sleep 20
           timeout 30 adb -s $B shell "screencap -p /sdcard/fin.png" >/dev/null 2>&1
           timeout 30 adb -s $B pull /sdcard/fin.png /tmp/fin.png >/dev/null 2>&1
           kill $FP $LCAT 2>/dev/null; sleep 2
-          echo "===== 抓到消息 ====="
-          grep -ao "'m': '[^']*'" /tmp/readvip200.txt | head -80
           echo "===== REQ/RESP ====="
-          grep -a "★REQ\|★RESP" /tmp/readvip200.txt | head -30
-          echo "===== logcat 崩溃线索 ====="
-          grep -aiE "FATAL|SIGSEGV|beginning of crash|libc.*qidian" /tmp/lc.txt | head -12
+          grep -a "★REQ\|★RESP" /tmp/readvip200.txt | head -40
+          echo "===== 全部消息 ====="
+          grep -ao "'m': '[^']*'" /tmp/readvip200.txt | head -60
+          echo "===== logcat 死亡证据 ====="
+          grep -aE "signal 9|has died|FATAL|SIGSEGV" /tmp/lc.txt | head -15
           wc -c /tmp/readvip200.txt
 
       - name: 上传产物
@@ -184,4 +190,5 @@ jobs:
             /tmp/readvip200.txt
             /tmp/lc.txt
             /tmp/fin.png
+            /tmp/deathlist.txt
           if-no-files-found: warn
