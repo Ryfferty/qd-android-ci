@@ -71,6 +71,10 @@ jobs:
           set +e
           B=localhost:5555
           adb connect $B >/dev/null 2>&1
+          # ★ run=v201 失败根因: 宿主内核 nat 表模块没加载 → 容器 iptables "Table does not exist"
+          sudo modprobe nf_conntrack nf_nat iptable_nat nf_nat_ipv4 xt_TCPMSS xt_comment 2>&1 | head -2
+          lsmod | grep -E "nat|conntrack" | head -6
+          sudo iptables -t nat -L -n >/dev/null 2>&1 && echo HOST_NAT_OK || echo HOST_NAT_FAIL
           pip install -q mitmproxy 2>&1 | tail -1
           (timeout 8 mitmdump -p 8899 --set quiet=true >/dev/null 2>&1 &); sleep 10
           ls ~/.mitmproxy/ | head -4
@@ -86,6 +90,9 @@ jobs:
           timeout 10 adb -s $B shell "iptables -t nat -A OUTPUT -p tcp --dport 80 -j DNAT --to-destination $GW:8899"
           timeout 10 adb -s $B shell "iptables -t nat -A OUTPUT -p tcp --dport 443 -j DNAT --to-destination $GW:8899"
           timeout 8 adb -s $B shell "iptables -t nat -L OUTPUT -n -v" | head -5
+          # 兜底: Android 全局代理(okhttp ProxySelector 默认会读)
+          timeout 10 adb -s $B shell "settings put global http_proxy $GW:8899"
+          timeout 10 adb -s $B shell "settings get global http_proxy"
           nohup mitmdump -p 8899 --set block_global=false -w /tmp/qd.flow --quiet >/tmp/mitm.log 2>&1 &
           sleep 3
           pgrep -a mitmdump | head -2
@@ -133,6 +140,7 @@ jobs:
           timeout 30 adb -s $B shell "screencap -p /sdcard/fin.png" >/dev/null 2>&1
           timeout 30 adb -s $B pull /sdcard/fin.png /tmp/fin.png >/dev/null 2>&1
           timeout 8 adb -s $B shell "iptables -t nat -L OUTPUT -n -v" > /tmp/pkts.txt 2>&1
+          timeout 10 adb -s $B shell "settings put global http_proxy :0" >/dev/null 2>&1
           kill $LCAT 2>/dev/null
           pkill -f "mitmdump -p 8899" 2>/dev/null; sleep 3
           echo STEP3_DONE
