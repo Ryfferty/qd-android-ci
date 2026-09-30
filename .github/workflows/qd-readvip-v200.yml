@@ -39,7 +39,8 @@ jobs:
           for i in 1 2 3; do curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk" && [ $(stat -c%s q464.apk) -gt 100000000 ] && break; sleep 10; done
           timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
           timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
-          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 30 adb -s $B wait-for-device
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 6
+          for i in $(seq 1 15); do adb connect $B >/dev/null 2>&1; ST=$(timeout 5 adb -s $B get-state 2>/dev/null | tr -d "\r"); echo "reconn$i st=$ST"; [ "$ST" = "device" ] && break; sleep 4; done
           timeout 20 adb -s $B shell "setenforce 0" 2>/dev/null
           timeout 20 adb -s $B shell "pm disable-user --user 0 com.android.bluetooth" >/dev/null 2>&1
           bash write_consent.sh 2>&1 | tail -2
@@ -62,6 +63,7 @@ jobs:
         run: |
           set +e
           B=localhost:5555
+          adb connect $B >/dev/null 2>&1; timeout 5 adb -s $B get-state || { adb kill-server; sleep 3; adb connect $B >/dev/null 2>&1; }
           cat > /tmp/sess.json <<'SESS'
           {"ywguid":"900074177981","ywkey":"yw7YDyaQ56VT","appId":"12","areaId":"30","cmfuToken":"__CMFU__","SettingUserToken":"__UT__"}
           SESS
@@ -117,6 +119,7 @@ jobs:
             if [ -n "$P" ] && timeout 5 adb -s $B shell "kill -0 $P" 2>/dev/null; then echo "PID=$P"; break; fi
             timeout 5 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.MainGroupActivity" >/dev/null 2>&1; sleep 10
           done
+          if [ -z "$P" ]; then echo "NO_PID_ABORT"; timeout 10 adb -s $B shell "ps -A -o PID,NAME" | grep -i qidian || echo APP_DEAD; fi
           ( sleep 260 ) | timeout 280 frida -H 127.0.0.1:27042 -p "$P" -l /tmp/hook_v200.js > /tmp/readvip200.txt 2>&1 &
           FP=$!
           sleep 8
