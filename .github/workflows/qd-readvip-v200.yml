@@ -1,0 +1,148 @@
+name: qd-readvip-v200
+# 注入新号会话 cookie → 打开书本 → 进阅读页 → 抓 App 读 VIP 章的真实请求
+on:
+  workflow_dispatch:
+    inputs:
+      book:
+        description: bookId
+        default: '1049120379'
+        required: false
+      chap:
+        description: chapterId(VIP章)
+        default: '921135284'
+        required: false
+
+jobs:
+  readvip:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: redroid boot + install 464 + consent
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          B=localhost:5555
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect $B >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')"
+          for i in 1 2 3; do curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk" && [ $(stat -c%s q464.apk) -gt 100000000 ] && break; sleep 10; done
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 5; timeout 30 adb -s $B wait-for-device
+          timeout 20 adb -s $B shell "setenforce 0" 2>/dev/null
+          timeout 20 adb -s $B shell "pm disable-user --user 0 com.android.bluetooth" >/dev/null 2>&1
+          bash write_consent.sh 2>&1 | tail -2
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 30
+          for i in $(seq 1 12); do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+            for ID in btnAgree upgrade_dialog_close_btn btn_negative tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u2.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { echo "轮$i 点 $ID"; timeout 10 adb -s $B shell "input tap $XY"; sleep 4; }
+            done
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            echo "轮$i MMKV=${SZ:-0}B"
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break
+            sleep 8
+          done
+
+      - name: 推会话 + 起 frida-server
+        run: |
+          set +e
+          B=localhost:5555
+          cat > /tmp/sess.json <<'SESS'
+          {"ywguid":"900074177981","ywkey":"yw7YDyaQ56VT","appId":"12","areaId":"30","cmfuToken":"__CMFU__","SettingUserToken":"__UT__"}
+          SESS
+          # cmfu/usertoken 在 CI 现取(避免过期), 纯协议
+          pip install -q pycryptodome 2>&1 | tail -1
+          python3 - <<'PY'
+          import json, time, urllib.request, urllib.parse, base64, hashlib, gzip
+          from Crypto.Cipher import DES3
+          S={'ywguid':'900074177981','ywkey':'yw7YDyaQ56VT','appId':'12','areaId':'30'}
+          IMEI='457035494495022'; Q16='ac87c40987054ea7'; YW=S['ywguid']
+          def enc(d,k,iv):
+              p=8-len(d)%8 or 8
+              return DES3.new(k,DES3.MODE_CBC,iv).encrypt(d+bytes([p])*p)
+          B64=lambda b: base64.b64encode(b).decode()
+          ts=str(int(time.time()*1000))
+          f=[IMEI,'7.9.472','720','1184','1000009','14','1','V2329A','1956','1000009','4',YW,ts,'1',Q16,'','','','0']
+          k=b'0821CAAD409B8402'
+          qdi=B64(enc('|'.join(f).encode(),k+k[:8],b'\x00'*8))
+          form={'ywguid':YW,'ywkey':S['ywkey'],'appId':'12','areaId':'30','loginfrom':'0','source':'1000009'}
+          canonl='&'.join('%s=%s'%(a,b) for a,b in sorted((x.lower(),y) for x,y in form.items()))
+          qds=B64(enc('|'.join(['Rv1rPTnczce',ts,YW,IMEI,'1','7.9.472','0',
+                   hashlib.md5(canonl.encode()).hexdigest(),'f189adc92b816b3e9da29ea304d4a7e4']).encode(),
+                   bytes.fromhex('7B3164596771452968392C5229684B71456376345D6B5B68'),b'01234567'))
+          body=urllib.parse.urlencode(form)
+          h={'User-Agent':'Mozilla/mobile QDReaderAndroid/7.9.472/1956/1000009','Accept-Encoding':'gzip',
+             'Content-Type':'application/x-www-form-urlencoded','Cookie':'; '.join('%s=%s'%(a,b) for a,b in S.items()),
+             'QDInfo':qdi,'tstamp':ts,'QDSign':qds,'Referer':'http://android.qidian.com'}
+          r=urllib.request.urlopen(urllib.request.Request('https://bravev6.if.qidian.com/argus/api/v2/user/login',data=body.encode(),headers=h),timeout=25)
+          J=json.loads(r.read())['Data']['LoginResult']
+          t=open('/tmp/sess.json').read().replace('__CMFU__',J['CmfuToken']).replace('__UT__',J['UserInfo'])
+          open('/tmp/sess.json','w').write(t)
+          print('sess ready, cmfu=',J['CmfuToken'][:20])
+          PY
+          timeout 30 adb -s $B push /tmp/sess.json /data/local/tmp/sess.json >/dev/null 2>&1
+          timeout 15 adb -s $B shell "chmod 666 /data/local/tmp/sess.json"
+          FR=16.7.19
+          curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fsd; chmod +x fsd
+          timeout 60 adb -s $B push fsd /data/local/tmp/fsd >/dev/null 2>&1
+          timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fsd; setsid /data/local/tmp/fsd -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 20 adb -s $B forward tcp:27042 tcp:27042
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          curl -sSL -o /tmp/hook_v200.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_v200_read_vip.js"
+          ls -la /tmp/hook_v200.js
+
+      - name: attach hook → deeplink 书详情 → 进阅读页
+        run: |
+          set +e
+          B=localhost:5555
+          for pt in 1 2 3 4 5 6; do
+            P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ] && timeout 5 adb -s $B shell "kill -0 $P" 2>/dev/null; then echo "PID=$P"; break; fi
+            timeout 5 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.MainGroupActivity" >/dev/null 2>&1; sleep 10
+          done
+          ( sleep 260 ) | timeout 280 frida -H 127.0.0.1:27042 -p "$P" -l /tmp/hook_v200.js > /tmp/readvip200.txt 2>&1 &
+          FP=$!
+          sleep 8
+          # 书详情
+          timeout 10 adb -s $B shell "am start -a android.intent.action.VIEW -d 'qdreader://app/BookDetail?bookId=${{ inputs.book }}'" >/dev/null 2>&1
+          sleep 15
+          # 点"开始阅读"按钮(文本匹配)
+          for i in 1 2 3 4 5 6; do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/r.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/r.xml" 2>/dev/null | tr -d '\r' > /tmp/r.xml
+            XY=$(grep -oE 'text="[^"]{0,20}(开始阅读|立即阅读|免费阅读|继续阅读|阅读本书|目录)[^"]{0,20}"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/r.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+            [ -n "$XY" ] && { echo "tap[$i] $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 12; } || echo "轮$i 未见阅读按钮"
+          done
+          # 阅读页里翻章触发 VIP 章请求: 点目录选中间章
+          sleep 10
+          timeout 10 adb -s $B shell "input tap 540 1170" >/dev/null 2>&1; sleep 3
+          kill $FP 2>/dev/null; sleep 2
+          echo "===== 抓到消息 ====="
+          grep -o "'m': '[^']*'" /tmp/readvip200.txt | head -60
+          wc -c /tmp/readvip200.txt
+
+      - name: 上传产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readvip200
+          path: |
+            /tmp/readvip200.txt
+          if-no-files-found: warn
