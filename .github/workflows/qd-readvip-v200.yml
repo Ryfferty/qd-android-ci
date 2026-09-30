@@ -87,10 +87,13 @@ jobs:
           timeout 20 adb -s $B shell "cp /data/local/tmp/cacert.pem /apex/com.android.conscrypt/cacerts/$HASH.0 2>/dev/null && chmod 644 /apex/com.android.conscrypt/cacerts/$HASH.0 && echo APEX_OK || echo APEX_FAIL"
           GW=$(timeout 8 adb -s $B shell "ip route | awk '/^172\./{print \$9; exit}'" | tr -d '\r')
           echo GW=$GW
-          timeout 10 adb -s $B shell "iptables -t nat -A OUTPUT -p tcp --dport 80 -j DNAT --to-destination $GW:8899"
-          timeout 10 adb -s $B shell "iptables -t nat -A OUTPUT -p tcp --dport 443 -j DNAT --to-destination $GW:8899"
-          timeout 8 adb -s $B shell "iptables -t nat -L OUTPUT -n -v" | head -5
-          # v202 教训: 预置系统代理会让加固 App 直接死掉(sz=0) —— 只用 iptables 透明 DNAT
+          # v204 关键修复: 容器内 legacy iptables nat 表在本内核不可用(v202/203 实测),
+          # 但容器发包经 veth 进宿主 → 宿主 nat PREROUTING 会吃到 → 在宿主侧 DNAT
+          sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+          sudo iptables -t nat -A PREROUTING -i veth+ -p tcp --dport 80  -j DNAT --to-destination 172.17.0.1:8899
+          sudo iptables -t nat -A PREROUTING -i veth+ -p tcp --dport 443 -j DNAT --to-destination 172.17.0.1:8899
+          sudo iptables -t nat -L PREROUTING -n -v | head -8
+          timeout 10 adb -s $B shell "ping -c 2 -W 2 bravev6.if.qidian.com" | head -3
           nohup mitmdump -p 8899 --set block_global=false -w /tmp/qd.flow --quiet >/tmp/mitm.log 2>&1 &
           sleep 3
           pgrep -a mitmdump | head -2
