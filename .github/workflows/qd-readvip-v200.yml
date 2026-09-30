@@ -8,6 +8,9 @@ on:
         default: '1049120379'
         required: false
 
+permissions:
+  contents: write
+
 jobs:
   readvip:
     runs-on: ubuntu-24.04-arm
@@ -107,10 +110,12 @@ jobs:
           sudo iptables -t nat -L PREROUTING -n -v | head -6
           echo STEP2_DONE
 
-      - name: 快速驱动 App 读章
+      - name: QQ扫码登录 + 读章驱动
         run: |
           set +e
           B=localhost:5555
+          git config user.email ci@local; git config user.name ci
+          mkdir -p qr_snap && touch qr_snap/latest.png
           timeout 8 adb -s $B shell logcat -c >/dev/null 2>&1
           ( timeout 300 adb -s $B logcat -v brief > /tmp/lc.txt 2>&1 ) &
           LCAT=$!
@@ -131,7 +136,30 @@ jobs:
             A=$(alive); [ -z "$A" ] && { echo "k$k APP死"; break; }
           done
           echo "驱动前 alive=$(alive)"
-          # A) 主界面上下滑书城 → 触发 getsquarepagepiece/getconf 等(未登录也发, 头最全)
+          # ★ 登录: 若停在登录页, 勾协议 → 点QQ登录 → 抓授权页二维码 → push 给手机 QQ 扫
+          timeout 20 adb -s $B shell "cat /sdcard/q.xml" 2>/dev/null | tr -d '\r' > /tmp/q.xml; grep -q "QQ登录" /tmp/q.xml && {
+            echo "登录页: 勾选协议"
+            XY=$(grep -oE 'content-desc="[^"]*同意[^"]*"|(我已阅读并同意)[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/q.xml | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | head -1 | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+            [ -n "$XY" ] && { echo "点协议 $XY"; tapx $XY; sleep 3; }
+            XY=$(grep -oE 'text="QQ登录"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/q.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+            [ -n "$XY" ] && { echo "点QQ登录 $XY"; tapx $XY; sleep 12; }
+            # 等 QQ 授权页(二维码); 每秒截屏推仓库, 循环 120s, 直到检测到非登录页(授权确认按钮/回到App)
+            for i in $(seq 1 60); do
+              timeout 20 adb -s $B shell "screencap -p /sdcard/qr.png" >/dev/null 2>&1
+              timeout 20 adb -s $B pull /sdcard/qr.png qr_snap/latest.png >/dev/null 2>&1
+              git add -f qr_snap/latest.png 2>/dev/null
+              git commit -q -m "qr $i" 2>/dev/null
+              git push -q origin HEAD 2>/dev/null
+              timeout 15 adb -s $B shell "uiautomator dump /sdcard/g.xml >/dev/null 2>&1"
+              timeout 20 adb -s $B shell "cat /sdcard/g.xml" 2>/dev/null | tr -d '\r' > /tmp/g.xml
+              grep -q "确认授权\|授权提示\|同意并登录" /tmp/g.xml && { echo "到授权页, 点确认"; XY=$(grep -oE 'text="[^"]*(确认|同意)[^"]*"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/g.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}'); [ -n "$XY" ] && tapx $XY; break; }
+              alive | grep -q . || break
+              sleep 2
+            done
+            sleep 15
+            echo "登录后 alive=$(alive)"
+          }
+          # A) 主界面上下滑书城 → 触发 getsquarepagepiece/getconf 等(头最全)
           for s in 1 2 3; do
             timeout 10 adb -s $B shell "input swipe 540 1600 540 600" >/dev/null 2>&1; sleep 6
           done
