@@ -1,0 +1,238 @@
+name: qd-sdk-born-v305
+# v300: redroid随机设备 + 起点App首启 + 扫码页截图(上传) + hook抓登录会话 → SDK通道出生
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sdkborn:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: redroid boot + random device + install 464
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          B=localhost:5555
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect $B >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')"
+          # ★随机设备指纹
+          RANDSER=$(printf '%08x' $((RANDOM*RANDOM)))
+          RANDIMEI=$(python3 -c "import random; print('%015d'%random.randint(10**14,10**15-1))")
+          RANDAID=$(python3 -c "import random; print('%016x'%random.getrandbits(64))")
+          RANDSER2=$(python3 -c "import random; print('QD%08x'%random.getrandbits(32))")
+          timeout 20 adb -s $B root >/dev/null 2>&1; sleep 3
+          for i in $(seq 1 8); do
+            IDOUT=$(timeout 6 adb -s $B shell id 2>/dev/null | tr -d "\r")
+            if echo "$IDOUT" | grep -q "uid=0"; then break; fi
+            adb disconnect $B >/dev/null 2>&1; sleep 1; adb connect $B >/dev/null 2>&1; sleep 3
+          done
+          timeout 20 adb -s $B shell "setenforce 0" 2>/dev/null
+          timeout 20 adb -s $B shell "settings put secure android_id $RANDAID" 2>/dev/null
+          echo "device: imei=$RANDIMEI aid=$RANDAID ser=$RANDSER2"
+          # ★写build.prop式设备随机(serial/imei靠root改不到的部分用oem hook跳过 — 首要靠android_id+serialno)
+          echo "RANDINFO_IMEI=$RANDIMEI" >> $GITHUB_ENV
+          echo "RANDINFO_AID=$RANDAID" >> $GITHUB_ENV
+          # 装464
+          for i in 1 2 3; do curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk" && [ $(stat -c%s q464.apk) -gt 100000000 ] && break; sleep 10; done
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          bash write_consent.sh 2>&1 | tail -2
+
+      - name: first launch + QQ login + scan mode
+        run: |
+          B=localhost:5555
+          cat > /tmp/findbtn.py <<'PYX'
+          import re,sys
+          t=open('/tmp/u2.xml').read()
+          kw=sys.argv[1]
+          pat=r'(?:(?:text|resource-id)="[^"]*'+kw+r'[^"]*")[^>]*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"'
+          m=re.search(pat,t)
+          if m:
+              x1,y1,x2,y2=map(int,m.groups())
+              print('%d,%d'%((x1+x2)//2,(y1+y2)//2))
+          PYX
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 25
+          for i in $(seq 1 12); do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+            for ID in btnAgree upgrade_dialog_close_btn btn_negative tvSkip; do
+              C=$(python3 /tmp/findbtn.py "id/$ID" 2>/dev/null || true)
+              if [ -n "$C" ]; then timeout 10 adb -s $B shell "input tap $C" >/dev/null 2>&1; sleep 2; fi
+            done
+            QQB=$(python3 /tmp/findbtn.py "QQ登录" 2>/dev/null || true)
+            [ -n "$QQB" ] && echo "QQ_LOGIN_POS=$QQB" && break
+            sleep 3
+          done
+          # ★勾协议(多策略)
+          # 策略1: resource-id找checkbox
+          CB=$(python3 - <<'PYC'
+import re
+try:
+    t=open('/tmp/u2.xml').read()
+    # checkbox类id
+    for pat in (r'(com.qidian.QDReader:id/[a-zA-Z_]*(?:check|cb|agree|protocol)[a-zA-Z_]*)"[^>]*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"',
+                r'checkable="true"[^>]*bounds="\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]"'):
+        m=re.search(pat,t)
+        if m:
+            gs=m.groups()
+            if gs[0].startswith('com'):
+                x1,y1,x2,y2=map(int,gs[1:5])
+            else:
+                x1,y1,x2,y2=map(int,gs[0:4])
+            print('%d,%d'%((x1+x2)//2,(y1+y2)//2))
+            break
+except: pass
+PYC
+)
+          if [ -n "$CB" ]; then
+            echo "tap_checkbox=$CB"
+            timeout 10 adb -s $B shell "input tap $CB" >/dev/null 2>&1; sleep 2
+          else
+            # 策略2: 文字左侧估算
+            CAG=$(python3 /tmp/findbtn.py "我已阅读并同意" 2>/dev/null || true)
+            if [ -n "$CAG" ]; then
+              X=$(echo $CAG | cut -d, -f1); Y=$(echo $CAG | cut -d, -f2)
+              NX=$((X-90)); [ $NX -lt 20 ] && NX=20
+              echo "tap_agree=$NX,$Y"
+              timeout 10 adb -s $B shell "input tap $NX $Y" >/dev/null 2>&1; sleep 2
+            fi
+          fi
+          # 策略3: 验证勾选状态(重新dump看checked)
+          timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+          timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+          CHK=$(grep -c 'checked="true"' /tmp/u2.xml 2>/dev/null || echo 0)
+          echo "checked_count=$CHK"
+          # ★重新找QQ登录按钮(勾选后界面可能刷新)
+          QQB=$(python3 /tmp/findbtn.py "QQ登录" 2>/dev/null || true)
+          # ★点QQ登录
+          if [ -n "$QQB" ]; then
+            echo "tap_qq=$QQB"
+            timeout 10 adb -s $B shell "input tap $QQB" >/dev/null 2>&1
+            sleep 10
+            # 若跳到协议页: 返回+等
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+            if grep -q "用户服务协议" /tmp/u2.xml; then
+              echo "跳协议页! 返回重试"
+              timeout 10 adb -s $B shell "input keyevent 4" >/dev/null 2>&1; sleep 3
+              # 返回后再勾一次(这次用文字右侧的复选框更远距离)
+              timeout 10 adb -s $B shell "input tap 80 1976" >/dev/null 2>&1; sleep 1
+              # 重找QQ登录按钮
+              timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+              timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+              QQB2=$(python3 /tmp/findbtn.py "QQ登录" 2>/dev/null || true)
+              if [ -n "$QQB2" ]; then
+                echo "tap_qq_retry=$QQB2"
+                timeout 10 adb -s $B shell "input tap $QQB2" >/dev/null 2>&1; sleep 10
+              fi
+            fi
+          else
+            echo "NO_QQ_POS!"
+          fi
+          # ★QQ登录后: dump页面找"扫码登录"切换或二维码
+          timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+          timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u2.xml
+          grep -o 'text="[^"]*"' /tmp/u2.xml | head -30 > /tmp/afterqq.txt
+          echo "== QQ登录后页面元素 =="
+          cat /tmp/afterqq.txt
+          # 找"扫码"入口
+          SCAN=$(python3 /tmp/findbtn.py "扫码" 2>/dev/null || true)
+          if [ -z "$SCAN" ]; then SCAN=$(python3 /tmp/findbtn.py "扫一扫" 2>/dev/null || true); fi
+          if [ -n "$SCAN" ]; then
+            echo "tap_scan=$SCAN"
+            timeout 10 adb -s $B shell "input tap $SCAN" >/dev/null 2>&1; sleep 8
+          fi
+          # 截图(可能是App的扫码登录码!)
+          for i in 1 2 3 4 5; do
+            sleep 3
+            adb -s $B exec-out screencap -p > appscan_$i.png 2>/dev/null || true
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u5.xml
+            QRK=$(grep -c -E '扫码|扫一扫|二维码|使用QQ手机版' /tmp/u5.xml 2>/dev/null || echo 0)
+            echo "round$i qr_hint=$QRK"
+          done
+          adb -s $B exec-out screencap -p > qr_page.png 2>/dev/null || true
+          ls -la appscan_*.png qr_page.png 2>/dev/null || echo NO_PNG
+
+      - name: upload QR screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: qr-screens
+          path: |
+            qr_page.png
+            appscan_*.png
+
+      - name: dump current UI for debug
+        run: |
+          B=localhost:5555
+          timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+          timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u5.xml
+          grep -o 'text="[^"]*"' /tmp/u5.xml | head -40 > ui_state.txt
+          cat ui_state.txt
+
+      - name: wait scan + capture session (hook)
+        run: |
+          B=localhost:5555
+          # 下载hook脚本(从release)
+          curl -sSL --max-time 120 -o hook.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_v200_read_vip.js" || true
+          ls -la hook.js 2>/dev/null || echo NO_HOOK
+          # 装frida
+          pip3 install -q frida-tools 2>/dev/null || true
+          FRIDA_OK=$(frida --version 2>/dev/null || echo NO)
+          echo "frida=$FRIDA_OK"
+          # 下载frida-server到容器
+          if [ "$FRIDA_OK" != "NO" ]; then
+            curl -sSL --max-time 300 -o fs.xz "https://github.com/frida/frida/releases/download/16.5.7/frida-server-16.5.7-android-arm64.xz" || true
+            if [ -s fs.xz ]; then
+              xz -d fs.xz 2>/dev/null; chmod +x fs 2>/dev/null
+              timeout 60 adb -s $B push fs /data/local/tmp/fs >/dev/null 2>&1
+              timeout 20 adb -s $B shell "chmod 755 /data/local/tmp/fs; nohup /data/local/tmp/fs -l 0.0.0.0:27042 >/dev/null 2>&1 &" >/dev/null 2>&1
+              sleep 3
+              # 等用户扫QR(从artifact下载后给用户) — 这里等15分钟
+              echo "等待扫码(15分钟)..."
+              PID=$(timeout 8 adb -s $B shell "pidof com.qidian.QDReader" | tr -d '\r')
+              echo "app_pid=$PID"
+              for i in $(seq 1 60); do
+                # 每15秒截图看登录状态
+                if [ $((i%5)) = 0 ]; then adb -s $B exec-out screencap -p > scan_progress.png 2>/dev/null; fi
+                # 检测登录成功(UI变化/cookie文件)
+                timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+                LOGINOK=$(timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' | grep -c '书架\|我的书架\|首页')
+                if [ "$LOGINOK" -gt 2 ]; then echo "登录成功(检测到主界面)"; break; fi
+                sleep 15
+              done
+              # frida attach抓cookie/会话
+              timeout 60 frida -U -n com.qidian.QDReader -l hook.js --no-pause 2>&1 | tail -20 || echo FRIDA_FAIL
+            fi
+          fi
+          # 拉取hook产物
+          timeout 30 adb -s $B shell "ls /data/local/tmp/" 2>/dev/null
+          timeout 30 adb -s $B pull /data/local/tmp/sess_capture.json sess_capture.json 2>/dev/null || echo NO_SESS
+          ls -la sess_capture.json 2>/dev/null || echo EMPTY
+
+      - name: upload everything
+        uses: actions/upload-artifact@v4
+        with:
+          name: born-result
+          path: |
+            qr_page*.png
+            scan_progress.png
+            ui_state.txt
+            sess_capture.json
+          if-no-files-found: ignore
