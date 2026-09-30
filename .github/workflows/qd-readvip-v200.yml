@@ -123,31 +123,56 @@ jobs:
         run: |
           set +e
           B=localhost:5555
-          for pt in 1 2 3 4 5 6; do
-            P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
-            if [ -n "$P" ] && timeout 5 adb -s $B shell "kill -0 $P" 2>/dev/null; then echo "PID=$P"; break; fi
-            timeout 5 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.MainGroupActivity" >/dev/null 2>&1; sleep 10
+          timeout 8 adb -s $B shell logcat -c >/dev/null 2>&1
+          ( timeout 300 adb -s $B logcat -v brief > /tmp/lc.txt 2>&1 ) &
+          LCAT=$!
+          get_pid(){ timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'; }
+          wait_mainui(){ # 轮询离开启动页(splash_layout消失且层次非空)
+            for k in $(seq 1 24); do
+              timeout 15 adb -s $B shell "uiautomator dump /sdcard/w.xml >/dev/null 2>&1"
+              timeout 20 adb -s $B shell "cat /sdcard/w.xml" 2>/dev/null | tr -d '\r' > /tmp/w.xml
+              SZ=$(wc -c < /tmp/w.xml)
+              if [ "$SZ" -gt 2000 ] && ! grep -q splash_layout /tmp/w.xml; then echo "MAINUI_OK sz=$SZ 轮$k"; return 0; fi
+              # 被系统全屏提示挡住时点 GOT IT
+              XY=$(grep -oE 'text="GOT IT"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/w.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
+              [ -n "$XY" ] && timeout 10 adb -s $B shell "input tap $XY"
+              sleep 5
+            done
+            echo MAINUI_TIMEOUT; return 1
+          }
+          P=""
+          for att in 1 2 3 4 5; do
+            timeout 8 adb -s $B shell "am force-stop com.qidian.QDReader" >/dev/null 2>&1; sleep 3
+            timeout 10 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.MainGroupActivity" >/dev/null 2>&1
+            sleep 20
+            P=$(get_pid)
+            [ -z "$P" ] && { echo "try$att APP没起来"; continue; }
+            wait_mainui || { echo "try$att 未达主界面"; timeout 10 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1; sleep 12; P=$(get_pid); wait_mainui || { echo "try$att 再次失败"; continue; }; }
+            break
           done
-          if [ -z "$P" ]; then echo "NO_PID_ABORT"; timeout 10 adb -s $B shell "ps -A -o PID,NAME" | grep -i qidian || echo APP_DEAD; fi
-          ( sleep 260 ) | timeout 280 frida -H 127.0.0.1:27042 -p "$P" -l /tmp/hook_v200.js > /tmp/readvip200.txt 2>&1 &
+          echo "FINAL PID=$P"
+          [ -z "$P" ] && { echo NO_PID_ABORT; kill $LCAT 2>/dev/null; exit 0; }
+          ( sleep 240 ) | timeout 260 frida -H 127.0.0.1:27042 -p "$P" -l /tmp/hook_v200.js > /tmp/readvip200.txt 2>&1 &
           FP=$!
-          sleep 8
-          # 书详情
+          sleep 10
           timeout 10 adb -s $B shell "am start -a android.intent.action.VIEW -d 'qdreader://app/BookDetail?bookId=${{ inputs.book }}'" >/dev/null 2>&1
-          sleep 15
-          # 点"开始阅读"按钮(文本匹配)
-          for i in 1 2 3 4 5 6; do
+          sleep 20
+          for i in 1 2 3 4 5 6 7 8; do
             timeout 15 adb -s $B shell "uiautomator dump /sdcard/r.xml >/dev/null 2>&1"
             timeout 20 adb -s $B shell "cat /sdcard/r.xml" 2>/dev/null | tr -d '\r' > /tmp/r.xml
             XY=$(grep -oE 'text="[^"]{0,20}(开始阅读|立即阅读|免费阅读|继续阅读|阅读本书|目录)[^"]{0,20}"[^>]*bounds="\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]"' /tmp/r.xml | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | tr -d '[]' | awk -F, '{print int(($1+$3)/2), int(($2+$4)/2)}')
-            [ -n "$XY" ] && { echo "tap[$i] $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 12; } || echo "轮$i 未见阅读按钮"
+            [ -n "$XY" ] && { echo "tap[$i] $XY"; timeout 10 adb -s $B shell "input tap $XY"; sleep 12; } || { echo "轮$i 未见阅读按钮 sz=$(wc -c < /tmp/r.xml)"; sleep 6; }
           done
-          # 阅读页里翻章触发 VIP 章请求: 点目录选中间章
-          sleep 10
-          timeout 10 adb -s $B shell "input tap 540 1170" >/dev/null 2>&1; sleep 3
-          kill $FP 2>/dev/null; sleep 2
+          sleep 15
+          timeout 30 adb -s $B shell "screencap -p /sdcard/fin.png" >/dev/null 2>&1
+          timeout 30 adb -s $B pull /sdcard/fin.png /tmp/fin.png >/dev/null 2>&1
+          kill $FP $LCAT 2>/dev/null; sleep 2
           echo "===== 抓到消息 ====="
-          grep -o "'m': '[^']*'" /tmp/readvip200.txt | head -60
+          grep -ao "'m': '[^']*'" /tmp/readvip200.txt | head -80
+          echo "===== REQ/RESP ====="
+          grep -a "★REQ\|★RESP" /tmp/readvip200.txt | head -30
+          echo "===== logcat 崩溃线索 ====="
+          grep -aiE "FATAL|SIGSEGV|beginning of crash|libc.*qidian" /tmp/lc.txt | head -12
           wc -c /tmp/readvip200.txt
 
       - name: 上传产物
@@ -157,4 +182,6 @@ jobs:
           name: readvip200
           path: |
             /tmp/readvip200.txt
+            /tmp/lc.txt
+            /tmp/fin.png
           if-no-files-found: warn
