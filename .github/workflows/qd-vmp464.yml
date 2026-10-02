@@ -143,7 +143,13 @@ jobs:
           msgs = []
           def on_msg(m, d):
               if m['type'] == 'send':
-                  line = json.dumps(m['payload'], ensure_ascii=False)
+                  p = m['payload']
+                  if isinstance(p, dict) and p.get('t') == 'vmpdump':
+                      fn = f"out/vmp_{p['name']}_p{p['part']}.bin"
+                      open(fn, 'wb').write(d)
+                      print(f"[dump] {fn} {len(d)}B", flush=True)
+                      return
+                  line = json.dumps(p, ensure_ascii=False)
                   msgs.append(line); print('[JS]', line[:400], flush=True)
               else:
                   print('[ERR]', str(m)[:300], flush=True); msgs.append('ERR ' + str(m)[:300])
