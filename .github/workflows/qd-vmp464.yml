@@ -143,11 +143,10 @@ jobs:
           timeout 30 $A shell "am force-stop com.qidian.QDReader" >/dev/null 2>&1
           sleep 2
           # ★wrap: 下一次启动走我们的wrapper → LD_PRELOAD gadget → on_load=wait挂起等连接
-          timeout 30 $A shell "setprop wrap.com.qidian.QDReader /system/bin/sh /data/local/tmp/wrap.sh" || true
+          timeout 30 $A shell setprop wrap.com.qidian.QDReader /data/local/tmp/wrap.sh || true
           WRAPV=$(timeout 15 $A shell getprop wrap.com.qidian.QDReader | tr -d '\r')
           echo "wrap属性: [$WRAPV]"
-          if [ -z "$WRAPV" ]; then echo "!! setprop空, 试单值写法"; timeout 30 $A shell setprop wrap.com.qidian.QDReader /system/bin/sh /data/local/tmp/wrap.sh || true; fi
-          WRAPV=$(timeout 15 $A shell getprop wrap.com.qidian.QDReader | tr -d '\r')
+          if [ -z "$WRAPV" ]; then echo "!!wrap设置失败"; fi
           echo "wrap属性(终): [$WRAPV]"
           # 转发gadget端口
           timeout 30 $A forward tcp:47822 tcp:47822 || true
