@@ -105,11 +105,19 @@ jobs:
           timeout 30 $A shell "ps -A -o PID,NAME | grep -i qdsvc" || echo NO_QDSVC_PROC
           timeout 30 $A forward tcp:47821 tcp:47821 || true
           for i in 1 2 3; do timeout 30 frida-ps -H 127.0.0.1:47821 2>&1 | head -4 && break; sleep 5; done
-          # ★wrap+gadget注入材料: 伪装成App自家库(数据目录+libqdinit.so — 免/proc/maps与LD_PRELOAD特征)
-          timeout 30 $A shell "mkdir -p /data/data/com.qidian.QDReader/files" || true
-          timeout 30 $A shell "touch /data/data/com.qidian.QDReader/files/.t" 2>/dev/null || true
+          # ★wrap+gadget注入材料: 伪装成App自家库(数据目录+libqdinit.so), 失败回退/data/local/tmp
           timeout 180 $A push /tmp/frida-gadget.so /data/local/tmp/libqdinit.so
-          timeout 30 $A shell "cp /data/local/tmp/libqdinit.so /data/data/com.qidian.QDReader/files/libqdinit.so && chmod 644 /data/data/com.qidian.QDReader/files/libqdinit.so" || echo CP_FAIL
+          GADGET_PATH=/data/local/tmp/libqdinit.so
+          for i in 1 2 3 4; do
+            timeout 30 $A shell "mkdir -p /data/data/com.qidian.QDReader/files" 2>/dev/null || true
+            timeout 30 $A shell "cp /data/local/tmp/libqdinit.so /data/data/com.qidian.QDReader/files/libqdinit.so && chmod 644 /data/data/com.qidian.QDReader/files/libqdinit.so" 2>/dev/null || true
+            if timeout 15 $A shell "test -r /data/data/com.qidian.QDReader/files/libqdinit.so"; then
+              GADGET_PATH=/data/data/com.qidian.QDReader/files/libqdinit.so; break
+            fi
+            sleep 3
+          done
+          echo "gadget路径: $GADGET_PATH"
+          echo -n "$GADGET_PATH" > /tmp/gadget_path
           cat > /tmp/gadget.config.json <<'CFG'
           {
             "interaction": {
@@ -122,11 +130,16 @@ jobs:
           }
           CFG
           timeout 30 $A push /tmp/gadget.config.json /data/local/tmp/libqdinit.config
-          timeout 30 $A shell "cp /data/local/tmp/libqdinit.config /data/data/com.qidian.QDReader/files/libqdinit.so.config && cp /data/local/tmp/libqdinit.config /data/data/com.qidian.QDReader/files/libqdinit.config && chmod 644 /data/data/com.qidian.QDReader/files/libqdinit.so.config /data/data/com.qidian.QDReader/files/libqdinit.config" || echo CFGCP_FAIL
-          cat > /tmp/wrap.sh <<'WRAP'
+          if [ "$GADGET_PATH" != "/data/local/tmp/libqdinit.so" ]; then
+            timeout 30 $A shell "cp /data/local/tmp/libqdinit.config /data/data/com.qidian.QDReader/files/libqdinit.so.config && cp /data/local/tmp/libqdinit.config /data/data/com.qidian.QDReader/files/libqdinit.config && chmod 644 /data/data/com.qidian.QDReader/files/libqdinit.so.config /data/data/com.qidian.QDReader/files/libqdinit.config" || true
+          fi
+          # /data/local/tmp也留一份config(所有命名变体)
+          timeout 30 $A shell "cp /data/local/tmp/libqdinit.config /data/local/tmp/libqdinit.so.config 2>/dev/null" || true
+          GADGET_PATH=$(cat /tmp/gadget_path 2>/dev/null || echo /data/local/tmp/libqdinit.so)
+          cat > /tmp/wrap.sh <<WRAP
           #!/system/bin/sh
-          export LD_PRELOAD=/data/data/com.qidian.QDReader/files/libqdinit.so
-          exec "$@"
+          export LD_PRELOAD=$GADGET_PATH
+          exec "\$@"
           WRAP
           timeout 30 $A push /tmp/wrap.sh /data/local/tmp/wrap.sh
           timeout 30 $A shell chmod 755 /data/local/tmp/wrap.sh
@@ -144,11 +157,14 @@ jobs:
           timeout 30 $A shell "am force-stop com.qidian.QDReader" >/dev/null 2>&1
           sleep 2
           # ★wrap: 下一次启动走我们的wrapper → LD_PRELOAD gadget → on_load=wait挂起等连接
-          timeout 30 $A shell setprop wrap.com.qidian.QDReader /data/local/tmp/wrap.sh || true
-          WRAPV=$(timeout 15 $A shell getprop wrap.com.qidian.QDReader | tr -d '\r')
+          for i in 1 2 3 4 5; do
+            timeout 30 $A shell setprop wrap.com.qidian.QDReader /data/local/tmp/wrap.sh 2>&1 | head -1 || true
+            WRAPV=$(timeout 15 $A shell getprop wrap.com.qidian.QDReader | tr -d '\r')
+            [ -n "$WRAPV" ] && break
+            echo "setprop try$i 失败, 等3s重试"
+            sleep 3
+          done
           echo "wrap属性: [$WRAPV]"
-          if [ -z "$WRAPV" ]; then echo "!!wrap设置失败"; fi
-          echo "wrap属性(终): [$WRAPV]"
           # 转发gadget端口
           timeout 30 $A forward tcp:47822 tcp:47822 || true
           # 正常am start(不走frida spawn → 无forceStopPackage竞速)
