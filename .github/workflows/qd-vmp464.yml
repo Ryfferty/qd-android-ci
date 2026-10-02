@@ -81,8 +81,17 @@ jobs:
           done
           timeout 30 $A shell pm list packages | tr -d '\r' | grep qidian || echo NOT_INSTALLED
           timeout 30 $A root 2>&1 | tail -1
-          sleep 8
-          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          # ★adb root会重启adbd, redroid上常掉线 — 顽固重连(6次×10s, 验证boot+root)
+          ROOTOK=""
+          for i in 1 2 3 4 5 6; do
+            sleep 8
+            timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 $A shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            U=$(timeout 15 $A shell id 2>/dev/null | tr -d '\r' | head -c 60)
+            echo "root重连try$i boot=$B id=$U"
+            if [ "$B" = "1" ] && echo "$U" | grep -q "uid=0"; then ROOTOK=1; break; fi
+          done
+          [ -n "$ROOTOK" ] || echo "!! root重连失败, 后续大概率失败"
           timeout 120 $A push /tmp/qdsvc /data/local/tmp/qdsvc
           timeout 30 $A shell chmod 755 /data/local/tmp/qdsvc
           timeout 30 $A shell "setsid /data/local/tmp/qdsvc -l 127.0.0.1:47821 >/dev/null 2>&1 &"
