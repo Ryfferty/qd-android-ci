@@ -70,9 +70,9 @@ jobs:
             if xz -t /tmp/gadget.xz 2>/dev/null; then echo "gadget ok try $i"; break; fi
             sleep 10
           done
-          unxz -f /tmp/gadget.xz && chmod +x /tmp/frida-gadget-16.7.19-android-arm64.so
+          unxz -f /tmp/gadget.xz && mv -f /tmp/gadget /tmp/frida-gadget.so && chmod +x /tmp/frida-gadget.so
           curl -sSL --max-time 120 -o /tmp/hook.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/${{ inputs.hook }}.js"
-          ls -l /tmp/qd.apk /tmp/qdsvc /tmp/hook.js /tmp/frida-gadget-16.7.19-android-arm64.so || true
+          ls -l /tmp/qd.apk /tmp/qdsvc /tmp/hook.js /tmp/frida-gadget.so || true
 
       - name: 装包 + 隐身frida-server(47821)
         run: |
@@ -106,7 +106,7 @@ jobs:
           timeout 30 $A forward tcp:47821 tcp:47821 || true
           for i in 1 2 3; do timeout 30 frida-ps -H 127.0.0.1:47821 2>&1 | head -4 && break; sleep 5; done
           # ★wrap+gadget注入材料
-          timeout 120 $A push /tmp/frida-gadget-16.7.19-android-arm64 /data/local/tmp/frida-gadget.so
+          timeout 180 $A push /tmp/frida-gadget.so /data/local/tmp/frida-gadget.so
           timeout 30 $A shell chmod 644 /data/local/tmp/frida-gadget.so
           cat > /tmp/gadget.config.json <<'CFG'
           {
