@@ -65,8 +65,14 @@ jobs:
           done
           unxz -f /tmp/fs.xz
           cp /tmp/fs /tmp/qdsvc && chmod +x /tmp/qdsvc   # ★改名避进程名扫描
+          for i in 1 2 3; do
+            curl -sSL --max-time 300 -o /tmp/gadget.xz "https://github.com/frida/frida/releases/download/16.7.19/frida-gadget-16.7.19-android-arm64.xz" || true
+            if xz -t /tmp/gadget.xz 2>/dev/null; then echo "gadget ok try $i"; break; fi
+            sleep 10
+          done
+          unxz -f /tmp/gadget.xz && chmod +x /tmp/frida-gadget-16.7.19-android-arm64
           curl -sSL --max-time 120 -o /tmp/hook.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/${{ inputs.hook }}.js"
-          ls -l /tmp/qd.apk /tmp/qdsvc /tmp/hook.js
+          ls -l /tmp/qd.apk /tmp/qdsvc /tmp/hook.js /tmp/frida-gadget-16.7.19-android-arm64
 
       - name: 装包 + 隐身frida-server(47821)
         run: |
@@ -99,48 +105,55 @@ jobs:
           timeout 30 $A shell "ps -A -o PID,NAME | grep -i qdsvc" || echo NO_QDSVC_PROC
           timeout 30 $A forward tcp:47821 tcp:47821 || true
           for i in 1 2 3; do timeout 30 frida-ps -H 127.0.0.1:47821 2>&1 | head -4 && break; sleep 5; done
+          # ★wrap+gadget注入材料
+          timeout 120 $A push /tmp/frida-gadget-16.7.19-android-arm64 /data/local/tmp/frida-gadget.so
+          timeout 30 $A shell chmod 644 /data/local/tmp/frida-gadget.so
+          cat > /tmp/gadget.config.json <<'CFG'
+          {
+            "interaction": {
+              "type": "listen",
+              "address": "127.0.0.1",
+              "port": 47822,
+              "on_port_conflict": "pick-next",
+              "on_load": "wait"
+            }
+          }
+          CFG
+          timeout 30 $A push /tmp/gadget.config.json /data/local/tmp/frida-gadget.so.config
+          timeout 30 $A push /tmp/gadget.config.json /data/local/tmp/frida-gadget.config
+          timeout 30 $A shell chmod 644 /data/local/tmp/frida-gadget.so.config /data/local/tmp/frida-gadget.config
+          cat > /tmp/wrap.sh <<'WRAP'
+          #!/system/bin/sh
+          export LD_PRELOAD=/data/local/tmp/frida-gadget.so
+          exec "$@"
+          WRAP
+          timeout 30 $A push /tmp/wrap.sh /data/local/tmp/wrap.sh
+          timeout 30 $A shell chmod 755 /data/local/tmp/wrap.sh
+          ls -l /data/local/tmp/ | grep -E "gadget|wrap" || true
 
-      - name: 首启过隐私协议(UI自动点同意) + force-stop
+      - name: wrap注入设置 + am start(走zygote官方注入点, 免frida spawn)
         run: |
           set +e
           mkdir -p out
           A="adb -s localhost:5555"
           $A shell "settings put global policy_control null*" 2>/dev/null
+          # 清场: 杀掉崩溃循环实例
+          timeout 30 $A shell am force-stop com.qidian.QDReader
+          sleep 3
+          timeout 30 $A shell "am force-stop com.qidian.QDReader" >/dev/null 2>&1
+          sleep 2
+          # ★wrap: 下一次启动走我们的wrapper → LD_PRELOAD gadget → on_load=wait挂起等连接
+          timeout 30 $A shell setprop wrap.com.qidian.QDReader "/system/bin/sh /data/local/tmp/wrap.sh"
+          echo "wrap属性: $(timeout 15 $A shell getprop wrap.com.qidian.QDReader | tr -d '\r')"
+          # 转发gadget端口
+          timeout 30 $A forward tcp:47822 tcp:47822 || true
+          # 正常am start(不走frida spawn → 无forceStopPackage竞速)
           MAINACT=$(timeout 30 $A shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
           echo "主Activity: $MAINACT"
           [ -n "$MAINACT" ] && timeout 30 $A shell "am start -n $MAINACT" 2>&1 | tail -2
-          sleep 10
-          for r in 1 2 3 4 5; do
-            echo "round$r uiautomator: $(timeout 25 $A shell uiautomator dump /sdcard/ui.xml 2>&1 | tail -1)"
-            timeout 25 $A pull /sdcard/ui.xml /tmp/ui.xml >/dev/null 2>&1
-            timeout 20 $A exec-out screencap -p > out/privacy_r$r.png 2>/dev/null || true
-            TAP=$(python3 - <<'PY'
-          import re, sys
-          try:
-              xml = open('/tmp/ui.xml', encoding='utf-8', errors='ignore').read()
-          except Exception:
-              print(''); sys.exit()
-          pat = re.compile(r'<node[^>]*?text="([^"]*(?:同意|允许|我知道|进入|立即体验)[^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"')
-          m = pat.search(xml)
-          if m:
-              x = (int(m.group(2)) + int(m.group(4))) // 2
-              y = (int(m.group(3)) + int(m.group(5))) // 2
-              print(f'{x} {y} {m.group(1)}')
-          PY
-          )
-            if [ -n "$TAP" ]; then
-              echo "round$r 点击: $TAP"
-              timeout 15 $A shell input tap $(echo "$TAP" | cut -d' ' -f1-2)
-            else
-              echo "round$r 无可点目标"
-            fi
-            sleep 5
-          done
-          cp /tmp/ui.xml out/last_ui.xml 2>/dev/null || echo "ui.xml不存在" > out/last_ui.txt
-          timeout 20 $A shell am force-stop com.qidian.QDReader
-          sleep 3
-          echo "=== 首启协议处理完成, 已force-stop ==="
-
+          echo "等gadget listen..."
+          sleep 8
+          timeout 20 $A shell "ps -A -o PID,NAME | grep qidian" || echo NO_PROC
       - name: spawn模式注入(spawn→attach→load→resume) + 采集
         run: |
           set +e
@@ -148,7 +161,7 @@ jobs:
           import frida, time, json, os, sys
           secs = int(os.environ.get('SECS', '240'))
           js = open('/tmp/hook.js').read()
-          dev = frida.get_device_manager().add_remote_device('127.0.0.1:47821')
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:47822')   # gadget listen口
           msgs = []
           def on_msg(m, d):
               if m['type'] == 'send':
@@ -164,49 +177,37 @@ jobs:
                   print('[ERR]', str(m)[:300], flush=True); msgs.append('ERR ' + str(m)[:300])
 
           import subprocess, re as _re
-          # ★重试环: system_server的force-stop会SIGKILL新spawn的进程(seccomp拦不了外来刀), 
-          # 时序竞速非确定性(Run16实证可活) → 早死就重spawn直到进入存活窗口
-          pid = None
-          det = {'reason': 'never', 'at': None}
-          for attempt in range(1, 6):
+          # ★gadget连接: App已在on_load=wait挂起, 连上装载脚本即自动续跑(无frida spawn无force-stop)
+          sess = None
+          gpid = None
+          for i in range(45):
               try:
-                  pid = dev.spawn(['com.qidian.QDReader'])
+                  procs = dev.enumerate_processes()
+                  cand = [p_ for p_ in procs if 'qidian' in p_.name.lower() or 'QDReader' in p_.name] or procs
+                  if cand:
+                      gpid = cand[0].pid
+                      sess = dev.attach(gpid)
+                      print(f'gadget已连接 pid={gpid} ({cand[0].name})', flush=True)
+                      break
               except Exception as e:
-                  print(f'SPAWN失败(try{attempt}): {e}', flush=True)
-                  time.sleep(5); continue
-              print(f'spawn pid={pid} 挂起态 (try{attempt})', flush=True)
-              det = {'reason': None, 'at': None}
-              def on_detached(reason, *a):
-                  det['reason'] = str(reason); det['at'] = time.time()
-                  print(f'[detach] {reason}', flush=True)
-              try:
-                  sess = dev.attach(pid)
-                  sess.on('detached', on_detached)
-                  sc = sess.create_script(js)
-                  sc.on('message', on_msg)
-                  sc.load()
-                  print('反反调试已装载(挂起态) → resume', flush=True)
-                  dev.resume(pid)
-              except Exception as e:
-                  print(f'装载失败(try{attempt}): {e}', flush=True)
-                  time.sleep(3); continue
-              # 8s存活观察窗
-              ttry = time.time()
-              while time.time() - ttry < 8:
-                  time.sleep(1)
-                  if det['reason'] is not None: break
-              if det['reason'] is None:
-                  print(f'✓ try{attempt} 存活过8s窗口, 进入正式采集', flush=True)
-                  break
-              print(f'✗ try{attempt} {int(det["at"]-ttry)}s死亡({det["reason"]}), 重spawn', flush=True)
-              try: sess.detach()
-              except Exception: pass
-              time.sleep(2)
-          if pid is None or det['reason'] is not None:
-              open('out/capture.txt', 'w').write('\n'.join(msgs) or 'ALL_SPAWN_FAILED')
-              print(f'5次尝试均失败, msgs={len(msgs)}', flush=True)
+                  if i % 10 == 0: print(f'[gadget等待 {i}s] {str(e)[:80]}', flush=True)
+              time.sleep(1)
+          if sess is None:
+              print('GADGET连接失败', flush=True)
+              open('out/capture.txt', 'w').write('GADGET_CONNECT_FAILED')
               sys.exit(0)
-          import subprocess, re as _re
+          det = {'reason': None, 'at': None}
+          def on_detached(reason, *a):
+              det['reason'] = str(reason); det['at'] = time.time()
+              print(f'[detach] {reason}', flush=True)
+          sess.on('detached', on_detached)
+          sc = sess.create_script(js)
+          sc.on('message', on_msg)
+          sc.load()
+          print('反反调试已装载 → on_load=wait 自动续跑', flush=True)
+          try: dev.resume(gpid)
+          except Exception: pass
+          pid = gpid
           def adbsh(cmd, tmo=25):
               try:
                   return subprocess.run(['adb', '-s', 'localhost:5555', 'shell'] + cmd,
@@ -265,6 +266,7 @@ jobs:
           lived = f'>{secs}s' if det['reason'] is None else f"{int(det['at']-t0)}s"
           print(f'完成 {len(msgs)} 条, 进程存活={lived}, detach原因={det["reason"]}', flush=True)
           PY
+          timeout 30 adb -s localhost:5555 shell setprop wrap.com.qidian.QDReader "" 2>/dev/null || true
           echo "===== 死因取证 ====="
           timeout 40 adb -s localhost:5555 shell "logcat -d -b crash -t 200" > out/logcat_crash.txt 2>/dev/null || true
           timeout 40 adb -s localhost:5555 shell "logcat -d -b events -t 800" > out/logcat_events.txt 2>/dev/null || true
