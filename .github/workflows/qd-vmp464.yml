@@ -1,0 +1,197 @@
+name: qd-vmp464
+# 路线1: 464 VMP动态捕获 — spawn模式(壳初始化之前挂反反调试) + 隐身frida(改名qdsvc+非默认端口47821)
+# 产出: ①真实464出站请求全头(borgus/cecelia/gorgon/sora真值) ②FockUtil.getH(VMP函数)in/out
+#      ③kill/exit拦截backtrace → 定位壳内反调试判定点
+on:
+  workflow_dispatch:
+    inputs:
+      hook:
+        description: 'hook 名 (release apks-v1 里的 js 文件名)'
+        default: 'hook_fockgen11'
+      secs:
+        description: '采集秒数'
+        default: '240'
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
+
+jobs:
+  cap:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - name: Setup binder + adb + frida(锁定16.7.19)
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -2
+          frida --version
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 30); do
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 8
+          done
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+
+      - name: 下载 APK + frida-server(改名qdsvc隐身)
+        run: |
+          set +e
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/qd.apk "${{ inputs.apk_url }}" || true
+            SZ=$(stat -c%s /tmp/qd.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"
+            [ "$SZ" -gt 10000000 ] && break
+            sleep 15
+          done
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 600 -o /tmp/fs.xz "https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz" || true
+            if xz -t /tmp/fs.xz 2>/dev/null; then echo "fs ok try $i"; break; fi
+            sleep 15
+          done
+          unxz -f /tmp/fs.xz
+          cp /tmp/fs /tmp/qdsvc && chmod +x /tmp/qdsvc   # ★改名避进程名扫描
+          curl -sSL --max-time 120 -o /tmp/hook.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/${{ inputs.hook }}.js"
+          ls -l /tmp/qd.apk /tmp/qdsvc /tmp/hook.js
+
+      - name: 装包 + 隐身frida-server(47821)
+        run: |
+          set +e
+          A="adb -s localhost:5555"
+          for i in 1 2 3; do
+            timeout 300 $A install -r -t /tmp/qd.apk 2>&1 | tail -2
+            if timeout 30 $A shell pm list packages 2>/dev/null | tr -d '\r' | grep -q qidian; then echo "INSTALL_OK try $i"; break; fi
+            echo "install try $i 失败, 重连adb"
+            sleep 8
+            timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          done
+          timeout 30 $A shell pm list packages | tr -d '\r' | grep qidian || echo NOT_INSTALLED
+          timeout 30 $A root 2>&1 | tail -1
+          sleep 8
+          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          timeout 120 $A push /tmp/qdsvc /data/local/tmp/qdsvc
+          timeout 30 $A shell chmod 755 /data/local/tmp/qdsvc
+          timeout 30 $A shell "setsid /data/local/tmp/qdsvc -l 127.0.0.1:47821 >/dev/null 2>&1 &"
+          sleep 10
+          timeout 30 $A shell "ps -A -o PID,NAME | grep -i qdsvc" || echo NO_QDSVC_PROC
+          timeout 30 $A forward tcp:47821 tcp:47821 || true
+          for i in 1 2 3; do timeout 30 frida-ps -H 127.0.0.1:47821 2>&1 | head -4 && break; sleep 5; done
+
+      - name: 首启过隐私协议(UI自动点同意) + force-stop
+        run: |
+          set +e
+          mkdir -p out
+          A="adb -s localhost:5555"
+          $A shell "settings put global policy_control null*" 2>/dev/null
+          MAINACT=$(timeout 30 $A shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          echo "主Activity: $MAINACT"
+          [ -n "$MAINACT" ] && timeout 30 $A shell "am start -n $MAINACT" 2>&1 | tail -2
+          sleep 10
+          for r in 1 2 3 4 5; do
+            timeout 25 $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
+            timeout 25 $A pull /sdcard/ui.xml /tmp/ui.xml >/dev/null 2>&1
+            TAP=$(python3 - <<'PY'
+          import re, sys
+          try:
+              xml = open('/tmp/ui.xml', encoding='utf-8', errors='ignore').read()
+          except Exception:
+              print(''); sys.exit()
+          pat = re.compile(r'<node[^>]*?text="([^"]*(?:同意|允许|我知道|进入|立即体验)[^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"')
+          m = pat.search(xml)
+          if m:
+              x = (int(m.group(2)) + int(m.group(4))) // 2
+              y = (int(m.group(3)) + int(m.group(5))) // 2
+              print(f'{x} {y} {m.group(1)}')
+          PY
+          )
+            if [ -n "$TAP" ]; then
+              echo "round$r 点击: $TAP"
+              timeout 15 $A shell input tap $(echo "$TAP" | cut -d' ' -f1-2)
+            else
+              echo "round$r 无可点目标(可能已过协议)"
+            fi
+            sleep 5
+          done
+          cp /tmp/ui.xml out/last_ui.xml 2>/dev/null
+          timeout 20 $A shell am force-stop com.qidian.QDReader
+          sleep 3
+          echo "=== 首启协议处理完成, 已force-stop ==="
+
+      - name: spawn模式注入(spawn→attach→load→resume) + 采集
+        run: |
+          set +e
+          HOOK='${{ inputs.hook }}' SECS='${{ inputs.secs }}' python3 - <<'PY'
+          import frida, time, json, os, sys
+          secs = int(os.environ.get('SECS', '240'))
+          js = open('/tmp/hook.js').read()
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:47821')
+          msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False)
+                  msgs.append(line); print('[JS]', line[:400], flush=True)
+              else:
+                  print('[ERR]', str(m)[:300], flush=True); msgs.append('ERR ' + str(m)[:300])
+
+          try:
+              pid = dev.spawn(['com.qidian.QDReader'])
+          except Exception as e:
+              print(f'SPAWN失败: {e}', flush=True)
+              open('out/capture.txt', 'w').write('SPAWN_FAILED: ' + str(e))
+              sys.exit(0)
+          print(f'spawn pid={pid} (挂起态)', flush=True)
+          sess = dev.attach(pid)
+          det = {'reason': None, 'at': None}
+          def on_detached(reason, *a):
+              det['reason'] = str(reason); det['at'] = time.time()
+              print(f'[detach] {reason}', flush=True)
+          sess.on('detached', on_detached)
+          sc = sess.create_script(js)
+          sc.on('message', on_msg)
+          sc.load()
+          print('反反调试已装载(挂起态) → resume', flush=True)
+          dev.resume(pid)
+          t0 = time.time()
+          while time.time() - t0 < secs:
+              time.sleep(5)
+              el = int(time.time() - t0)
+              alive = det['reason'] is None
+              if el % 15 == 0 or not alive:
+                  print(f'[t+{el}s] alive={alive} msgs={len(msgs)}', flush=True)
+              if not alive:
+                  time.sleep(3)   # 排干残余消息
+                  break
+          open('out/capture.txt', 'w').write('\n'.join(msgs))
+          lived = f'>{secs}s' if det['reason'] is None else f"{int(det['at']-t0)}s"
+          print(f'完成 {len(msgs)} 条, 进程存活={lived}, detach原因={det["reason"]}', flush=True)
+          PY
+          echo "===== capture 行数 ====="
+          wc -l out/capture.txt
+          echo "--- REQ/GETH/KILL 命中数 ---"
+          grep -c '"t":"REQ"' out/capture.txt || echo "REQ=0"
+          grep -c '"t":"GETH"' out/capture.txt || echo "GETH=0"
+          grep -c '"t":"RESP"' out/capture.txt || echo "RESP=0"
+          grep -c 'KILL拦截\|阻断' out/capture.txt || echo "拦截=0"
+          head -50 out/capture.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vmp464-capture
+          path: out/
+          if-no-files-found: warn
