@@ -224,9 +224,7 @@ jobs:
           sc = sess.create_script(js)
           sc.on('message', on_msg)
           sc.load()
-          print('反反调试已装载 → on_load=wait 自动续跑', flush=True)
-          try: dev.resume(gpid)
-          except Exception: pass
+          print('反反调试已装载 → on_load=wait 自动续跑(v31: 不调dev.resume — gadget自续)', flush=True)
           pid = gpid
           def adbsh(cmd, tmo=25):
               try:
