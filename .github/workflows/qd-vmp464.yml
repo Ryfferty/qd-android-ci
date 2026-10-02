@@ -242,7 +242,10 @@ jobs:
           PY
           echo "===== 死因取证 ====="
           timeout 40 adb -s localhost:5555 shell "logcat -d -b crash -t 200" > out/logcat_crash.txt 2>/dev/null || true
-          timeout 40 adb -s localhost:5555 shell "logcat -d -t 1200" 2>/dev/null | grep -iE "qidian|FATAL|SIGSEGV|SIGABRT|signal|tombstone|died|jiagu" > out/logcat_grep.txt || true
+          timeout 40 adb -s localhost:5555 shell "logcat -d -b events -t 800" > out/logcat_events.txt 2>/dev/null || true
+          timeout 40 adb -s localhost:5555 shell "logcat -d -b events -t 800" 2>/dev/null | grep -iE "am_kill|am_proc_died|proc_kill|kill" > out/am_kill.txt || true
+          timeout 40 adb -s localhost:5555 shell "logcat -d -t 2000" > out/logcat_full_tail.txt 2>/dev/null || true
+          timeout 40 adb -s localhost:5555 shell "logcat -d -t 1200" 2>/dev/null | grep -iE "qidian|FATAL|SIGSEGV|SIGABRT|signal|tombstone|died|jiagu|Kill|lmkd" > out/logcat_grep.txt || true
           timeout 20 adb -s localhost:5555 exec-out screencap -p > out/after_capture.png 2>/dev/null || true
           timeout 30 adb -s localhost:5555 shell "ls -la /data/tombstones/ 2>/dev/null" > out/tombstones.txt 2>/dev/null || true
           echo "===== capture 行数 ====="
