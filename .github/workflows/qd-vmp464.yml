@@ -66,13 +66,13 @@ jobs:
           unxz -f /tmp/fs.xz
           cp /tmp/fs /tmp/qdsvc && chmod +x /tmp/qdsvc   # ★改名避进程名扫描
           for i in 1 2 3; do
-            curl -sSL --max-time 300 -o /tmp/gadget.xz "https://github.com/frida/frida/releases/download/16.7.19/frida-gadget-16.7.19-android-arm64.xz" || true
+            curl -sSL --max-time 300 -o /tmp/gadget.xz "https://github.com/frida/frida/releases/download/16.7.19/frida-gadget-16.7.19-android-arm64.so.xz" || true
             if xz -t /tmp/gadget.xz 2>/dev/null; then echo "gadget ok try $i"; break; fi
             sleep 10
           done
-          unxz -f /tmp/gadget.xz && chmod +x /tmp/frida-gadget-16.7.19-android-arm64
+          unxz -f /tmp/gadget.xz && chmod +x /tmp/frida-gadget-16.7.19-android-arm64.so
           curl -sSL --max-time 120 -o /tmp/hook.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/${{ inputs.hook }}.js"
-          ls -l /tmp/qd.apk /tmp/qdsvc /tmp/hook.js /tmp/frida-gadget-16.7.19-android-arm64
+          ls -l /tmp/qd.apk /tmp/qdsvc /tmp/hook.js /tmp/frida-gadget-16.7.19-android-arm64.so || true
 
       - name: 装包 + 隐身frida-server(47821)
         run: |
