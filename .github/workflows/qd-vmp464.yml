@@ -105,9 +105,11 @@ jobs:
           timeout 30 $A shell "ps -A -o PID,NAME | grep -i qdsvc" || echo NO_QDSVC_PROC
           timeout 30 $A forward tcp:47821 tcp:47821 || true
           for i in 1 2 3; do timeout 30 frida-ps -H 127.0.0.1:47821 2>&1 | head -4 && break; sleep 5; done
-          # ★wrap+gadget注入材料
-          timeout 180 $A push /tmp/frida-gadget.so /data/local/tmp/frida-gadget.so
-          timeout 30 $A shell chmod 644 /data/local/tmp/frida-gadget.so
+          # ★wrap+gadget注入材料: 伪装成App自家库(数据目录+libqdinit.so — 免/proc/maps与LD_PRELOAD特征)
+          timeout 30 $A shell "mkdir -p /data/data/com.qidian.QDReader/files" || true
+          timeout 30 $A shell "touch /data/data/com.qidian.QDReader/files/.t" 2>/dev/null || true
+          timeout 180 $A push /tmp/frida-gadget.so /data/local/tmp/libqdinit.so
+          timeout 30 $A shell "cp /data/local/tmp/libqdinit.so /data/data/com.qidian.QDReader/files/libqdinit.so && chmod 644 /data/data/com.qidian.QDReader/files/libqdinit.so" || echo CP_FAIL
           cat > /tmp/gadget.config.json <<'CFG'
           {
             "interaction": {
@@ -119,12 +121,11 @@ jobs:
             }
           }
           CFG
-          timeout 30 $A push /tmp/gadget.config.json /data/local/tmp/frida-gadget.so.config
-          timeout 30 $A push /tmp/gadget.config.json /data/local/tmp/frida-gadget.config
-          timeout 30 $A shell chmod 644 /data/local/tmp/frida-gadget.so.config /data/local/tmp/frida-gadget.config
+          timeout 30 $A push /tmp/gadget.config.json /data/local/tmp/libqdinit.config
+          timeout 30 $A shell "cp /data/local/tmp/libqdinit.config /data/data/com.qidian.QDReader/files/libqdinit.so.config && cp /data/local/tmp/libqdinit.config /data/data/com.qidian.QDReader/files/libqdinit.config && chmod 644 /data/data/com.qidian.QDReader/files/libqdinit.so.config /data/data/com.qidian.QDReader/files/libqdinit.config" || echo CFGCP_FAIL
           cat > /tmp/wrap.sh <<'WRAP'
           #!/system/bin/sh
-          export LD_PRELOAD=/data/local/tmp/frida-gadget.so
+          export LD_PRELOAD=/data/data/com.qidian.QDReader/files/libqdinit.so
           exec "$@"
           WRAP
           timeout 30 $A push /tmp/wrap.sh /data/local/tmp/wrap.sh
