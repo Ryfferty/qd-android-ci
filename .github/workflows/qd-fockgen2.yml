@@ -70,18 +70,25 @@ jobs:
       - name: 装包 + frida-server
         run: |
           set +e
-          timeout 600 adb -s localhost:5555 install -r -t /tmp/qd.apk 2>&1 | tail -3
-          adb -s localhost:5555 shell pm list packages | grep qidian || echo NOT_INSTALLED
-          adb -s localhost:5555 root 2>&1 | tail -1
+          A="adb -s localhost:5555"
+          for i in 1 2 3; do
+            timeout 300 $A install -r -t /tmp/qd.apk 2>&1 | tail -2
+            if timeout 30 $A shell pm list packages 2>/dev/null | tr -d '\r' | grep -q qidian; then echo "INSTALL_OK try $i"; break; fi
+            echo "install try $i 失败, 重连adb"
+            sleep 8
+            timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          done
+          timeout 30 $A shell pm list packages | tr -d '\r' | grep qidian || echo NOT_INSTALLED
+          timeout 30 $A root 2>&1 | tail -1
           sleep 8
-          adb -s localhost:5555 wait-for-device 2>/dev/null || true
-          adb -s localhost:5555 push /tmp/fs /data/local/tmp/fs
-          adb -s localhost:5555 shell chmod 755 /data/local/tmp/fs
-          adb -s localhost:5555 shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
+          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          timeout 120 $A push /tmp/fs /data/local/tmp/fs
+          timeout 30 $A shell chmod 755 /data/local/tmp/fs
+          timeout 30 $A shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
           sleep 12
-          adb -s localhost:5555 shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
-          adb -s localhost:5555 forward tcp:27042 tcp:27042 || true
-          for i in 1 2 3; do frida-ps -H 127.0.0.1:27042 2>&1 | head -4 && break; sleep 5; done
+          timeout 30 $A shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
+          timeout 30 $A forward tcp:27042 tcp:27042 || true
+          for i in 1 2 3; do timeout 30 frida-ps -H 127.0.0.1:27042 2>&1 | head -4 && break; sleep 5; done
 
       - name: 注入会话(从 secret)
         env:
@@ -89,8 +96,9 @@ jobs:
         run: |
           set +e
           if [ -n "$SESS_JSON" ]; then
-            adb -s localhost:5555 push /dev/stdin /data/local/tmp/sess.json <<< "$SESS_JSON"
-            adb -s localhost:5555 shell "ls -l /data/local/tmp/sess.json" | tr -d '\r'
+            printf '%s' "$SESS_JSON" > /tmp/sess.json
+            timeout 60 adb -s localhost:5555 push /tmp/sess.json /data/local/tmp/sess.json
+            timeout 30 adb -s localhost:5555 shell "ls -l /data/local/tmp/sess.json; cat /data/local/tmp/sess.json" | tr -d '\r' | sed 's/"ywkey":"[^"]*"/"ywkey":"***"/'
           else
             echo "(secret 未配置, 匿名模式)"
           fi
