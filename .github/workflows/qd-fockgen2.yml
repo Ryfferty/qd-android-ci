@@ -83,6 +83,18 @@ jobs:
           adb -s localhost:5555 forward tcp:27042 tcp:27042 || true
           for i in 1 2 3; do frida-ps -H 127.0.0.1:27042 2>&1 | head -4 && break; sleep 5; done
 
+      - name: 注入会话(从 secret)
+        env:
+          SESS_JSON: ${{ secrets.SESS_JSON }}
+        run: |
+          set +e
+          if [ -n "$SESS_JSON" ]; then
+            adb -s localhost:5555 push /dev/stdin /data/local/tmp/sess.json <<< "$SESS_JSON"
+            adb -s localhost:5555 shell "ls -l /data/local/tmp/sess.json" | tr -d '\r'
+          else
+            echo "(secret 未配置, 匿名模式)"
+          fi
+
       - name: 启动 App + 等75s(过壳初始化危险窗) + python-frida attach
         run: |
           set +e
