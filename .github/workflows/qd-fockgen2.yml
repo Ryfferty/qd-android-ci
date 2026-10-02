@@ -93,19 +93,27 @@ jobs:
           [ -n "$A" ] && adb -s localhost:5555 shell "am start -n $A" 2>&1 | tail -2
           echo "等 75s 让 App+壳完成初始化..."
           sleep 75
-          adb -s localhost:5555 shell "pidof com.qidian.QDReader" | tr -d '\r'
-          HOOK='${{ inputs.hook }}' SECS='${{ inputs.secs }}' python3 - <<'PY'
+          PID_APP=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" | tr -d '\r' | awk '{print $1}')
+          echo "PID_APP=$PID_APP"
+          HOOK='${{ inputs.hook }}' SECS='${{ inputs.secs }}' PID_APP="$PID_APP" python3 - <<'PY'
           import frida, time, json, os, sys
           hname = os.environ['HOOK']; secs = int(os.environ.get('SECS','300'))
           js = open('/tmp/hook.js').read()
           dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
           pid = None
-          for i in range(10):
-              for p in dev.enumerate_processes():
-                  if 'qidian' in p.name.lower():
-                      pid = p.pid; break
-              if pid: break
-              print(f'[{i}] 等进程...', flush=True); time.sleep(3)
+          P = os.environ.get('PID_APP','').strip()
+          if P.isdigit():
+              pid = int(P); print(f'用 pidof 的 PID={pid}', flush=True)
+          if not pid:
+              for i in range(10):
+                  try:
+                      for p in dev.enumerate_processes():
+                          if 'qidian' in p.name.lower() or (p.name and p.pid and '/qidian' in str(p.parameters) if hasattr(p,'parameters') else False):
+                              pid = p.pid; break
+                  except Exception as e:
+                      print(f'enum err: {e}', flush=True)
+                  if pid: break
+                  print(f'[{i}] 等进程...', flush=True); time.sleep(3)
           print(f'pid={pid}', flush=True)
           if not pid:
               open('out/capture.txt','w').write('APP_NOT_RUNNING'); sys.exit(0)
