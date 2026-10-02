@@ -1,0 +1,149 @@
+name: qd-dexdump
+# 464最新版脱壳: root直读/proc/pid/mem挖dex(不ptrace→反调试无感) → 挖出壳解密后的真代码
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
+      wait_secs:
+        description: '启动后等多少秒再挖(壳解密dex需要时间)'
+        default: '90'
+
+jobs:
+  dump:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Setup binder + adb
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 30); do
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 8
+          done
+
+      - name: Install + launch app
+        run: |
+          set +e
+          A="adb -s localhost:5555"
+          for i in 1 2 3; do
+            curl -sSL --max-time 900 -o /tmp/qd.apk "${{ inputs.apk_url }}" && SZ=$(stat -c%s /tmp/qd.apk) && [ "$SZ" -gt 10000000 ] && break
+            sleep 10
+          done
+          echo "apk size=$SZ"
+          timeout 300 $A install -r -t /tmp/qd.apk 2>&1 | tail -2
+          timeout 30 $A shell pm list packages | tr -d '\r' | grep qidian || echo NOT_INSTALLED
+          timeout 30 $A root 2>&1 | tail -1
+          sleep 5
+          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          A2=$(timeout 30 $A shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          echo "主Activity: $A2"
+          [ -n "$A2" ] && timeout 30 $A shell "am start -n $A2" 2>&1 | tail -2
+          echo "等 ${{ inputs.wait_secs }}s 让壳把dex解密进内存..."
+          sleep ${{ inputs.wait_secs }}
+
+      - name: Root memory dex dump (no frida, no ptrace)
+        run: |
+          set +e
+          sudo chmod 644 /proc/*/maps 2>/dev/null || true
+          HPID=$(pgrep -f "com.qidian.QDReader" | head -1)
+          echo "宿主侧PID: $HPID"
+          if [ -z "$HPID" ]; then
+            echo "!! 找不到进程 — 列一下:"
+            ps aux | grep -i qidian | grep -v grep | head -5
+            ps aux | grep -i redroid | head -3
+          fi
+          sudo python3 - "$HPID" <<'PYEOF'
+          import re, os, struct, sys, hashlib
+          pid = sys.argv[1]
+          out_dir = 'dexout'
+          os.makedirs(out_dir, exist_ok=True)
+          magics = [b'dex\n035\x00', b'dex\n037\x00', b'dex\n038\x00', b'dex\n039\x00']
+          regions = []
+          with open(f'/proc/{pid}/maps') as f:
+              for line in f:
+                  m = re.match(r'([0-9a-f]+)-([0-9a-f]+) (\S+) \S+ \S+ \S+\s*(.*)', line.strip())
+                  if m:
+                      regions.append((int(m.group(1),16), int(m.group(2),16), m.group(3), m.group(4)))
+          print(f'共{len(regions)}个内存区域')
+          count = 0; total = 0; seen = set()
+          mem = open(f'/proc/{pid}/mem', 'rb', 0)
+          for start, end, perms, path in regions:
+              size = end - start
+              if size > 80*1024*1024 or 'r' not in perms: continue
+              # 跳过确定是文件映射的非匿名区(壳dex通常在匿名或odex区) — 保留 APK!/anon/!base.apk
+              try:
+                  mem.seek(start)
+                  data = mem.read(size)
+              except Exception:
+                  continue
+              for magic in magics:
+                  idx = 0
+                  while True:
+                      idx = data.find(magic, idx)
+                      if idx < 0: break
+                      if idx + 0x70 <= len(data):
+                          try:
+                              file_size = struct.unpack_from('<I', data, idx+0x20)[0]
+                              hdr_size = struct.unpack_from('<I', data, idx+0x24)[0]
+                              if hdr_size == 0x70 and 0x70 <= file_size <= size - idx and file_size < 80*1024*1024:
+                                  dex = data[idx:idx+file_size]
+                                  # 校验: string_ids合理 + magic回读
+                                  sids = struct.unpack_from('<I', dex, 0x38)[0]
+                                  if 0 < sids < file_size // 4:
+                                      h = hashlib.md5(dex[:8192]).hexdigest()
+                                      if h not in seen:
+                                          seen.add(h)
+                                          fn = f'{out_dir}/{count:03d}_{file_size//1024}KB_{path.split("/")[-1][:20] or "anon"}.dex'
+                                          open(fn,'wb').write(dex)
+                                          count += 1; total += file_size
+                                          print(f'  + {fn} ({file_size//1024}KB)')
+                          except Exception: pass
+                      idx += 1
+          mem.close()
+          print(f'挖出{count}个dex 共{total//1024//1024}MB')
+          PYEOF
+          ls -la dexout/ 2>/dev/null | head -30
+          du -sh dexout/ 2>/dev/null
+
+      - name: Package + Upload
+        if: always()
+        run: |
+          set +e
+          if [ -d dexout ] && [ -n "$(ls -A dexout 2>/dev/null)" ]; then
+            cd dexout && zip -q -r ../dex464.zip . && cd ..
+            ls -la dex464.zip
+          else
+            echo "NO_DEX" > dexout_note.txt
+            ps aux | grep -iE "qidian|redroid" | grep -v grep > proc_dump.txt 2>/dev/null || true
+            sudo cat /proc/$(pgrep -f com.qidian.QDReader | head -1)/maps > maps_dump.txt 2>/dev/null || echo "noproc" > maps_dump.txt
+            zip -q dex464_debug.zip dexout_note.txt maps_dump.txt proc_dump.txt 2>/dev/null || true
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dex464
+          path: |
+            dex464.zip
+            dex464_debug.zip
+          if-no-files-found: warn
