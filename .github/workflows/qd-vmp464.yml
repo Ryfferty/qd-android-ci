@@ -102,8 +102,9 @@ jobs:
           [ -n "$MAINACT" ] && timeout 30 $A shell "am start -n $MAINACT" 2>&1 | tail -2
           sleep 10
           for r in 1 2 3 4 5; do
-            timeout 25 $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
+            echo "round$r uiautomator: $(timeout 25 $A shell uiautomator dump /sdcard/ui.xml 2>&1 | tail -1)"
             timeout 25 $A pull /sdcard/ui.xml /tmp/ui.xml >/dev/null 2>&1
+            timeout 20 $A exec-out screencap -p > out/privacy_r$r.png 2>/dev/null || true
             TAP=$(python3 - <<'PY'
           import re, sys
           try:
@@ -122,11 +123,11 @@ jobs:
               echo "round$r 点击: $TAP"
               timeout 15 $A shell input tap $(echo "$TAP" | cut -d' ' -f1-2)
             else
-              echo "round$r 无可点目标(可能已过协议)"
+              echo "round$r 无可点目标"
             fi
             sleep 5
           done
-          cp /tmp/ui.xml out/last_ui.xml 2>/dev/null
+          cp /tmp/ui.xml out/last_ui.xml 2>/dev/null || echo "ui.xml不存在" > out/last_ui.txt
           timeout 20 $A shell am force-stop com.qidian.QDReader
           sleep 3
           echo "=== 首启协议处理完成, 已force-stop ==="
@@ -179,6 +180,11 @@ jobs:
           lived = f'>{secs}s' if det['reason'] is None else f"{int(det['at']-t0)}s"
           print(f'完成 {len(msgs)} 条, 进程存活={lived}, detach原因={det["reason"]}', flush=True)
           PY
+          echo "===== 死因取证 ====="
+          timeout 40 adb -s localhost:5555 shell "logcat -d -b crash -t 200" > out/logcat_crash.txt 2>/dev/null || true
+          timeout 40 adb -s localhost:5555 shell "logcat -d -t 1200" 2>/dev/null | grep -iE "qidian|FATAL|SIGSEGV|SIGABRT|signal|tombstone|died|jiagu" > out/logcat_grep.txt || true
+          timeout 20 adb -s localhost:5555 exec-out screencap -p > out/after_capture.png 2>/dev/null || true
+          timeout 30 adb -s localhost:5555 shell "ls -la /data/tombstones/ 2>/dev/null" > out/tombstones.txt 2>/dev/null || true
           echo "===== capture 行数 ====="
           wc -l out/capture.txt
           echo "--- REQ/GETH/KILL 命中数 ---"
