@@ -11,6 +11,9 @@ on:
       secs:
         description: '采集秒数'
         default: '300'
+      delay:
+        description: 'App启动后等多少秒再attach(过壳初始化/反调试活跃期)'
+        default: '75'
       apk_url:
         default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk'
 
@@ -111,8 +114,8 @@ jobs:
           A=$(adb -s localhost:5555 shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
           echo "主 Activity: $A"
           [ -n "$A" ] && adb -s localhost:5555 shell "am start -n $A" 2>&1 | tail -2
-          echo "等 75s 让 App+壳完成初始化..."
-          sleep 75
+          echo "等 ${{ inputs.delay }}s 让 App+壳完成初始化..."
+          sleep ${{ inputs.delay }}
           PID_APP=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" | tr -d '\r' | awk '{print $1}')
           echo "PID_APP=$PID_APP"
           HOOK='${{ inputs.hook }}' SECS='${{ inputs.secs }}' PID_APP="$PID_APP" python3 - <<'PY'
