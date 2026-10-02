@@ -163,24 +163,49 @@ jobs:
               else:
                   print('[ERR]', str(m)[:300], flush=True); msgs.append('ERR ' + str(m)[:300])
 
-          try:
-              pid = dev.spawn(['com.qidian.QDReader'])
-          except Exception as e:
-              print(f'SPAWN失败: {e}', flush=True)
-              open('out/capture.txt', 'w').write('SPAWN_FAILED: ' + str(e))
+          import subprocess, re as _re
+          # ★重试环: system_server的force-stop会SIGKILL新spawn的进程(seccomp拦不了外来刀), 
+          # 时序竞速非确定性(Run16实证可活) → 早死就重spawn直到进入存活窗口
+          pid = None
+          det = {'reason': 'never', 'at': None}
+          for attempt in range(1, 6):
+              try:
+                  pid = dev.spawn(['com.qidian.QDReader'])
+              except Exception as e:
+                  print(f'SPAWN失败(try{attempt}): {e}', flush=True)
+                  time.sleep(5); continue
+              print(f'spawn pid={pid} 挂起态 (try{attempt})', flush=True)
+              det = {'reason': None, 'at': None}
+              def on_detached(reason, *a):
+                  det['reason'] = str(reason); det['at'] = time.time()
+                  print(f'[detach] {reason}', flush=True)
+              try:
+                  sess = dev.attach(pid)
+                  sess.on('detached', on_detached)
+                  sc = sess.create_script(js)
+                  sc.on('message', on_msg)
+                  sc.load()
+                  print('反反调试已装载(挂起态) → resume', flush=True)
+                  dev.resume(pid)
+              except Exception as e:
+                  print(f'装载失败(try{attempt}): {e}', flush=True)
+                  time.sleep(3); continue
+              # 8s存活观察窗
+              ttry = time.time()
+              while time.time() - ttry < 8:
+                  time.sleep(1)
+                  if det['reason'] is not None: break
+              if det['reason'] is None:
+                  print(f'✓ try{attempt} 存活过8s窗口, 进入正式采集', flush=True)
+                  break
+              print(f'✗ try{attempt} {int(det["at"]-ttry)}s死亡({det["reason"]}), 重spawn', flush=True)
+              try: sess.detach()
+              except Exception: pass
+              time.sleep(2)
+          if pid is None or det['reason'] is not None:
+              open('out/capture.txt', 'w').write('\n'.join(msgs) or 'ALL_SPAWN_FAILED')
+              print(f'5次尝试均失败, msgs={len(msgs)}', flush=True)
               sys.exit(0)
-          print(f'spawn pid={pid} (挂起态)', flush=True)
-          sess = dev.attach(pid)
-          det = {'reason': None, 'at': None}
-          def on_detached(reason, *a):
-              det['reason'] = str(reason); det['at'] = time.time()
-              print(f'[detach] {reason}', flush=True)
-          sess.on('detached', on_detached)
-          sc = sess.create_script(js)
-          sc.on('message', on_msg)
-          sc.load()
-          print('反反调试已装载(挂起态) → resume', flush=True)
-          dev.resume(pid)
           import subprocess, re as _re
           def adbsh(cmd, tmo=25):
               try:
