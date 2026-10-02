@@ -166,13 +166,58 @@ jobs:
           sc.load()
           print('反反调试已装载(挂起态) → resume', flush=True)
           dev.resume(pid)
+          import subprocess, re as _re
+          def adbsh(cmd, tmo=25):
+              try:
+                  return subprocess.run(['adb', '-s', 'localhost:5555', 'shell'] + cmd,
+                                      capture_output=True, text=True, timeout=tmo).stdout
+              except Exception as e:
+                  return f'(adb err {e})'
+          def ui_drive(tag):
+              d = adbsh(['uiautomator', 'dump', '/sdcard/ui2.xml'])
+              xml = ''
+              try:
+                  xml = subprocess.run(['adb', '-s', 'localhost:5555', 'pull', '/sdcard/ui2.xml', '/tmp/ui2.xml'],
+                                      capture_output=True, text=True, timeout=20)
+                  xml = open('/tmp/ui2.xml', encoding='utf-8', errors='ignore').read()
+              except Exception:
+                  pass
+              m = _re.search(r'text="([^"]*(?:同意|允许|我知道|进入|立即体验)[^"]*)"[^>]*?bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', xml)
+              if m:
+                  x = (int(m.group(2)) + int(m.group(4))) // 2; y = (int(m.group(3)) + int(m.group(5))) // 2
+                  print(f'[ui {tag}] 点击 {m.group(1)} @{x},{y}', flush=True)
+                  adbsh(['input', 'tap', str(x), str(y)])
+              else:
+                  print(f'[ui {tag}] 无可点 ({d.strip()[:60]})', flush=True)
+          def dump_threads(tag):
+              out = adbsh(['debuggerd', '-b', str(pid)], tmo=40)
+              open(f'out/thr_{tag}.txt', 'w').write(out)
+              heads = [l for l in out.splitlines() if 'pid:' in l or 'pc ' in l or 'backtrace' in l][:8]
+              print(f'[thr {tag}] ' + ' | '.join(heads[:4]), flush=True)
           t0 = time.time()
+          did = set()
           while time.time() - t0 < secs:
               time.sleep(5)
               el = int(time.time() - t0)
               alive = det['reason'] is None
               if el % 15 == 0 or not alive:
                   print(f'[t+{el}s] alive={alive} msgs={len(msgs)}', flush=True)
+              if alive:
+                  for mark, fn in [(30, 'u30'), (60, 't60'), (90, 'u90'), (150, 't150'), (210, 'u210')]:
+                      if el >= mark and mark not in did:
+                          did.add(mark)
+                          try:
+                              if fn.startswith('u'): ui_drive(fn)
+                              else: dump_threads(fn)
+                          except Exception as e:
+                              print(f'[{fn} err] {e}', flush=True)
+                  if el % 45 == 0 and el > 0:
+                      try:
+                          raw = subprocess.run(['adb', '-s', 'localhost:5555', 'exec-out', 'screencap', '-p'],
+                                              capture_output=True, timeout=25).stdout
+                          open(f'out/scr_{el}s.png', 'wb').write(raw)
+                      except Exception:
+                          pass
               if not alive:
                   time.sleep(3)   # 排干残余消息
                   break
