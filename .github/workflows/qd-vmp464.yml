@@ -11,6 +11,9 @@ on:
       secs:
         description: '采集秒数'
         default: '240'
+      baseline:
+        description: '干净对照(不设wrap不注入, 看App裸跑redroid生死 — 分离反注入vs反虚拟化)'
+        default: 'false'
       apk_url:
         default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
 
@@ -157,6 +160,8 @@ jobs:
           timeout 30 $A shell "am force-stop com.qidian.QDReader" >/dev/null 2>&1
           sleep 2
           # ★wrap: 下一次启动走我们的wrapper → LD_PRELOAD gadget → on_load=wait挂起等连接
+          WRAPV=""
+          if [ "${{ inputs.baseline }}" != "true" ]; then
           for i in 1 2 3 4 5; do
             timeout 30 $A shell setprop wrap.com.qidian.QDReader /data/local/tmp/wrap.sh 2>&1 | head -1 || true
             WRAPV=$(timeout 15 $A shell getprop wrap.com.qidian.QDReader | tr -d '\r')
@@ -164,7 +169,8 @@ jobs:
             echo "setprop try$i 失败, 等3s重试"
             sleep 3
           done
-          echo "wrap属性: [$WRAPV]"
+          fi
+          echo "wrap属性: [$WRAPV] (baseline=${{ inputs.baseline }})"
           # 转发gadget端口
           timeout 30 $A forward tcp:47822 tcp:47822 || true
           # 正常am start(不走frida spawn → 无forceStopPackage竞速)
