@@ -61,6 +61,19 @@ jobs:
           set +e
           echo "===== 注入Mi11(venus)身份到各分区build.prop ====="
           sudo docker exec redroid sh -c '
+          echo "=== 动态找属性来源文件:"
+          FL=$(grep -rl --include="*.prop" "redroid11_arm64" / 2>/dev/null | head -20)
+          echo "$FL"
+          for f in $FL; do
+            sed -i -e "s|redroid11_arm64|M2011K2C|g" -e "s|redroid_arm64|venus|g" -e "s|^ro.product.brand=.*|ro.product.brand=xiaomi|" "$f"
+            echo "改了: $f"
+          done
+          for f in $(grep -rl --include="*.prop" "^ro.debuggable=1" / 2>/dev/null | head -10); do
+            sed -i "s|^ro.debuggable=1|ro.debuggable=0|" "$f"; echo "改debuggable: $f"
+          done
+          for f in $(grep -rl --include="*.prop" "^ro.hardware=redroid" / 2>/dev/null | head -10); do
+            sed -i "s|^ro.hardware=redroid|ro.hardware=qcom|" "$f"; echo "改hardware: $f"
+          done
           for f in /system/build.prop /vendor/build.prop /odm/etc/build.prop /product/build.prop /system_ext/build.prop /default.prop /prop.default; do
             [ -f "$f" ] || continue
             sed -i \
