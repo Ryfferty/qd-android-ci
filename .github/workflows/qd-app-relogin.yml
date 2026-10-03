@@ -87,7 +87,7 @@ jobs:
             $A shell "ls -l /data/local/tmp/sess.json" | tr -d '\r'
           fi
 
-      - name: 阶段A: 启动App + 注入hook(60s)
+      - name: "阶段A-启动App注入hook(60s)"
         run: |
           set +e
           mkdir -p out
@@ -117,7 +117,7 @@ jobs:
           print('阶段A完成 %d 条' % len(msgs), flush=True)
           PY
 
-      - name: 强杀 + 重启 + 阶段B: 捕获hook
+      - name: "强杀重启App-阶段B捕获hook"
         run: |
           set +e
           adb -s localhost:5555 shell "am force-stop com.qidian.QDReader"
