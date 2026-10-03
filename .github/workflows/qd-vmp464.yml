@@ -61,8 +61,7 @@ jobs:
           set +e
           echo "===== 注入Mi11(venus)身份到各分区build.prop ====="
           sudo docker exec redroid sh -c '
-          CAT > /tmp/propspoof.sh <<'SS'
-          for f in /system/build.prop /vendor/build.prop /odm/etc/build.prop /product/build.prop /system_ext/build.prop; do
+          for f in /system/build.prop /vendor/build.prop /odm/etc/build.prop /product/build.prop /system_ext/build.prop /default.prop /prop.default; do
             [ -f "$f" ] || continue
             sed -i \
               -e "s|^ro.product.model=.*|ro.product.model=M2011K2C|" \
@@ -85,12 +84,12 @@ jobs:
               -e "s|^dalvik.vm.isa.arm.variant=.*|dalvik.vm.isa.arm.variant=cortex-a76|" \
               -e "s|^ro.bionic.cpu_variant=.*|ro.bionic.cpu_variant=cortex-x1|" \
               -e "s|^ro.bionic.2nd_cpu_variant=.*|ro.bionic.2nd_cpu_variant=cortex-a76|" \
-              "$f"
+              "$f" 2>&1 || echo "sed失败: $f"
+            echo "=== $f 改后关键行:"
+            grep -E "^ro.(product.model|build.fingerprint|build.type|debuggable)" "$f" 2>/dev/null || echo "(无匹配行)"
           done
-          SS
-          sh /tmp/propspoof.sh
-          echo "--- 伪装后 /system/build.prop 关键行:"
-          grep -E "^ro.(product.model|build.fingerprint|build.type|debuggable)" /system/build.prop || true
+          echo "=== 全根搜redroid指纹来源:"
+          grep -rl "redroid_arm64" /system/build.prop /vendor/build.prop /product/build.prop /system_ext/build.prop /odm/etc/build.prop /default.prop 2>/dev/null
           '
           echo "===== 重启redroid使属性生效 ====="
           sudo docker restart redroid
