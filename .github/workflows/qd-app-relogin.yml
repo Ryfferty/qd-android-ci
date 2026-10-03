@@ -9,6 +9,9 @@ on:
     inputs:
       apk_url:
         default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk'
+      inject_hook:
+        description: '阶段A注入hook名(200版用hook_fockgen25, 480版用hook_fockgen24)'
+        default: 'hook_fockgen25'
 
 jobs:
   cap:
@@ -57,7 +60,7 @@ jobs:
             sleep 15
           done
           unxz -f /tmp/fs.xz && chmod +x /tmp/fs
-          curl -sSL --max-time 120 -o /tmp/hook_inject.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_fockgen25.js"
+          curl -sSL --max-time 120 -o /tmp/hook_inject.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/${{ inputs.inject_hook }}.js"
           curl -sSL --max-time 120 -o /tmp/hook_capture.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_fockgen26.js"
           ls -l /tmp/qd.apk /tmp/fs /tmp/hook_inject.js /tmp/hook_capture.js
 
