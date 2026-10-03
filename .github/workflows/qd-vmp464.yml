@@ -89,8 +89,8 @@ jobs:
           done
           SS
           sh /tmp/propspoof.sh
-          echo '--- 伪装后 /system/build.prop 关键行:'
-          grep -E '^ro.(product.model|build.fingerprint|build.type|debuggable)' /system/build.prop || true
+          echo "--- 伪装后 /system/build.prop 关键行:"
+          grep -E "^ro.(product.model|build.fingerprint|build.type|debuggable)" /system/build.prop || true
           '
           echo "===== 重启redroid使属性生效 ====="
           sudo docker restart redroid
