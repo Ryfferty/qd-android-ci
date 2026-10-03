@@ -196,9 +196,11 @@ jobs:
                   open('out/proc_watch.txt', 'a').write(f'--- t+{int(time.time()-t0)}s pid[{pid}] (was[{last}])\n')
                   last = pid
               if pid and pid.replace(' ', '').isdigit():
-                  st = sh('grep -E "Seccomp|SigIgn|SigCgt|Threads" /proc/{0}/status'.format(pid.split()[0].strip()))
+                  p0 = pid.split()[0].strip()
+                  st = sh('grep -E "Seccomp|SigIgn|SigCgt|Threads|TracerPid" /proc/{0}/status'.format(p0))
+                  cm = sh('cat /proc/{0}/cmdline | tr "\\0" " "'.format(p0)).strip()
                   if st.strip():
-                      open('out/proc_watch.txt', 'a').write(f't+{int(time.time()-t0)} {st.strip()}\n')
+                      open('out/proc_watch.txt', 'a').write(f't+{int(time.time()-t0)} {st.strip()} cmdline[{cm[:100]}]\n')
               time.sleep(1)
           PP
           echo "poller已启动"
