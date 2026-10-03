@@ -17,6 +17,9 @@ on:
       spoof:
         description: '属性伪装(小米Mi11/venus指纹+release-keys) — 反虚拟化对抗'
         default: 'false'
+      customimg:
+        description: '自定义redroid镜像(docker build烙属性: boot.hardware/debuggable也改) — 反虚拟化终极'
+        default: 'false'
       apk_url:
         default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
 
@@ -34,13 +37,31 @@ jobs:
           pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -2
           frida --version
 
+      - name: 构建伪装redroid镜像(docker build烙死全部属性)
+        if: ${{ inputs.customimg == 'true' }}
+        run: |
+          set +e
+          mkdir -p /tmp/qdimg
+          cat > /tmp/qdimg/Dockerfile <<'DF'
+          FROM redroid/redroid:11.0.0-latest
+          SHELL ["/system/bin/sh", "-c"]
+          RUN for f in $(grep -rl "androidboot.hardware=redroid" /system /vendor /odm /root 2>/dev/null | head -20); do sed -i "s|androidboot.hardware=redroid|androidboot.hardware=qcom|g" "$f"; echo patched: $f; done; true
+          RUN for f in $(find /system /vendor /odm -name "build.prop" -o -name "default.prop" -o -name "prop.default" 2>/dev/null); do sed -i -e "s|^ro.product.model=.*|ro.product.model=M2011K2C|" -e "s|^ro.product.brand=.*|ro.product.brand=xiaomi|" -e "s|^ro.product.name=.*|ro.product.name=venus|" -e "s|^ro.product.device=.*|ro.product.device=venus|" -e "s|^ro.product.manufacturer=.*|ro.product.manufacturer=Xiaomi|" -e "s|^ro.product.marketname=.*|ro.product.marketname=Mi 11|" -e "s|^ro.build.fingerprint=.*|ro.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" -e "s|^ro.bootimage.build.fingerprint=.*|ro.bootimage.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" -e "s|^ro.build.tags=.*|ro.build.tags=release-keys|" -e "s|^ro.build.type=.*|ro.build.type=user|" -e "s|^ro.build.id=.*|ro.build.id=RKQ1.200826.002|" -e "s|^ro.build.version.incremental=.*|ro.build.version.incremental=V12.5.6.0.RKBCNXM|" -e "s|^ro.build.user=.*|ro.build.user=builder|" -e "s|^ro.build.host=.*|ro.build.host=pangu-build-component-4189|" -e "s|^ro.build.flavor=.*|ro.build.flavor=venus-user|" -e "s|^ro.debuggable=.*|ro.debuggable=0|" -e "s|^ro.hardware=.*|ro.hardware=qcom|" -e "s|^dalvik.vm.isa.arm64.variant=.*|dalvik.vm.isa.arm64.variant=cortex-x1|" -e "s|^dalvik.vm.isa.arm.variant=.*|dalvik.vm.isa.arm.variant=cortex-a76|" -e "s|^ro.bionic.cpu_variant=.*|ro.bionic.cpu_variant=cortex-x1|" -e "s|^ro.bionic.2nd_cpu_variant=.*|ro.bionic.2nd_cpu_variant=cortex-a76|" "$f"; done; true
+          RUN for f in $(find /system /vendor /odm -name "*.prop" 2>/dev/null); do sed -i -e "s|redroid11_arm64|M2011K2C|g" -e "s|redroid_arm64|venus|g" -e "s|^ro.product.brand=redroid|ro.product.brand=xiaomi|" "$f"; done; true
+          DF
+          sudo docker build -t qd-redroid-spoof:11 /tmp/qdimg 2>&1 | tail -25
+          sudo docker images | grep -q qd-redroid-spoof && echo BUILD_OK || echo BUILD_FAILED_FALLBACK_STD
+
       - name: Start redroid
         run: |
           sudo docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          IMG="redroid/redroid:11.0.0-latest"
+          if [ "${{ inputs.customimg }}" = "true" ]; then IMG="qd-redroid-spoof:11"; fi
+          echo "使用镜像: $IMG"
           sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
-            redroid/redroid:11.0.0-latest \
+            $IMG \
             androidboot.hardware=qcom \
             androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
             androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
