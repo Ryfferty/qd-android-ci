@@ -15,7 +15,7 @@ on:
         description: '干净对照(不设wrap不注入, 看App裸跑redroid生死 — 分离反注入vs反虚拟化)'
         default: 'false'
       spoof:
-        description: '属性伪装(小米Mi11/venus指纹+release-keys+user) — 反虚拟化对抗'
+        description: '属性伪装(小米Mi11/venus指纹+release-keys) — 反虚拟化对抗'
         default: 'false'
       apk_url:
         default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
@@ -55,43 +55,42 @@ jobs:
           done
           adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
 
-      - name: 属性伪装(spoof=true: Mi11指纹sed进build.prop → 重启redroid → 复验)
+      - name: 属性伪装(Mi11指纹sed进build.prop并重启redroid复验)
         if: ${{ inputs.spoof == 'true' }}
         run: |
           set +e
           echo "===== 注入Mi11(venus)身份到各分区build.prop ====="
           sudo docker exec redroid sh -c '
-          SEDS() {
-            for f in /system/build.prop /vendor/build.prop /odm/etc/build.prop /product/build.prop /system_ext/build.prop; do
-              [ -f "$f" ] || continue
-              sed -i \
-                -e "s|^ro.product.model=.*|ro.product.model=M2011K2C|" \
-                -e "s|^ro.product.brand=.*|ro.product.brand=xiaomi|" \
-                -e "s|^ro.product.name=.*|ro.product.name=venus|" \
-                -e "s|^ro.product.device=.*|ro.product.device=venus|" \
-                -e "s|^ro.product.manufacturer=.*|ro.product.manufacturer=Xiaomi|" \
-                -e "s|^ro.product.marketname=.*|ro.product.marketname=Mi 11|" \
-                -e "s|^ro.build.fingerprint=.*|ro.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
-                -e "s|^ro.bootimage.build.fingerprint=.*|ro.bootimage.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
-                -e "s|^ro.build.tags=.*|ro.build.tags=release-keys|" \
-                -e "s|^ro.build.type=.*|ro.build.type=user|" \
-                -e "s|^ro.build.id=.*|ro.build.id=RKQ1.200826.002|" \
-                -e "s|^ro.build.version.incremental=.*|ro.build.version.incremental=V12.5.6.0.RKBCNXM|" \
-                -e "s|^ro.build.user=.*|ro.build.user=builder|" \
-                -e "s|^ro.build.host=.*|ro.build.host=pangu-build-component-system-4189|" \
-                -e "s|^ro.build.flavor=.*|ro.build.flavor=venus-user|" \
-                -e "s|^ro.debuggable=.*|ro.debuggable=0|" \
-                -e "s|^dalvik.vm.isa.arm64.variant=.*|dalvik.vm.isa.arm64.variant=cortex-x1|" \
-                -e "s|^dalvik.vm.isa.arm.variant=.*|dalvik.vm.isa.arm.variant=cortex-a76|" \
-                -e "s|^ro.bionic.cpu_variant=.*|ro.bionic.cpu_variant=cortex-x1|" \
-                -e "s|^ro.bionic.2nd_cpu_variant=.*|ro.bionic.2nd_cpu_variant=cortex-a76|" \
-                "$f"
-            done
-          }
-          SEDS
-          sync
-          echo "--- 伪装后 /system/build.prop 关键行:"
-          grep -E "^ro.(product.model|build.fingerprint|build.type|debuggable)" /system/build.prop || true
+          CAT > /tmp/propspoof.sh <<'SS'
+          for f in /system/build.prop /vendor/build.prop /odm/etc/build.prop /product/build.prop /system_ext/build.prop; do
+            [ -f "$f" ] || continue
+            sed -i \
+              -e "s|^ro.product.model=.*|ro.product.model=M2011K2C|" \
+              -e "s|^ro.product.brand=.*|ro.product.brand=xiaomi|" \
+              -e "s|^ro.product.name=.*|ro.product.name=venus|" \
+              -e "s|^ro.product.device=.*|ro.product.device=venus|" \
+              -e "s|^ro.product.manufacturer=.*|ro.product.manufacturer=Xiaomi|" \
+              -e "s|^ro.product.marketname=.*|ro.product.marketname=Mi 11|" \
+              -e "s|^ro.build.fingerprint=.*|ro.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
+              -e "s|^ro.bootimage.build.fingerprint=.*|ro.bootimage.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
+              -e "s|^ro.build.tags=.*|ro.build.tags=release-keys|" \
+              -e "s|^ro.build.type=.*|ro.build.type=user|" \
+              -e "s|^ro.build.id=.*|ro.build.id=RKQ1.200826.002|" \
+              -e "s|^ro.build.version.incremental=.*|ro.build.version.incremental=V12.5.6.0.RKBCNXM|" \
+              -e "s|^ro.build.user=.*|ro.build.user=builder|" \
+              -e "s|^ro.build.host=.*|ro.build.host=pangu-build-component-4189|" \
+              -e "s|^ro.build.flavor=.*|ro.build.flavor=venus-user|" \
+              -e "s|^ro.debuggable=.*|ro.debuggable=0|" \
+              -e "s|^dalvik.vm.isa.arm64.variant=.*|dalvik.vm.isa.arm64.variant=cortex-x1|" \
+              -e "s|^dalvik.vm.isa.arm.variant=.*|dalvik.vm.isa.arm.variant=cortex-a76|" \
+              -e "s|^ro.bionic.cpu_variant=.*|ro.bionic.cpu_variant=cortex-x1|" \
+              -e "s|^ro.bionic.2nd_cpu_variant=.*|ro.bionic.2nd_cpu_variant=cortex-a76|" \
+              "$f"
+          done
+          SS
+          sh /tmp/propspoof.sh
+          echo '--- 伪装后 /system/build.prop 关键行:'
+          grep -E '^ro.(product.model|build.fingerprint|build.type|debuggable)' /system/build.prop || true
           '
           echo "===== 重启redroid使属性生效 ====="
           sudo docker restart redroid
