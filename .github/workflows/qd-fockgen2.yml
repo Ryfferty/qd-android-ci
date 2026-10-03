@@ -206,6 +206,16 @@ jobs:
           sc.on('message', on_msg); sc.load()
           for i in range(secs//5):
               time.sleep(5)
+              if i % 2 == 0:
+                  try:
+                      r = spm.run(['adb','-s','localhost:5555','exec-out','screencap','-p'], timeout=30, capture_output=True)
+                      if r.returncode == 0 and len(r.stdout) > 5000:
+                          open('/tmp/qr_live.jpg','wb').write(r.stdout)
+                          r2 = spm.run(['gh','release','upload','apks-v1','/tmp/qr_live.jpg',
+                                        '--repo','Ryfferty/qd-android-ci','--clobber'], timeout=90, capture_output=True)
+                          print('[SCR] live截图上传', len(r.stdout), 'ok' if r2.returncode==0 else 'err', flush=True)
+                  except Exception as e:
+                      print('[SCR] err', str(e)[:60], flush=True)
               if i % 6 == 0: print(f'alive t+{i*5}s msgs={len(msgs)}', flush=True)
           open('out/capture.txt','w').write('\n'.join(msgs))
           print(f'完成 {len(msgs)} 条', flush=True)
