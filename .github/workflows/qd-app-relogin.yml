@@ -1,0 +1,162 @@
+name: qd-app-relogin
+
+# 两阶段实验(10-04): 测"首次真实App登录是否重判新人资格"
+# 阶段A: 启动App(无会话)→attach hook_fockgen25 注入 MMKV pref_utils + SP ywlogin_share_date(alk)
+# 强杀 + 重启App → 阶段B: attach hook_fockgen26 捕获启动期自动登录请求(sdk/*) + 判定三连
+# 关键: 阶段B的App启动时 MMKV/SP 已带会话 → 启动链 session check 若发现 alk 会走真实登录栈
+on:
+  workflow_dispatch:
+    inputs:
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk'
+
+jobs:
+  cap:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Setup binder + adb + frida(锁定16.7.19)
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -2
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 30); do
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 8
+          done
+
+      - name: 下载 APK + frida-server + 两个hook
+        run: |
+          set +e
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/qd.apk "${{ inputs.apk_url }}" || true
+            SZ=$(stat -c%s /tmp/qd.apk 2>/dev/null || echo 0)
+            [ "$SZ" -gt 10000000 ] && break
+            sleep 15
+          done
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 600 -o /tmp/fs.xz "https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz" || true
+            if xz -t /tmp/fs.xz 2>/dev/null; then break; fi
+            sleep 15
+          done
+          unxz -f /tmp/fs.xz && chmod +x /tmp/fs
+          curl -sSL --max-time 120 -o /tmp/hook_inject.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_fockgen25.js"
+          curl -sSL --max-time 120 -o /tmp/hook_capture.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_fockgen26.js"
+          ls -l /tmp/qd.apk /tmp/fs /tmp/hook_inject.js /tmp/hook_capture.js
+
+      - name: 装包 + frida-server + 会话
+        env:
+          SESS_JSON: ${{ secrets.SESS_JSON }}
+        run: |
+          set +e
+          A="adb -s localhost:5555"
+          for i in 1 2 3; do
+            timeout 300 $A install -r -t /tmp/qd.apk 2>&1 | tail -2
+            if timeout 30 $A shell pm list packages 2>/dev/null | tr -d '\r' | grep -q qidian; then echo "INSTALL_OK"; break; fi
+            sleep 8
+            timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          done
+          timeout 30 $A root 2>&1 | tail -1
+          sleep 8
+          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          timeout 120 $A push /tmp/fs /data/local/tmp/fs
+          timeout 30 $A shell chmod 755 /data/local/tmp/fs
+          timeout 30 $A shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
+          sleep 12
+          timeout 30 $A forward tcp:27042 tcp:27042 || true
+          if [ -n "$SESS_JSON" ]; then
+            printf '%s' "$SESS_JSON" > /tmp/sess.json
+            timeout 60 $A push /tmp/sess.json /data/local/tmp/sess.json
+            $A shell "ls -l /data/local/tmp/sess.json" | tr -d '\r'
+          fi
+
+      - name: 阶段A: 启动App + 注入hook(60s)
+        run: |
+          set +e
+          mkdir -p out
+          adb -s localhost:5555 shell "settings put global policy_control null*" 2>/dev/null
+          A=$(adb -s localhost:5555 shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          [ -n "$A" ] && adb -s localhost:5555 shell "am start -n $A" 2>&1 | tail -2
+          sleep 75
+          PID_APP=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" | tr -d '\r' | awk '{print $1}')
+          echo "阶段A PID=$PID_APP"
+          python3 - <<'PY'
+          import frida, time, json, os, sys, subprocess
+          js = open('/tmp/hook_inject.js').read()
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
+          out = subprocess.run(['adb','-s','localhost:5555','shell','pidof com.qidian.QDReader'],
+                               capture_output=True, text=True, timeout=20).stdout.strip()
+          if not out:
+              print('阶段A: 无进程', flush=True); sys.exit(0)
+          sess = dev.attach(int(out.split()[0]))
+          msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False); msgs.append(line); print('[A-JS]', line[:300], flush=True)
+          sc = sess.create_script(js); sc.on('message', on_msg); sc.load()
+          time.sleep(55)
+          open('out/phaseA.txt','w').write('\n'.join(msgs))
+          sess.detach()
+          print('阶段A完成 %d 条' % len(msgs), flush=True)
+          PY
+
+      - name: 强杀 + 重启 + 阶段B: 捕获hook
+        run: |
+          set +e
+          adb -s localhost:5555 shell "am force-stop com.qidian.QDReader"
+          sleep 5
+          A=$(adb -s localhost:5555 shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          echo "重启: $A (此刻 MMKV/SP 已带会话, 启动链应发现alk并走登录栈)"
+          [ -n "$A" ] && adb -s localhost:5555 shell "am start -n $A" 2>&1 | tail -2
+          sleep 75
+          PID_APP=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" | tr -d '\r' | awk '{print $1}')
+          echo "阶段B PID=$PID_APP"
+          python3 - <<'PY'
+          import frida, time, json, os, sys, subprocess
+          js = open('/tmp/hook_capture.js').read()
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
+          for try_i in range(12):
+              out = subprocess.run(['adb','-s','localhost:5555','shell','pidof com.qidian.QDReader'],
+                                   capture_output=True, text=True, timeout=20).stdout.strip()
+              if out:
+                  break
+              time.sleep(5)
+          if not out:
+              print('阶段B: 无进程(启动即死?)', flush=True); sys.exit(0)
+          sess = dev.attach(int(out.split()[0]))
+          msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False); msgs.append(line); print('[B-JS]', line[:400], flush=True)
+          sc = sess.create_script(js); sc.on('message', on_msg); sc.load()
+          for i in range(60):
+              time.sleep(5)
+              if i % 6 == 0: print(f'alive t+{i*5}s msgs={len(msgs)}', flush=True)
+          open('out/phaseB.txt','w').write('\n'.join(msgs))
+          print('阶段B完成 %d 条' % len(msgs), flush=True)
+          PY
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relogin-capture
+          path: out/
+          if-no-files-found: warn
