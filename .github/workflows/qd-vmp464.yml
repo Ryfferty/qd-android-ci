@@ -14,6 +14,9 @@ on:
       baseline:
         description: '干净对照(不设wrap不注入, 看App裸跑redroid生死 — 分离反注入vs反虚拟化)'
         default: 'false'
+      spoof:
+        description: '属性伪装(小米Mi11/venus指纹+release-keys+user) — 反虚拟化对抗'
+        default: 'false'
       apk_url:
         default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
 
@@ -38,6 +41,7 @@ jobs:
           for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
           sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
             redroid/redroid:11.0.0-latest \
+            androidboot.hardware=qcom \
             androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
             androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
             androidboot.redroid_adb=5555 || echo DOCKER_FAILED
@@ -50,6 +54,57 @@ jobs:
             sleep 8
           done
           adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+
+      - name: 属性伪装(spoof=true: Mi11指纹sed进build.prop → 重启redroid → 复验)
+        if: ${{ inputs.spoof == 'true' }}
+        run: |
+          set +e
+          echo "===== 注入Mi11(venus)身份到各分区build.prop ====="
+          sudo docker exec redroid sh -c '
+          SEDS() {
+            for f in /system/build.prop /vendor/build.prop /odm/etc/build.prop /product/build.prop /system_ext/build.prop; do
+              [ -f "$f" ] || continue
+              sed -i \
+                -e "s|^ro.product.model=.*|ro.product.model=M2011K2C|" \
+                -e "s|^ro.product.brand=.*|ro.product.brand=xiaomi|" \
+                -e "s|^ro.product.name=.*|ro.product.name=venus|" \
+                -e "s|^ro.product.device=.*|ro.product.device=venus|" \
+                -e "s|^ro.product.manufacturer=.*|ro.product.manufacturer=Xiaomi|" \
+                -e "s|^ro.product.marketname=.*|ro.product.marketname=Mi 11|" \
+                -e "s|^ro.build.fingerprint=.*|ro.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
+                -e "s|^ro.bootimage.build.fingerprint=.*|ro.bootimage.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
+                -e "s|^ro.build.tags=.*|ro.build.tags=release-keys|" \
+                -e "s|^ro.build.type=.*|ro.build.type=user|" \
+                -e "s|^ro.build.id=.*|ro.build.id=RKQ1.200826.002|" \
+                -e "s|^ro.build.version.incremental=.*|ro.build.version.incremental=V12.5.6.0.RKBCNXM|" \
+                -e "s|^ro.build.user=.*|ro.build.user=builder|" \
+                -e "s|^ro.build.host=.*|ro.build.host=pangu-build-component-system-4189|" \
+                -e "s|^ro.build.flavor=.*|ro.build.flavor=venus-user|" \
+                -e "s|^ro.debuggable=.*|ro.debuggable=0|" \
+                -e "s|^dalvik.vm.isa.arm64.variant=.*|dalvik.vm.isa.arm64.variant=cortex-x1|" \
+                -e "s|^dalvik.vm.isa.arm.variant=.*|dalvik.vm.isa.arm.variant=cortex-a76|" \
+                -e "s|^ro.bionic.cpu_variant=.*|ro.bionic.cpu_variant=cortex-x1|" \
+                -e "s|^ro.bionic.2nd_cpu_variant=.*|ro.bionic.2nd_cpu_variant=cortex-a76|" \
+                "$f"
+            done
+          }
+          SEDS
+          sync
+          echo "--- 伪装后 /system/build.prop 关键行:"
+          grep -E "^ro.(product.model|build.fingerprint|build.type|debuggable)" /system/build.prop || true
+          '
+          echo "===== 重启redroid使属性生效 ====="
+          sudo docker restart redroid
+          adb disconnect localhost:5555 >/dev/null 2>&1 || true
+          sleep 20
+          for i in $(seq 1 30); do
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && echo "REBOOT_OK try $i" && break
+            sleep 8
+          done
+          echo "===== 复验伪装效果 ====="
+          timeout 20 adb -s localhost:5555 shell "getprop ro.build.fingerprint; getprop ro.product.model; getprop ro.build.tags; getprop ro.build.type; getprop ro.debuggable; getprop ro.boot.hardware; getprop ro.hardware" 2>/dev/null
 
       - name: 下载 APK + frida-server(改名qdsvc隐身)
         run: |
