@@ -107,6 +107,8 @@ jobs:
           fi
 
       - name: 启动 App + 等75s(过壳初始化危险窗) + python-frida attach
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           mkdir -p out
@@ -178,9 +180,26 @@ jobs:
           print(f'挂上 pid={used_pid}, 等待壳内类加载...', flush=True)
           time.sleep(10)   # attach 后再给壳一点时间把 FockUtil 类加载进内存
           msgs = []
+          import base64 as b64m, subprocess as spm
+          qr_buf = {}
           def on_msg(m, d):
               if m['type'] == 'send':
                   line = json.dumps(m['payload'], ensure_ascii=False); msgs.append(line); print('[JS]', line[:400], flush=True)
+                  p = m.get('payload') or {}
+                  if isinstance(p, dict) and p.get('m') == 'QRC':
+                      if p['i'] == 0: qr_buf.clear()
+                      qr_buf[p['i']] = p['d']
+                      n = p['n']
+                      if len([k for k in qr_buf if 0 <= k < n]) == n:
+                          try:
+                              data = ''.join(qr_buf[k] for k in range(n))
+                              open('/tmp/qr_live.jpg', 'wb').write(b64m.b64decode(data))
+                              r = spm.run(['gh', 'release', 'upload', 'apks-v1', '/tmp/qr_live.jpg',
+                                           '--repo', 'Ryfferty/qd-android-ci', '--clobber'],
+                                          timeout=90, capture_output=True, text=True)
+                              print('[QR] live上传', 'ok' if r.returncode == 0 else ('err:' + (r.stderr or '')[:80]), flush=True)
+                          except Exception as e:
+                              print('[QR] err', str(e)[:80], flush=True)
               else:
                   print('[ERR]', str(m)[:200], flush=True); msgs.append('ERR '+str(m)[:200])
           sc = sess.create_script(js)
