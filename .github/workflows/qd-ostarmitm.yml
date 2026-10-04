@@ -1,8 +1,8 @@
 name: qd-ostarmitm
 
-# MITM抓首启REGISTER (10-04深夜 ZCode)
-# 零注入 — 不用frida, 壳的反调试完全无关. mitmproxy系统证书+全局代理,
-# 首启REGISTER的请求体(blob/descriptor真值)+响应(qimei签发)+全部HTTP头现形.
+# MITM抓首启REGISTER v2: iptables透明代理 (10-04深夜 ZCode)
+# 零注入. v1教训: 全局http_proxy被app主栈(cronet/自定义socket)绕过, 只有HTTPDNS走了代理.
+# v2: 宿主iptables把docker0进来的80/443全重定向到mitmproxy透明模式 + 封UDP443(QUIC).
 on:
   workflow_dispatch:
     inputs:
@@ -80,24 +80,24 @@ jobs:
           echo "hash=$CERTSUB"
           $A push /tmp/mitm/mitmproxy-ca.pem /data/local/tmp/cert.pem
           $A shell "mount -o remount,rw / 2>/dev/null; mkdir -p /system/etc/security/cacerts; cp /data/local/tmp/cert.pem /system/etc/security/cacerts/$CERTSUB.0; chmod 644 /system/etc/security/cacerts/$CERTSUB.0; ls -la /system/etc/security/cacerts/$CERTSUB.0"
-          # 全局代理指向宿主(docker网关, 从容器内路由表取)
-          GATEWAY=$($A shell ip route 2>/dev/null | tr -d '\r' | awk '/^default/{print $3}' | head -1)
-          [ -z "$GATEWAY" ] && GATEWAY="172.17.0.1"
-          echo "宿主网关IP=$GATEWAY"
-          $A shell "settings put global http_proxy $GATEWAY:8080"
-          echo "代理确认: $($A shell settings get global http_proxy | tr -d '\r')"
+          echo "(不用全局代理, 用iptables透明模式)"
 
       - name: 启动mitmproxy(记录模式) + 首启App
         run: |
           set +e
           mkdir -p out
           # mitmproxy: dump全部流量到flows+明文log
-          nohup mitmdump --listen-host 0.0.0.0 -p 8080 --set confdir=/tmp/mitm --set flow_detail=2 -w /tmp/all.flows > /tmp/mitm.log 2>&1 &
-          sleep 5
-          ps aux | grep -c '[m]itmdump' || echo "MITMDUMP_NOT_RUNNING"
-          head -5 /tmp/mitm.log
-          GATEWAY=$(adb -s localhost:5555 shell ip route 2>/dev/null | tr -d '\r' | awk '/^default/{print $3}' | head -1)
-          timeout 3 bash -c "echo > /dev/tcp/$GATEWAY/8080" 2>/dev/null && echo "PORT_8080_OK" || echo "PORT_8080_FAIL"
+          # 透明代理: 容器出向80/443 → mitm; 封QUIC(UDP443)
+          IFACE=$(ip route | awk '/docker0/{print $1; exit}')
+          echo "容器接口=$IFACE"
+          sudo iptables -t nat -A PREROUTING -i docker0 -p tcp --dport 80  -j REDIRECT --to-port 8080
+          sudo iptables -t nat -A PREROUTING -i docker0 -p tcp --dport 443 -j REDIRECT --to-port 8080
+          sudo iptables -A FORWARD -p udp --dport 443 -j REJECT || true
+          sudo iptables -t nat -L PREROUTING -n | head -8
+          nohup sudo -E $(which mitmdump) --mode transparent --listen-host 0.0.0.0 -p 8080 --set confdir=/tmp/mitm --set flow_detail=2 -w /tmp/all.flows > /tmp/mitm.log 2>&1 &
+          sleep 6
+          ps aux | grep '[m]itmdump' | head -2 || echo "MITMDUMP_NOT_RUNNING"
+          head -8 /tmp/mitm.log
           A="adb -s localhost:5555"
           ACT=$($A shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
           echo "启动: $ACT"
