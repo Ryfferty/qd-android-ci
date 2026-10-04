@@ -137,7 +137,8 @@ jobs:
           cat out/logcat_ostar.txt
           # 全量shared_prefs+mmkv dump
           $A shell "ls /data/data/com.qidian.QDReader/shared_prefs/" | tr -d '\r' > out/sp_all.txt
-          $A shell "for f in /data/data/com.qidian.QDReader/shared_prefs/*.xml; do echo ==$f==; cat $f; done 2>/dev/null" | tr -d '\r' | sed 's/>\([^<]*\(tn\|token\|ywkey\)[^<]*\)</>***</g' > out/sp_all_content.txt
+          $A shell "cat /data/data/com.qidian.QDReader/shared_prefs/qm_global_sp.xml /data/data/com.qidian.QDReader/shared_prefs/QV1*.xml /data/data/com.qidian.QDReader/shared_prefs/new_b_log*.xml /data/data/com.qidian.QDReader/shared_prefs/com.qidian.QDReader.xml 2>/dev/null" | tr -d '\r' | sed -E 's/(tn|token|ywkey)[^<]*/\1***/g' > out/sp_key_files.txt
+          wc -c out/sp_key_files.txt
           $A shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/ 2>/dev/null" | tr -d '\r' > out/mmkv_list.txt
           echo "===== sp清单 ====="
           cat out/sp_all.txt
