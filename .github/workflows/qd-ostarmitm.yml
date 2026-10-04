@@ -103,6 +103,22 @@ jobs:
           ACT=$($A shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
           echo "启动: $ACT"
           $A shell "am start -n $ACT" 2>&1 | tail -1
+          sleep 22
+          # ★点掉隐私同意弹窗(否则SDK全不初始化, REGISTER不发起)
+          echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgcmUsIHN5cwp0cnk6IHQgPSBvcGVuKHN5cy5hcmd2WzFdLCBlbmNvZGluZz0ndXRmLTgnLCBlcnJvcnM9J3JlcGxhY2UnKS5yZWFkKCkKZXhjZXB0IEV4Y2VwdGlvbjogc3lzLmV4aXQoMCkKZm9yIHBhdCBpbiBbcidyZXNvdXJjZS1pZD0iY29tXC5xaWRpYW5cLlFEUmVhZGVyOmlkL2J0bkFncmVlIltePl0qYm91bmRzPSJcWyhcZCspLChcZCspXF1cWyhcZCspLChcZCspXF0iJywKICAgICAgICAgICAgcid0ZXh0PSLlkIzmhI/lubbnu6fnu60iW14+XSpib3VuZHM9IlxbKFxkKyksKFxkKylcXVxbKFxkKyksKFxkKylcXSInXToKICAgIG0gPSByZS5zZWFyY2gocGF0LCB0KQogICAgaWYgbToKICAgICAgICB4MSx5MSx4Mix5MiA9IG1hcChpbnQsIG0uZ3JvdXBzKCkpCiAgICAgICAgcHJpbnQoJyVkICVkJyAlICgoeDEreDIpLy8yLCAoeTEreTIpLy8yKSk7IHN5cy5leGl0KDApCg== | base64 -d > /tmp/tapc.py
+          for attempt in 1 2 3 4 5 6; do
+            $A shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            $A pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            XY=$(python3 /tmp/tapc.py /tmp/u.xml)
+            echo "  consent attempt=$attempt target=[$XY]"
+            if [ -n "$XY" ]; then
+              $A shell "input tap $XY"
+              sleep 8
+            else
+              echo "  (无按钮, 已通过?)"
+              break
+            fi
+          done
           sleep ${{ inputs.secs }}
           # 抓mitm日志里的关键请求
           echo "===== ostar相关请求 ====="
