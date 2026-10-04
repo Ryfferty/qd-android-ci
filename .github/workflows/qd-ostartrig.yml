@@ -1,0 +1,219 @@
+name: qd-ostartrig
+
+# ostar首启REGISTER抓包 (10-04 ZCode)
+# 阶段1: frida spawn模式从exec起hook住 → 真首启REGISTER必然经过OStarImpl.trigger → 抓blob+响应+头
+# 阶段2: 兜底 — force-stop + 清ostar SP(QV1*) + 重启快速attach竞速, 强制重新REGISTER再抓一次
+on:
+  workflow_dispatch:
+    inputs:
+      secs:
+        description: '阶段1采集秒数'
+        default: '150'
+      secs2:
+        description: '阶段2采集秒数'
+        default: '180'
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/q480.apk'
+
+jobs:
+  cap:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - name: Setup binder + adb + frida(锁定16.7.19)
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -2
+          frida --version
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 30); do
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 8
+          done
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+
+      - name: 下载 APK + frida-server + hook
+        run: |
+          set +e
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/qd.apk "${{ inputs.apk_url }}" || true
+            SZ=$(stat -c%s /tmp/qd.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"
+            [ "$SZ" -gt 10000000 ] && break
+            sleep 15
+          done
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 600 -o /tmp/fs.xz "https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz" || true
+            if xz -t /tmp/fs.xz 2>/dev/null; then echo "fs ok try $i"; break; fi
+            sleep 15
+          done
+          unxz -f /tmp/fs.xz && chmod +x /tmp/fs
+          curl -sSL --max-time 120 -o /tmp/hook.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/hook_ostartrig.js"
+          ls -l /tmp/qd.apk /tmp/fs /tmp/hook.js
+
+      - name: 装包 + frida-server
+        run: |
+          set +e
+          A="adb -s localhost:5555"
+          for i in 1 2 3; do
+            timeout 300 $A install -r -t /tmp/qd.apk 2>&1 | tail -2
+            if timeout 30 $A shell pm list packages 2>/dev/null | tr -d '\r' | grep -q qidian; then echo "INSTALL_OK try $i"; break; fi
+            echo "install try $i 失败, 重连adb"
+            sleep 8
+            timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          done
+          timeout 30 $A root 2>&1 | tail -1
+          sleep 8
+          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          timeout 120 $A push /tmp/fs /data/local/tmp/fs
+          timeout 30 $A shell chmod 755 /data/local/tmp/fs
+          timeout 30 $A shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
+          sleep 12
+          timeout 30 $A forward tcp:27042 tcp:27042 || true
+          for i in 1 2 3; do timeout 30 frida-ps -H 127.0.0.1:27042 2>&1 | head -4 && break; sleep 5; done
+
+      - name: "阶段1: spawn模式首启REGISTER捕获"
+        run: |
+          set +e
+          mkdir -p out
+          adb -s localhost:5555 shell "settings put global policy_control null*" 2>/dev/null
+          PID_APP=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" | tr -d '\r' | awk '{print $1}')
+          echo "启动前PID检查=$PID_APP(应为空)"
+          SECS='${{ inputs.secs }}' python3 - <<'PY'
+          import frida, time, json, os, sys, subprocess
+          secs = int(os.environ.get('SECS','150'))
+          js = open('/tmp/hook.js').read()
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
+
+          msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False); msgs.append(line)
+                  print('[JS]', line[:500], flush=True)
+              else:
+                  print('[ERR]', str(m)[:300], flush=True); msgs.append('ERR '+str(m)[:300])
+
+          pid = None; sess = None
+          try:
+              pid = dev.spawn(['com.qidian.QDReader'])
+              print('spawn ok pid=', pid, flush=True)
+              sess = dev.attach(pid)
+              sc = sess.create_script(js); sc.on('message', on_msg); sc.load()
+              dev.resume(pid)
+              print('resume done, hook应在任何app代码前就位', flush=True)
+          except Exception as e:
+              print('SPAWN失败:', str(e)[:200], flush=True)
+              msgs.append('SPAWN_FAIL '+str(e)[:200])
+              # 兜底: 手动启动+正常attach
+              r = subprocess.run(['adb','-s','localhost:5555','shell','cmd package resolve-activity --brief com.qidian.QDReader'],
+                                 capture_output=True, text=True, timeout=30)
+              act = r.stdout.strip().split('\r')[-1].strip().split('\n')[-1].strip() if r.stdout else ''
+              print('fallback act=', act, flush=True)
+              if act:
+                  subprocess.run(['adb','-s','localhost:5555','shell',f'am start -n {act}'], timeout=30, capture_output=True)
+              time.sleep(10)
+              for i in range(30):
+                  out = subprocess.run(['adb','-s','localhost:5555','shell','pidof com.qidian.QDReader'],
+                                       capture_output=True, text=True, timeout=20).stdout.strip()
+                  if out:
+                      try:
+                          sess = dev.attach(int(out.split()[0]))
+                          sc = sess.create_script(js); sc.on('message', on_msg); sc.load()
+                          print('fallback attach ok pid=', out, flush=True)
+                          break
+                      except Exception as e2:
+                          print('fallback attach fail:', str(e2)[:120], flush=True)
+                  time.sleep(2)
+
+          if sess:
+              for i in range(secs//5):
+                  time.sleep(5)
+                  if i % 6 == 0: print(f'alive t+{i*5}s msgs={len(msgs)}', flush=True)
+          open('out/phase1.txt','w').write('\n'.join(msgs))
+          print('阶段1完成', len(msgs), '条', flush=True)
+          PY
+          echo "===== 阶段1关键命中 ====="
+          grep -cE 'TRIGGER|QIMEI|OSTAR' out/phase1.txt || echo "无TRIGGER命中"
+
+      - name: "阶段2: 清ostar SP强制重注册+快速attach竞速"
+        run: |
+          set +e
+          A="adb -s localhost:5555"
+          $A shell "am force-stop com.qidian.QDReader" 2>/dev/null || true
+          sleep 3
+          echo "===== shared_prefs清单 ====="
+          timeout 30 $A shell "ls -la /data/data/com.qidian.QDReader/shared_prefs/ 2>/dev/null" | tr -d '\r'
+          echo "===== QV1*(ostar)内容 ====="
+          timeout 30 $A shell "cat /data/data/com.qidian.QDReader/shared_prefs/QV1*.xml 2>/dev/null" | tr -d '\r' | sed 's/>\([^<]*tn[^<]*\)</>***</g'
+          echo "===== files目录 ====="
+          timeout 30 $A shell "ls -la /data/data/com.qidian.QDReader/files/ 2>/dev/null" | tr -d '\r' | head -20
+          timeout 30 $A shell "rm -f /data/data/com.qidian.QDReader/shared_prefs/QV1*.xml" 2>/dev/null
+          echo "已删QV1*ostar SP, 重启..."
+          sleep 2
+          ACT=$($A shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          SECS2='${{ inputs.secs2 }}' ACT="$ACT" python3 - <<'PY'
+          import frida, time, json, os, sys, subprocess
+          secs = int(os.environ.get('SECS2','180'))
+          act = os.environ.get('ACT','')
+          js = open('/tmp/hook.js').read()
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
+          msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False); msgs.append(line)
+                  print('[JS2]', line[:500], flush=True)
+              else:
+                  print('[ERR2]', str(m)[:300], flush=True); msgs.append('ERR2 '+str(m)[:300])
+
+          sess = None
+          if act:
+              subprocess.run(['adb','-s','localhost:5555','shell',f'am start -n {act}'], timeout=30, capture_output=True)
+          # 快速竞速: 0.3s间隔poll, PID一出现立刻attach
+          for i in range(400):
+              out = subprocess.run(['adb','-s','localhost:5555','shell','pidof com.qidian.QDReader'],
+                                   capture_output=True, text=True, timeout=10).stdout.strip()
+              if out:
+                  try:
+                      sess = dev.attach(int(out.split()[0]))
+                      print('racing attach ok pid=', out, 'at poll', i, flush=True)
+                      break
+                  except Exception as e:
+                      print('racing attach fail:', str(e)[:100], flush=True)
+              time.sleep(0.3)
+          if sess:
+              sc = sess.create_script(js); sc.on('message', on_msg); sc.load()
+              for i in range(secs//5):
+                  time.sleep(5)
+                  if i % 6 == 0: print(f'alive t+{i*5}s msgs={len(msgs)}', flush=True)
+          else:
+              print('竞速attach未成功', flush=True)
+          open('out/phase2.txt','w').write('\n'.join(msgs))
+          print('阶段2完成', len(msgs), '条', flush=True)
+          PY
+          echo "===== 阶段2关键命中 ====="
+          grep -cE 'TRIGGER|QIMEI|OSTAR' out/phase2.txt || echo "无TRIGGER命中"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ostartrig-capture
+          path: out/
+          if-no-files-found: warn
