@@ -131,6 +131,16 @@ jobs:
           $A shell "ls -laR /data/data/com.qidian.QDReader/files/ 2>/dev/null" | tr -d '\r' > out/files_list.txt
           echo "===== QV1存储(ostar) ====="
           cat out/qv1.xml | head -20
+          # ★logcat抓OStarImpl的o16/o36明文日志
+          $A shell "logcat -d 2>/dev/null" | tr -d '\r' | grep -iE 'OStarImpl|o16=|qimei|QV1' | head -30 > out/logcat_ostar.txt || true
+          echo "===== logcat ostar ====="
+          cat out/logcat_ostar.txt
+          # 全量shared_prefs+mmkv dump
+          $A shell "ls /data/data/com.qidian.QDReader/shared_prefs/" | tr -d '\r' > out/sp_all.txt
+          $A shell "for f in /data/data/com.qidian.QDReader/shared_prefs/*.xml; do echo ==$f==; cat $f; done 2>/dev/null" | tr -d '\r' | sed 's/>\([^<]*\(tn\|token\|ywkey\)[^<]*\)</>***</g' > out/sp_all_content.txt
+          $A shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/ 2>/dev/null" | tr -d '\r' > out/mmkv_list.txt
+          echo "===== sp清单 ====="
+          cat out/sp_all.txt
           echo "===== mitm log 尾部 ====="
           tail -40 /tmp/mitm.log
           wc -l /tmp/mitm.log
