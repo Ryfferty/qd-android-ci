@@ -31,7 +31,7 @@ jobs:
           sudo docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
-          sudo docker run -d --privileged --name redroid $VOLS --network host \
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
             redroid/redroid:11.0.0-latest \
             androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
             androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
@@ -39,8 +39,8 @@ jobs:
           sleep 15
           adb start-server >/dev/null 2>&1 || true
           for i in $(seq 1 30); do
-            timeout 15 adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
-            B=$(timeout 15 adb -s 127.0.0.1:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
             [ "$B" = "1" ] && echo "BOOT_OK try $i" && break
             sleep 8
           done
@@ -59,15 +59,15 @@ jobs:
       - name: 装包 + root + 系统证书 + 全局代理
         run: |
           set +e
-          A="adb -s 127.0.0.1:5555"
+          A="adb -s localhost:5555"
           for i in 1 2 3; do
             timeout 300 $A install -r -t /tmp/qd.apk 2>&1 | tail -2
             if timeout 30 $A shell pm list packages 2>/dev/null | tr -d '\r' | grep -q qidian; then echo "INSTALL_OK try $i"; break; fi
-            sleep 8; timeout 20 adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+            sleep 8; timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
           done
           timeout 30 $A root 2>&1 | tail -1
           sleep 6
-          timeout 20 adb connect 127.0.0.1:5555 >/dev/null 2>&1 || true
+          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
           # mitmproxy CA → 系统证书(rooted redroid可写/system)
           ~/.local/bin/mitmdump --set confdir=/tmp/mitm -p 8080 >/dev/null 2>&1 &
           MPID=$!
@@ -80,25 +80,26 @@ jobs:
           echo "hash=$CERTSUB"
           $A push /tmp/mitm/mitmproxy-ca.pem /data/local/tmp/cert.pem
           $A shell "mount -o remount,rw / 2>/dev/null; mkdir -p /system/etc/security/cacerts; cp /data/local/tmp/cert.pem /system/etc/security/cacerts/$CERTSUB.0; chmod 644 /system/etc/security/cacerts/$CERTSUB.0; ls -la /system/etc/security/cacerts/$CERTSUB.0"
-          # Android侧iptables: OUTPUT链DNAT 80/443 → 宿主mitm(同netns, app无法绕过)
-          RUNNERIP=$(hostname -I | awk '{print $1}')
-          echo "RUNNERIP=$RUNNERIP"
-          $A shell "iptables -t nat -A OUTPUT -p tcp --dport 443 -j DNAT --to-destination $RUNNERIP:8080" && echo "DNAT443_OK"
-          $A shell "iptables -t nat -A OUTPUT -p tcp --dport 80  -j DNAT --to-destination $RUNNERIP:8080" && echo "DNAT80_OK"
-          $A shell "iptables -A OUTPUT -p udp --dport 443 -j REJECT" || true
-          $A shell "iptables -t nat -L OUTPUT -n" | head -6
+          # 全局代理 → 宿主docker网关(bridge网络下网关可达宿主)
+          GATEWAY=$($A shell ip route 2>/dev/null | tr -d '\r' | awk '/^default/{print $3}' | head -1)
+          [ -z "$GATEWAY" ] && GATEWAY="172.17.0.1"
+          echo "GATEWAY=$GATEWAY"
+          $A shell "settings put global http_proxy $GATEWAY:8080"
+          echo "PROXY_SET=$($A shell settings get global http_proxy | tr -d '\r')"
 
       - name: 启动mitmproxy(记录模式) + 首启App
         run: |
           set +e
           mkdir -p out
           # mitmproxy: dump全部流量到flows+明文log
-          # mitm透明模式(普通用户即可; NAT由Android侧iptables完成, 同netns)
-          nohup $(which mitmdump) --mode transparent --listen-host 0.0.0.0 -p 8080 --set confdir=/tmp/mitm --set flow_detail=2 -w /tmp/all.flows > /tmp/mitm.log 2>&1 &
+          # mitm常规代理模式
+          nohup $(which mitmdump) --listen-host 0.0.0.0 -p 8080 --set confdir=/tmp/mitm --set flow_detail=2 -w /tmp/all.flows > /tmp/mitm.log 2>&1 &
           sleep 6
-          ps aux | grep '[m]itmdump' | head -2 || echo "MITMDUMP_NOT_RUNNING"
+          pgrep -f mitmdump >/dev/null && echo "MITMDUMP_ALIVE" || echo "MITMDUMP_NOT_RUNNING"
           head -8 /tmp/mitm.log
-          A="adb -s 127.0.0.1:5555"
+          GATEWAY=$(adb -s localhost:5555 shell ip route 2>/dev/null | tr -d '\r' | awk '/^default/{print $3}' | head -1)
+          timeout 3 bash -c "echo > /dev/tcp/$GATEWAY/8080" 2>/dev/null && echo "PROXY_PORT_OK" || echo "PROXY_PORT_FAIL"
+          A="adb -s localhost:5555"
           ACT=$($A shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
           echo "启动: $ACT"
           $A shell "am start -n $ACT" 2>&1 | tail -1
