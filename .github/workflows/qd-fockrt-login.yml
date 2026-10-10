@@ -1,0 +1,120 @@
+name: qd-fockrt-login
+# 目标: 登录态App的fockrt上报抓包 — MITM全程 + 登录(注入yw会话) + 抓POST上报形态
+# 产出: fockrt全部流量(登录后) + SP的fockrt配置 + MMKV状态
+on:
+  workflow_dispatch:
+jobs:
+  cap:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps + mitmproxy + redroid
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' pip3 install -q mitmproxy 2>&1 | tail -1 || echo PIP_MITM_FAIL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420
+          # v206教训: DNAT用-s 172.17.0.0/16
+          sudo -S -p '' iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 443 -j DNAT --to-destination 172.17.0.1:8082 2>&1 || echo IPT_FAIL
+          sudo -S -p '' iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 80 -j DNAT --to-destination 172.17.0.1:8082 2>&1 || echo IPT80_FAIL
+          # host网络模式的mitmproxy需要容器可达 — 直接宿主跑
+          (mitmdump -w /tmp/fr_flows.mitm --set block_global=false --set ssl_insecure=true > /tmp/mitm.log 2>&1 &)
+          sleep 3
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          timeout 30 adb -s localhost:5555 root >/dev/null 2>&1; sleep 5
+          # CA证书注入(redroid 11可remount)
+          CACERT=$(ls ~/.mitmproxy/mitmproxy-ca-cert.cer 2>/dev/null)
+          if [ -n "$CACERT" ]; then
+            HASH=$(openssl x509 -inform PEM -subject_hash_old -in "$CACERT" | head -1)
+            timeout 60 adb -s localhost:5555 push "$CACERT" /data/local/tmp/cert.0 >/dev/null 2>&1
+            timeout 30 adb -s localhost:5555 shell "mount -o rw,remount /system 2>/dev/null; cp /data/local/tmp/cert.0 /system/etc/security/cacerts/$HASH.0; chmod 644 /system/etc/security/cacerts/$HASH.0" 2>&1 | tail -1
+            echo "CA注入: $HASH.0"
+          fi
+          exit 0
+
+      - name: 装464+注入登录态+启动抓fockrt上报
+        run: |
+          set +e
+          B=localhost:5555
+          PKG=com.qidian.QDReader
+          curl -sSL --max-time 1800 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk" || true
+          timeout 300 adb -s $B install -r -d --no-streaming qd.apk 2>&1 | tail -2
+          # 隐私同意
+          timeout 20 adb -s $B shell "mkdir -p /data/data/$PKG/shared_prefs && echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/$PKG/shared_prefs/app_sp.xml"
+          # ★注入登录态(900074373424 — 新号) MMKV方式
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 2
+          mkdir -p /data/data/$PKG/files/mmkv 2>/dev/null
+          # 写SP登录态(旧式ylogin)
+          timeout 20 adb -s $B shell "mkdir -p /data/data/$PKG/shared_prefs && cat > /data/data/$PKG/shared_prefs/ylogin_share_date.xml << 'XML'
+          <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+          <map>
+              <string name=\"alk\">taIUC2QIzEzs</string>
+              <string name=\"guid\">900074373424</string>
+              <long name=\"alkts\" value=\"1791300000000\" />
+          </map>
+          XML"
+          echo "登录态注入完成(alk/guid)"
+          # 冷启App — 登录链应发现alk自动登录 → fockrt带上登录态上报
+          timeout 300 adb -s $B logcat -c >/dev/null 2>&1
+          (timeout 240 adb -s $B logcat -v time > /tmp/logcat_frt.txt 2>&1 &)
+          sleep 2
+          timeout 20 adb -s $B shell "am start -n $PKG/.ui.activity.SplashActivity" >/dev/null 2>&1
+          # 等App跑足够久(fockrt初始化+上报+可能的弹窗)
+          for i in $(seq 1 12); do
+            sleep 15
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            for ID in btnAgree tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
+            done
+            echo "  t=$((i*15))s"
+          done
+          sleep 20
+          echo "===== fockrt流量统计 ====="
+          ls -la /tmp/fr_flows.mitm 2>/dev/null
+          grep -c "fockrt" /tmp/mitm.log 2>/dev/null || echo 0
+          # 解flows: 全fockrt请求(重点POST!)
+          mitmdump -nr /tmp/fr_flows.mitm --set flow_detail=0 -s /dev/stdin << 'PYEOF' 2>/dev/null | head -60
+          def request(flow):
+              u = flow.request.pretty_url
+              if 'fockrt' in u:
+                  print(f"[FRT] {flow.request.method} {u}")
+                  for k in ('Sign','Uid','App-Key','Timestamp','Bundle-ID'):
+                      v = flow.request.headers.get(k,'')
+                      if v: print(f"  {k}: {v}")
+                  if flow.request.method == 'POST':
+                      print(f"  ★BODY: {flow.request.get_text(strict=False)[:300]!r}")
+          def response(flow):
+              u = flow.request.pretty_url
+              if 'fockrt' in u and flow.response:
+                  print(f"  ← {flow.response.status_code} {flow.response.get_text(strict=False)[:200]!r}")
+          PYEOF
+          # SP的fockrt配置
+          echo "===== SP fockrt配置 ====="
+          timeout 30 adb -s $B shell "cat /data/data/$PKG/shared_prefs/com.yuewen.fockrt*.xml 2>/dev/null" | tr -d '\r'
+          # 判定读数(登录后查)
+          echo "===== logcat fockrt/ywlogin ====="
+          grep -aE "fockrt|FockRT|ylogin|login" /tmp/logcat_frt.txt | head -20
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fockrt-login-capture
+          path: |
+            /tmp/fr_flows.mitm
+            /tmp/mitm.log
+            /tmp/logcat_frt.txt
+          if-no-files-found: warn
