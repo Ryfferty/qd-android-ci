@@ -81,6 +81,8 @@ jobs:
           done
           timeout 30 $A root 2>&1 | tail -1
           sleep 8
+          # ★预写隐私同意 (ostartrig教训: App卡隐私弹窗→OStarImpl从未被调)
+          timeout 20 $A shell "mkdir -p /data/data/com.qidian.QDReader/shared_prefs && echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml" 2>&1 | tail -1
           timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
           timeout 120 $A push /tmp/fs /data/local/tmp/fs
           timeout 30 $A shell chmod 755 /data/local/tmp/fs

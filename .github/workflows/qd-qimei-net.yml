@@ -1,0 +1,102 @@
+name: qd-qimei-net
+on:
+  workflow_dispatch:
+
+jobs:
+  t:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: deps + redroid
+        run: |
+          set +e
+          sudo -S -p '' -S -p '' apt-get update -qq || true
+          sudo -S -p '' -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          # MITM 层: mitmproxy
+          sudo -S -p '' -S -p '' pip3 install -q mitmproxy 2>&1 | tail -1 || echo PIP_MITM_FAIL
+          sudo -S -p '' -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          # v206 教训: 宿主 DNAT 用 -s 172.17.0.0/16 (不要 -i veth+)
+          sudo -S -p '' -S -p '' iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 443 -j DNAT --to-destination 172.17.0.1:8082 2>&1 || echo IPT_FAIL
+          sudo -S -p '' -S -p '' iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 80 -j DNAT --to-destination 172.17.0.1:8082 2>&1 || echo IPT80_FAIL
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          timeout 30 adb -s localhost:5555 root >/dev/null 2>&1; sleep 5
+          exit 0
+
+      - name: mitmproxy + 装 464 + 抓签发原文
+        run: |
+          set +e
+          B=localhost:5555
+          # mitmproxy 监听 8082 全记 flows (mitmdump -w)
+          (mitmdump -w /tmp/qimei_flows.mitm --set block_global=false --set ssl_insecure=true > /tmp/mitm.log 2>&1 &)
+          sleep 3
+          curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/q480.apk"
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 20 adb -s $B shell "mkdir -p /data/data/com.qidian.QDReader/shared_prefs && echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/com.qidian.QDReader/shared_prefs/app_sp.xml"
+          # 容器级信任 mitm CA (redroid 11 root 可写 /system)
+          timeout 30 adb -s $B root >/dev/null 2>&1; sleep 2
+          CACERT=$(ls ~/.mitmproxy/mitmproxy-ca-cert.cer 2>/dev/null)
+          [ -z "$CACERT" ] && { mitmdump --version >/dev/null 2>&1; sleep 2; CACERT=$(ls ~/.mitmproxy/mitmproxy-ca-cert.cer 2>/dev/null); }
+          if [ -n "$CACERT" ]; then
+            HASH=$(openssl x509 -inform PEM -subject_hash_old -in "$CACERT" | head -1)
+            timeout 60 adb -s $B push "$CACERT" "/data/local/tmp/cert.0" >/dev/null 2>&1
+            # redroid 11: remount /system 可写
+            timeout 30 adb -s $B shell "mount -o rw,remount /system 2>/dev/null; cp /data/local/tmp/cert.0 /system/etc/security/cacerts/$HASH.0; chmod 644 /system/etc/security/cacerts/$HASH.0" 2>&1 | tail -1
+          fi
+          timeout 300 adb -s $B logcat -c >/dev/null 2>&1
+          (timeout 260 adb -s $B logcat -v time > /tmp/logcat_qimei.txt 2>&1 &)
+          sleep 2
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          for i in $(seq 1 12); do
+            sleep 12
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            for ID in btnAgree tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
+            done
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/com.qidian.QDReader/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            echo "  t=$((i*12))s MMKV=${SZ}B"
+            [ -n "$SZ" ] && [ "$SZ" -gt 500 ] && break
+          done
+          sleep 25
+          echo "########## OKR_OStar_INIT 日志（App 真实 QIMEI）##########"
+          grep -aE 'OKR_OStar_INIT|getQIMEI|qimei16|qimei36|o16=|o36=' /tmp/logcat_qimei.txt | head -25
+          echo
+          echo "########## MMKV 里的 QIMEI ##########"
+          timeout 60 adb -s $B shell "cat /data/data/com.qidian.QDReader/files/mmkv/pref_utils" > /tmp/mmkv.bin 2>/dev/null
+          strings /tmp/mmkv.bin | grep -oE 'O_STAR_Q_IMEI_1?3?6?[0-9a-f]{16,40}' | head -4
+          echo
+          echo "########## mitm flows 概览 ##########"
+          ls -la /tmp/qimei_flows.mitm 2>/dev/null
+          grep -cE "CONNECT|<< <<" /tmp/mitm.log 2>/dev/null
+          # 用 mitmdump 读回 flows 里 beacon/ostar/trace 域的请求
+          mitmdump -nr /tmp/qimei_flows.mitm --set flow_detail=0 -s /dev/stdin << 'PYEOF' 2>/dev/null | head -40
+          def response(flow):
+              u = flow.request.pretty_url
+              if any(d in u for d in ('beacon.qq.com','otheve','othstr','trace.qq.com','mdt.qq.com','ola.star','ostar')):
+                  print(f"[QIMEI-NET] {flow.request.method} {u}")
+                  print(f"  req-body[:400]: {flow.request.get_text(strict=False)[:400]!r}")
+                  print(f"  resp-body[:400]: {flow.response.get_text(strict=False)[:400]!r}")
+          PYEOF
+          exit 0
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qimei-net
+          path: |
+            /tmp/logcat_qimei.txt
+            /tmp/mmkv.bin
+            /tmp/qimei_flows.mitm
+            /tmp/mitm.log
+          if-no-files-found: warn
