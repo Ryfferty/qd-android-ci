@@ -1,0 +1,55 @@
+name: qd-nb-dump
+# NB桥dump: unidbg跑NativeBinding.d()(解密JS)+s()(执行) — x86_64 runner纯JVM
+# 素材从本仓release nb-assets-v1拉取
+on:
+  workflow_dispatch:
+jobs:
+  nb:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: 拉素材包
+        run: |
+          curl -sSL --max-time 600 -o nbpack.tar.gz \
+            "https://github.com/Ryfferty/qd-android-ci/releases/download/nb-assets-v1/nbpack.tar.gz"
+          tar -xzf nbpack.tar.gz
+          ls unidbg-097/ | head -5
+          ls native_libs/armeabi-v7a/ | head -5
+      - name: 编译FockDec
+        run: |
+          cd unidbg-097
+          # classpath: classes+jars
+          CP="unidbg-android-0.9.7.jar:backend-unicorn2-classes:$(ls ../deps/*.jar | tr '\n' ':')"
+          mkdir -p target/classes
+          javac -encoding UTF-8 -cp "$CP" -d target/classes FockDec.java FockApis.java 2>&1 | head -5 || true
+          ls target/classes/*.class 2>/dev/null | head -3
+          echo "CP=$CP" > /tmp/cp.txt
+      - name: 跑NB桥(d解密+s执行)
+        run: |
+          cd unidbg-097
+          CP=$(cat /tmp/cp.txt | sed 's/CP=//'):target/classes
+          # 跑FockDec — d()解密+s()执行,20分钟超时, 8G内存(runner有16G)
+          timeout 1200 java -Xmx8g -cp "$CP" FockDec 2>&1 | tail -80
+      - name: 收集产物
+        if: always()
+        run: |
+          mkdir -p /tmp/nbout
+          # 任何解密产物/js dump都收集
+          find unidbg-097 /tmp /home/runner -name "*.js" -newer nbpack.tar.gz 2>/dev/null | head -5
+          cp unidbg-097/target/classes/FockDec.class /tmp/nbout/ 2>/dev/null
+          # FockDec如果dump了文件, 在这里捞
+          ls -la /tmp/nbout/
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nb-dump-out
+          path: |
+            /tmp/nbout/
+          if-no-files-found: warn
+          retention-days: 7
