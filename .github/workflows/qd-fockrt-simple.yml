@@ -1,0 +1,92 @@
+name: qd-fockrt-simple
+# 最简版: 无mitmproxy/无CA/无DNAT — redroid默认网络 + tcpdump抓元数据 + logcat全程
+# App登录态启动 → fockrt自然上报 → DNS/TCP元数据记录"何时连了哪个域"
+on:
+  workflow_dispatch:
+jobs:
+  simple:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: boot redroid + install 464
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq android-tools-adb curl tcpdump || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420
+          sleep 15; adb start-server >/dev/null 2>&1
+          for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=$S"
+          timeout 30 adb -s localhost:5555 root >/dev/null 2>&1; sleep 3
+          curl -sSL --max-time 1800 -o qd.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk" || true
+          timeout 300 adb -s localhost:5555 install -r -d --no-streaming qd.apk 2>&1 | tail -1
+          # 隐私同意+登录态注入(alk)
+          PKG=com.qidian.QDReader
+          timeout 20 adb -s localhost:5555 shell "mkdir -p /data/data/$PKG/shared_prefs && echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/$PKG/shared_prefs/app_sp.xml"
+          timeout 20 adb -s localhost:5555 shell "cat > /data/data/$PKG/shared_prefs/ylogin_share_date.xml << 'XML'
+          <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+          <map>
+              <string name=\"alk\">taIUC2QIzEzs</string>
+              <string name=\"guid\">900074373424</string>
+              <long name=\"alkts\" value=\"1791300000000\" />
+          </map>
+          XML"
+          echo "登录态已注入"
+      - name: "run: tcpdump + logcat + App启动"
+        run: |
+          set +e
+          B=localhost:5555
+          PKG=com.qidian.QDReader
+          # tcpdump抓容器网络元数据(宿主侧,docker bridge)
+          DOCKERIP=$(sudo -S -p '' docker inspect redroid --format '{{.NetworkSettings.IPAddress}}' 2>/dev/null)
+          echo "容器IP: $DOCKERIP"
+          [ -n "$DOCKERIP" ] && (sudo -S -p '' tcpdump -i any host $DOCKERIP -w /tmp/dump.pcap > /dev/null 2>&1 &)
+          # logcat全程
+          timeout 300 adb -s $B logcat -c >/dev/null 2>&1
+          (timeout 280 adb -s $B logcat -v time > /tmp/logcat_full.txt 2>&1 &)
+          sleep 2
+          # 启动App
+          timeout 20 adb -s $B shell "am start -n $PKG/.ui.activity.SplashActivity" >/dev/null 2>&1
+          # 等App充分跑(fockrt初始化+登录+上报)
+          for i in $(seq 1 10); do
+            sleep 25
+            echo "  t=$((i*25))s app=$(adb -s $B shell pidof $PKG 2>/dev/null | tr -d '\r')"
+          done
+          # 点可能的弹窗
+          for i in 1 2 3; do
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            timeout 20 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            for ID in btnAgree tvSkip; do
+              XY=$(python3 tap_id.py /tmp/u.xml $ID 2>/dev/null | head -1)
+              [ -n "$XY" ] && { timeout 10 adb -s $B shell "input tap $XY"; sleep 3; }
+            done
+          done
+          sleep 10
+          sudo -S -p '' pkill tcpdump 2>/dev/null
+          echo "===== 结果 ====="
+          echo "logcat行数: $(wc -l < /tmp/logcat_full.txt)"
+          echo "pcap: $(ls -la /tmp/dump.pcap 2>/dev/null)"
+          echo "--- fockrt痕迹(logcat) ---"
+          grep -aiE "fockrt|FockRT|yuewen" /tmp/logcat_full.txt | head -10
+          echo "--- 网络元数据(DNS/连接) ---"
+          [ -f /tmp/dump.pcap ] && sudo -S -p '' tcpdump -nr /tmp/dump.pcap 2>/dev/null | grep -aE "443|80" | head -20
+          echo "--- App存活时长 ---"
+          grep -a "pidof\|app=" /tmp/logcat_full.txt 2>/dev/null | tail -3
+          adb -s $B shell "pidof $PKG" 2>/dev/null | tr -d '\r' && echo "App还活着" || echo "App已死"
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frt-simple
+          path: |
+            /tmp/logcat_full.txt
+            /tmp/dump.pcap
+          if-no-files-found: warn
