@@ -11,6 +11,15 @@ on:
       secs:
         description: '采集秒数'
         default: '240'
+      baseline:
+        description: '干净对照(不设wrap不注入, 看App裸跑redroid生死 — 分离反注入vs反虚拟化)'
+        default: 'false'
+      spoof:
+        description: '属性伪装(小米Mi11/venus指纹+release-keys) — 反虚拟化对抗'
+        default: 'false'
+      customimg:
+        description: '自定义redroid镜像(docker build烙属性: boot.hardware/debuggable也改) — 反虚拟化终极'
+        default: 'false'
       apk_url:
         default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk'
 
@@ -28,13 +37,92 @@ jobs:
           pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -2
           frida --version
 
+      - name: 构建伪装redroid镜像(docker cp+commit, 宿主sed不碰容器shell)
+        if: ${{ inputs.customimg == 'true' }}
+        run: |
+          set +e
+          sudo docker rm -f rdtmp 2>/dev/null || true
+          sudo docker create --name rdtmp redroid/redroid:11.0.0-latest >/dev/null 2>&1 || { echo CREATE_FAIL; exit 0; }
+          mkdir -p /tmp/qdprops && sudo chmod 777 /tmp/qdprops
+          for f in /system/build.prop /system/product/build.prop /system/system_ext/build.prop /vendor/build.prop /vendor/odm/etc/build.prop /odm/etc/build.prop /product/build.prop /system_ext/build.prop /system/etc/prop.default; do
+            n=$(echo $f | tr '/' '_')
+            sudo docker cp rdtmp:$f /tmp/qdprops/$n 2>/dev/null || echo "不存在: $f"
+          done
+          sudo chmod -R a+rwX /tmp/qdprops
+          echo "===== 拷出的prop文件 ====="
+          ls -la /tmp/qdprops/
+          echo "===== ro.debuggable / ro.hardware 来源诊断 ====="
+          grep -l 'ro.debuggable' /tmp/qdprops/* 2>/dev/null
+          grep -l 'ro.hardware' /tmp/qdprops/* 2>/dev/null
+          for f in /tmp/qdprops/*; do
+            [ -f "$f" ] || continue
+            sed -i \
+              -e "s|^ro.product.model=.*|ro.product.model=M2011K2C|" \
+              -e "s|^ro.product.brand=.*|ro.product.brand=xiaomi|" \
+              -e "s|^ro.product.name=.*|ro.product.name=venus|" \
+              -e "s|^ro.product.device=.*|ro.product.device=venus|" \
+              -e "s|^ro.product.manufacturer=.*|ro.product.manufacturer=Xiaomi|" \
+              -e "s|^ro.product.marketname=.*|ro.product.marketname=Mi 11|" \
+              -e "s|^ro.build.fingerprint=.*|ro.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
+              -e "s|^ro.bootimage.build.fingerprint=.*|ro.bootimage.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
+              -e "s|^ro.build.tags=.*|ro.build.tags=release-keys|" \
+              -e "s|^ro.build.type=.*|ro.build.type=user|" \
+              -e "s|^ro.build.id=.*|ro.build.id=RKQ1.200826.002|" \
+              -e "s|^ro.build.version.incremental=.*|ro.build.version.incremental=V12.5.6.0.RKBCNXM|" \
+              -e "s|^ro.build.user=.*|ro.build.user=builder|" \
+              -e "s|^ro.build.host=.*|ro.build.host=pangu-build-component-4189|" \
+              -e "s|^ro.build.flavor=.*|ro.build.flavor=venus-user|" \
+              -e "s|^ro.debuggable=.*|ro.debuggable=0|" \
+              -e "s|^ro.hardware=.*|ro.hardware=qcom|" \
+              -e "s|^dalvik.vm.isa.arm64.variant=.*|dalvik.vm.isa.arm64.variant=cortex-x1|" \
+              -e "s|^dalvik.vm.isa.arm.variant=.*|dalvik.vm.isa.arm.variant=cortex-a76|" \
+              -e "s|^ro.bionic.cpu_variant=.*|ro.bionic.cpu_variant=cortex-x1|" \
+              -e "s|^ro.bionic.2nd_cpu_variant=.*|ro.bionic.2nd_cpu_variant=cortex-a76|" \
+              -e "s|redroid11_arm64|M2011K2C|g" \
+              -e "s|redroid_arm64|venus|g" \
+              "$f"
+          done
+          echo "===== 改后关键值 ====="
+          grep -hE '^ro\.(product\.(model|brand)|build\.(type|tags|fingerprint)|debuggable|hardware)=' /tmp/qdprops/* 2>/dev/null | sort -u | head -12
+          # 拷回并commit
+          for f in /tmp/qdprops/*; do
+            n=$(basename $f)
+            orig=$(echo $n | sed 's/_/\//1; s/_/\//g' )
+            : # 路径还原不可靠 — 直接按映射表拷回
+          done
+          for pair in \
+            "_system_build.prop:/system/build.prop" \
+            "_system_product_build.prop:/system/product/build.prop" \
+            "_system_system_ext_build.prop:/system/system_ext/build.prop" \
+            "_vendor_build.prop:/vendor/build.prop" \
+            "_vendor_odm_etc_build.prop:/vendor/odm/etc/build.prop" \
+            "_odm_etc_build.prop:/odm/etc/build.prop" \
+            "_product_build.prop:/product/build.prop" \
+            "_system_ext_build.prop:/system_ext/build.prop" \
+            "_system_etc_prop.default:/system/etc/prop.default"; do
+            k=${pair%%:*}; v=${pair#*:}
+            [ -f "/tmp/qdprops/$k" ] && sudo docker cp /tmp/qdprops/$k rdtmp:$v 2>/dev/null && echo "回写: $v"
+          done
+          sudo docker commit rdtmp qd-redroid-spoof:11 >/dev/null 2>&1 && echo COMMIT_OK || echo COMMIT_FAIL
+          sudo docker rm -f rdtmp >/dev/null 2>&1
+          sudo docker images | grep qd-redroid-spoof || echo NO_IMAGE
+
       - name: Start redroid
         run: |
           sudo docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          IMG="redroid/redroid:11.0.0-latest"
+          if [ "${{ inputs.customimg }}" = "true" ] && [ -n "$(sudo docker images -q qd-redroid-spoof:11 2>/dev/null)" ]; then
+            IMG="qd-redroid-spoof:11"
+            echo "★使用伪装镜像"
+          else
+            echo "回退标准镜像(customimg未产出)"
+          fi
+          echo "使用镜像: $IMG"
           sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
-            redroid/redroid:11.0.0-latest \
+            $IMG \
+            androidboot.hardware=qcom \
             androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
             androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
             androidboot.redroid_adb=5555 || echo DOCKER_FAILED
@@ -47,6 +135,68 @@ jobs:
             sleep 8
           done
           adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+
+      - name: 属性伪装(Mi11指纹sed进build.prop并重启redroid复验)
+        if: ${{ inputs.spoof == 'true' }}
+        run: |
+          set +e
+          echo "===== 注入Mi11(venus)身份到各分区build.prop ====="
+          sudo docker exec redroid sh -c '
+          echo "=== 动态找属性来源文件:"
+          FL=$(grep -rl --include="*.prop" "redroid11_arm64" / 2>/dev/null | head -20)
+          echo "$FL"
+          for f in $FL; do
+            sed -i -e "s|redroid11_arm64|M2011K2C|g" -e "s|redroid_arm64|venus|g" -e "s|^ro.product.brand=.*|ro.product.brand=xiaomi|" "$f"
+            echo "改了: $f"
+          done
+          for f in $(grep -rl --include="*.prop" "^ro.debuggable=1" / 2>/dev/null | head -10); do
+            sed -i "s|^ro.debuggable=1|ro.debuggable=0|" "$f"; echo "改debuggable: $f"
+          done
+          for f in $(grep -rl --include="*.prop" "^ro.hardware=redroid" / 2>/dev/null | head -10); do
+            sed -i "s|^ro.hardware=redroid|ro.hardware=qcom|" "$f"; echo "改hardware: $f"
+          done
+          for f in /system/build.prop /vendor/build.prop /odm/etc/build.prop /product/build.prop /system_ext/build.prop /default.prop /prop.default; do
+            [ -f "$f" ] || continue
+            sed -i \
+              -e "s|^ro.product.model=.*|ro.product.model=M2011K2C|" \
+              -e "s|^ro.product.brand=.*|ro.product.brand=xiaomi|" \
+              -e "s|^ro.product.name=.*|ro.product.name=venus|" \
+              -e "s|^ro.product.device=.*|ro.product.device=venus|" \
+              -e "s|^ro.product.manufacturer=.*|ro.product.manufacturer=Xiaomi|" \
+              -e "s|^ro.product.marketname=.*|ro.product.marketname=Mi 11|" \
+              -e "s|^ro.build.fingerprint=.*|ro.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
+              -e "s|^ro.bootimage.build.fingerprint=.*|ro.bootimage.build.fingerprint=xiaomi/venus/venus:11/RKQ1.200826.002/V12.5.6.0.RKBCNXM:user/release-keys|" \
+              -e "s|^ro.build.tags=.*|ro.build.tags=release-keys|" \
+              -e "s|^ro.build.type=.*|ro.build.type=user|" \
+              -e "s|^ro.build.id=.*|ro.build.id=RKQ1.200826.002|" \
+              -e "s|^ro.build.version.incremental=.*|ro.build.version.incremental=V12.5.6.0.RKBCNXM|" \
+              -e "s|^ro.build.user=.*|ro.build.user=builder|" \
+              -e "s|^ro.build.host=.*|ro.build.host=pangu-build-component-4189|" \
+              -e "s|^ro.build.flavor=.*|ro.build.flavor=venus-user|" \
+              -e "s|^ro.debuggable=.*|ro.debuggable=0|" \
+              -e "s|^dalvik.vm.isa.arm64.variant=.*|dalvik.vm.isa.arm64.variant=cortex-x1|" \
+              -e "s|^dalvik.vm.isa.arm.variant=.*|dalvik.vm.isa.arm.variant=cortex-a76|" \
+              -e "s|^ro.bionic.cpu_variant=.*|ro.bionic.cpu_variant=cortex-x1|" \
+              -e "s|^ro.bionic.2nd_cpu_variant=.*|ro.bionic.2nd_cpu_variant=cortex-a76|" \
+              "$f" 2>&1 || echo "sed失败: $f"
+            echo "=== $f 改后关键行:"
+            grep -E "^ro.(product.model|build.fingerprint|build.type|debuggable)" "$f" 2>/dev/null || echo "(无匹配行)"
+          done
+          echo "=== 全根搜redroid指纹来源:"
+          grep -rl "redroid_arm64" /system/build.prop /vendor/build.prop /product/build.prop /system_ext/build.prop /odm/etc/build.prop /default.prop 2>/dev/null
+          '
+          echo "===== 重启redroid使属性生效 ====="
+          sudo docker restart redroid
+          adb disconnect localhost:5555 >/dev/null 2>&1 || true
+          sleep 20
+          for i in $(seq 1 30); do
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && echo "REBOOT_OK try $i" && break
+            sleep 8
+          done
+          echo "===== 复验伪装效果 ====="
+          timeout 20 adb -s localhost:5555 shell "getprop ro.build.fingerprint; getprop ro.product.model; getprop ro.build.tags; getprop ro.build.type; getprop ro.debuggable; getprop ro.boot.hardware; getprop ro.hardware" 2>/dev/null
 
       - name: 下载 APK + frida-server(改名qdsvc隐身)
         run: |
@@ -157,6 +307,8 @@ jobs:
           timeout 30 $A shell "am force-stop com.qidian.QDReader" >/dev/null 2>&1
           sleep 2
           # ★wrap: 下一次启动走我们的wrapper → LD_PRELOAD gadget → on_load=wait挂起等连接
+          WRAPV=""
+          if [ "${{ inputs.baseline }}" != "true" ]; then
           for i in 1 2 3 4 5; do
             timeout 30 $A shell setprop wrap.com.qidian.QDReader /data/local/tmp/wrap.sh 2>&1 | head -1 || true
             WRAPV=$(timeout 15 $A shell getprop wrap.com.qidian.QDReader | tr -d '\r')
@@ -164,7 +316,8 @@ jobs:
             echo "setprop try$i 失败, 等3s重试"
             sleep 3
           done
-          echo "wrap属性: [$WRAPV]"
+          fi
+          echo "wrap属性: [$WRAPV] (baseline=${{ inputs.baseline }})"
           # 转发gadget端口
           timeout 30 $A forward tcp:47822 tcp:47822 || true
           # 正常am start(不走frida spawn → 无forceStopPackage竞速)
@@ -178,6 +331,31 @@ jobs:
         run: |
           set +e
           SECS='${{ inputs.secs }}'
+          # ★/proc取证poller(后台): 每1s记录app pid的Sig位图/Seccomp/cmdline — 静默死亡时看execve与handler位
+          export SECS
+          nohup python3 - <<'PP' >/dev/null 2>&1 &
+          import subprocess, time, os
+          secs = int(os.environ.get('SECS', '240')) - 5
+          def sh(c):
+              try: return subprocess.run(['adb', '-s', 'localhost:5555', 'shell', c],
+                                         capture_output=True, text=True, timeout=10).stdout
+              except Exception: return ''
+          last = None
+          t0 = time.time()
+          while time.time() - t0 < secs:
+              pid = sh('pidof com.qidian.QDReader').strip()
+              if pid != last:
+                  open('out/proc_watch.txt', 'a').write(f'--- t+{int(time.time()-t0)}s pid[{pid}] (was[{last}])\n')
+                  last = pid
+              if pid and pid.replace(' ', '').isdigit():
+                  p0 = pid.split()[0].strip()
+                  st = sh('grep -E "Seccomp|SigIgn|SigCgt|Threads|TracerPid" /proc/{0}/status'.format(p0))
+                  cm = sh('cat /proc/{0}/cmdline | tr "\0" " "'.format(p0)).strip()
+                  if st.strip():
+                      open('out/proc_watch.txt', 'a').write(f't+{int(time.time()-t0)} {st.strip()} cmdline[{cm[:100]}]\n')
+              time.sleep(1)
+          PP
+          echo "poller已启动"
           echo "等App跑 $SECS 秒(gadget自载hook.js, 捕获写cap.jsonl)..."
           sleep $SECS
           echo "===== 拉取文件捕获 ====="
@@ -188,6 +366,8 @@ jobs:
           head -30 out/cap_file.jsonl 2>/dev/null || true
           echo "===== 取证 ====="
           timeout 30 adb -s localhost:5555 shell "ps -A -o PID,NAME | grep qidian" || echo "进程已死"
+          timeout 30 adb -s localhost:5555 shell getprop > out/getprop.txt 2>/dev/null || true
+          timeout 20 adb -s localhost:5555 shell "getprop ro.build.fingerprint; getprop ro.product.model; getprop ro.product.brand; getprop ro.hardware; getprop ro.boot.hardware" 2>/dev/null || true
           timeout 20 adb -s localhost:5555 exec-out screencap -p > out/after_capture.png 2>/dev/null || true
           timeout 40 adb -s localhost:5555 shell "logcat -d -b crash -t 200" > out/logcat_crash.txt 2>/dev/null || true
           timeout 40 adb -s localhost:5555 shell "logcat -d -t 2000" > out/logcat_full_tail.txt 2>/dev/null || true

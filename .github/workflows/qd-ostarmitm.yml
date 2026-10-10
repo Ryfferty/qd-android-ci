@@ -1,0 +1,155 @@
+name: qd-ostarmitm
+
+# MITM抓首启REGISTER v2: iptables透明代理 (10-04深夜 ZCode)
+# 零注入. v1教训: 全局http_proxy被app主栈(cronet/自定义socket)绕过, 只有HTTPDNS走了代理.
+# v2: 宿主iptables把docker0进来的80/443全重定向到mitmproxy透明模式 + 封UDP443(QUIC).
+on:
+  workflow_dispatch:
+    inputs:
+      secs:
+        description: '首启后采集秒数'
+        default: '240'
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/q480.apk'
+
+jobs:
+  cap:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - name: Setup adb
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+          pip install -q mitmproxy 2>&1 | tail -1
+          mitmdump --version
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 30); do
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 8
+          done
+
+      - name: 下载APK
+        run: |
+          set +e
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/qd.apk "${{ inputs.apk_url }}" || true
+            SZ=$(stat -c%s /tmp/qd.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"
+            [ "$SZ" -gt 10000000 ] && break
+            sleep 15
+          done
+
+      - name: 装包 + root + 系统证书 + 全局代理
+        run: |
+          set +e
+          A="adb -s localhost:5555"
+          for i in 1 2 3; do
+            timeout 300 $A install -r -t /tmp/qd.apk 2>&1 | tail -2
+            if timeout 30 $A shell pm list packages 2>/dev/null | tr -d '\r' | grep -q qidian; then echo "INSTALL_OK try $i"; break; fi
+            sleep 8; timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          done
+          timeout 30 $A root 2>&1 | tail -1
+          sleep 6
+          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          # mitmproxy CA → 系统证书(rooted redroid可写/system)
+          ~/.local/bin/mitmdump --set confdir=/tmp/mitm -p 8080 >/dev/null 2>&1 &
+          MPID=$!
+          sleep 6
+          kill $MPID 2>/dev/null || true
+          ls -la /tmp/mitm/
+          H=$($A shell getprop ro.build.version.sdk | tr -d '\r')
+          echo "SDK=$H (系统证书需hash命名)"
+          CERTSUB=$(openssl x509 -inform PEM -in /tmp/mitm/mitmproxy-ca.pem -noout -subject_hash_old)
+          echo "hash=$CERTSUB"
+          $A push /tmp/mitm/mitmproxy-ca.pem /data/local/tmp/cert.pem
+          $A shell "mount -o remount,rw / 2>/dev/null; mkdir -p /system/etc/security/cacerts; cp /data/local/tmp/cert.pem /system/etc/security/cacerts/$CERTSUB.0; chmod 644 /system/etc/security/cacerts/$CERTSUB.0; ls -la /system/etc/security/cacerts/$CERTSUB.0"
+          # 全局代理 → 宿主docker网关(bridge网络下网关可达宿主)
+          GATEWAY=$($A shell ip route 2>/dev/null | tr -d '\r' | awk '/^default/{print $3}' | head -1)
+          [ -z "$GATEWAY" ] && GATEWAY="172.17.0.1"
+          echo "GATEWAY=$GATEWAY"
+          $A shell "settings put global http_proxy $GATEWAY:8080"
+          echo "PROXY_SET=$($A shell settings get global http_proxy | tr -d '\r')"
+
+      - name: 启动mitmproxy(记录模式) + 首启App
+        run: |
+          set +e
+          mkdir -p out
+          # mitmproxy: dump全部流量到flows+明文log
+          # mitm常规代理模式
+          nohup $(which mitmdump) --listen-host 0.0.0.0 -p 8080 --set confdir=/tmp/mitm --set flow_detail=2 -w /tmp/all.flows > /tmp/mitm.log 2>&1 &
+          sleep 6
+          pgrep -f mitmdump >/dev/null && echo "MITMDUMP_ALIVE" || echo "MITMDUMP_NOT_RUNNING"
+          head -8 /tmp/mitm.log
+          GATEWAY=$(adb -s localhost:5555 shell ip route 2>/dev/null | tr -d '\r' | awk '/^default/{print $3}' | head -1)
+          timeout 3 bash -c "echo > /dev/tcp/$GATEWAY/8080" 2>/dev/null && echo "PROXY_PORT_OK" || echo "PROXY_PORT_FAIL"
+          A="adb -s localhost:5555"
+          ACT=$($A shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          echo "启动: $ACT"
+          $A shell "am start -n $ACT" 2>&1 | tail -1
+          sleep 22
+          # ★点掉隐私同意弹窗(否则SDK全不初始化, REGISTER不发起)
+          echo IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwppbXBvcnQgcmUsIHN5cwp0cnk6IHQgPSBvcGVuKHN5cy5hcmd2WzFdLCBlbmNvZGluZz0ndXRmLTgnLCBlcnJvcnM9J3JlcGxhY2UnKS5yZWFkKCkKZXhjZXB0IEV4Y2VwdGlvbjogc3lzLmV4aXQoMCkKZm9yIHBhdCBpbiBbcidyZXNvdXJjZS1pZD0iY29tXC5xaWRpYW5cLlFEUmVhZGVyOmlkL2J0bkFncmVlIltePl0qYm91bmRzPSJcWyhcZCspLChcZCspXF1cWyhcZCspLChcZCspXF0iJywKICAgICAgICAgICAgcid0ZXh0PSLlkIzmhI/lubbnu6fnu60iW14+XSpib3VuZHM9IlxbKFxkKyksKFxkKylcXVxbKFxkKyksKFxkKylcXSInXToKICAgIG0gPSByZS5zZWFyY2gocGF0LCB0KQogICAgaWYgbToKICAgICAgICB4MSx5MSx4Mix5MiA9IG1hcChpbnQsIG0uZ3JvdXBzKCkpCiAgICAgICAgcHJpbnQoJyVkICVkJyAlICgoeDEreDIpLy8yLCAoeTEreTIpLy8yKSk7IHN5cy5leGl0KDApCg== | base64 -d > /tmp/tapc.py
+          for attempt in 1 2 3 4 5 6; do
+            $A shell "uiautomator dump /sdcard/u.xml >/dev/null 2>&1"
+            $A pull /sdcard/u.xml /tmp/u.xml >/dev/null 2>&1
+            XY=$(python3 /tmp/tapc.py /tmp/u.xml)
+            echo "  consent attempt=$attempt target=[$XY]"
+            if [ -n "$XY" ]; then
+              $A shell "input tap $XY"
+              sleep 8
+            else
+              echo "  (无按钮, 已通过?)"
+              break
+            fi
+          done
+          sleep ${{ inputs.secs }}
+          # 抓mitm日志里的关键请求
+          echo "===== ostar相关请求 ====="
+          grep -n -i -A 30 'ostar' /tmp/mitm.log | head -120 > out/ostar_flow.txt || echo "mitm.log无ostar" | tee out/ostar_flow.txt
+          cp /tmp/mitm.log out/mitm.log
+          cp /tmp/all.flows out/all.flows 2>/dev/null || true
+          # 存储清单(注册成功的证据)
+          $A shell "ls -la /data/data/com.qidian.QDReader/shared_prefs/ 2>/dev/null" | tr -d '\r' > out/sp_list.txt
+          $A shell "cat /data/data/com.qidian.QDReader/shared_prefs/QV1*.xml 2>/dev/null" | tr -d '\r' | sed 's/>\([^<]*\(tn\|token\)[^<]*\)</>***</g' > out/qv1.xml || true
+          $A shell "ls -laR /data/data/com.qidian.QDReader/files/ 2>/dev/null" | tr -d '\r' > out/files_list.txt
+          echo "===== QV1存储(ostar) ====="
+          cat out/qv1.xml | head -20
+          # ★logcat抓OStarImpl的o16/o36明文日志
+          $A shell "logcat -d 2>/dev/null" | tr -d '\r' | grep -iE 'OStarImpl|o16=|qimei|QV1' | head -30 > out/logcat_ostar.txt || true
+          echo "===== logcat ostar ====="
+          cat out/logcat_ostar.txt
+          # 全量shared_prefs+mmkv dump
+          $A shell "ls /data/data/com.qidian.QDReader/shared_prefs/" | tr -d '\r' > out/sp_all.txt
+          $A shell "cat /data/data/com.qidian.QDReader/shared_prefs/qm_global_sp.xml /data/data/com.qidian.QDReader/shared_prefs/QV1*.xml /data/data/com.qidian.QDReader/shared_prefs/new_b_log*.xml /data/data/com.qidian.QDReader/shared_prefs/com.qidian.QDReader.xml 2>/dev/null" | tr -d '\r' | sed -E 's/(tn|token|ywkey)[^<]*/\1***/g' > out/sp_key_files.txt
+          wc -c out/sp_key_files.txt
+          $A shell "ls -la /data/data/com.qidian.QDReader/files/mmkv/ 2>/dev/null" | tr -d '\r' > out/mmkv_list.txt
+          echo "===== sp清单 ====="
+          cat out/sp_all.txt
+          echo "===== mitm log 尾部 ====="
+          tail -40 /tmp/mitm.log
+          wc -l /tmp/mitm.log
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ostarmitm-capture
+          path: out/
+          if-no-files-found: warn
