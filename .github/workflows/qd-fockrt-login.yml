@@ -31,7 +31,7 @@ jobs:
           sudo -S -p '' iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 443 -j DNAT --to-destination 172.17.0.1:8082 2>&1 || echo IPT_FAIL
           sudo -S -p '' iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 80 -j DNAT --to-destination 172.17.0.1:8082 2>&1 || echo IPT80_FAIL
           # host网络模式的mitmproxy需要容器可达 — 直接宿主跑
-          (/tmp/mitmdump -w /tmp/fr_flows.mitm --set block_global=false --set ssl_insecure=true > /tmp/mitm.log 2>&1 &)
+          (python3 -m mitmproxy.tools.main -w /tmp/fr_flows.mitm --set block_global=false --set ssl_insecure=true > /tmp/mitm.log 2>&1 &)
           sleep 3
           adb start-server >/dev/null 2>&1; sleep 5
           for i in $(seq 1 30); do adb connect localhost:5555 >/dev/null 2>&1; S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
@@ -89,7 +89,7 @@ jobs:
           ls -la /tmp/fr_flows.mitm 2>/dev/null
           grep -c "fockrt" /tmp/mitm.log 2>/dev/null || echo 0
           # 解flows: 全fockrt请求(重点POST!)
-          /tmp/mitmdump -nr /tmp/fr_flows.mitm --set flow_detail=0 -s /dev/stdin << 'PYEOF' 2>/dev/null | head -60
+          python3 -m mitmproxy.tools.main -nr /tmp/fr_flows.mitm --set flow_detail=0 -s /dev/stdin << 'PYEOF' 2>/dev/null | head -60
           def request(flow):
               u = flow.request.pretty_url
               if 'fockrt' in u:
