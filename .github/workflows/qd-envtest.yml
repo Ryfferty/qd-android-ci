@@ -12,18 +12,17 @@ jobs:
         run: |
           # arm64 runner无官方mitmproxy二进制 → pip --user装(与python3同环境)
           pip3 install --user -q mitmproxy 2>&1 | tail -1 || echo T1_PIP_FAIL
-          python3 -m mitmproxy --version 2>&1 | head -1
-          python3 -c "import mitmproxy; print('mitmproxy可导入')" && echo "★T1_PASS" || echo "★T1_FAIL"
+          $HOME/.local/bin/mitmdump --version 2>&1 | head -2 && echo "★T1_PASS" || echo "★T1_FAIL"
       - name: "T2: mitmdump实际抓包"
         run: |
-          (python3 -m mitmproxy.tools.main -w /tmp/test.mitm --set block_global=false -p 8082 > /tmp/mitm2.log 2>&1 &)
+          ($HOME/.local/bin/mitmdump -w /tmp/test.mitm --set block_global=false -p 8082 > /tmp/mitm2.log 2>&1 &)
           sleep 5
           # 本机自测: curl过mitm代理访问github
           curl -sS --proxy http://127.0.0.1:8082 -k --max-time 20 https://fockrt.yuewen.com/files?t=1 -o /dev/null -w "%{http_code}" || echo T2_CURL_FAIL
           sleep 3
           pkill -f mitmdump 2>/dev/null
           # 验证: mitm是否记录了流量
-          python3 -m mitmproxy.tools.main -nr /tmp/test.mitm --set flow_detail=1 2>/dev/null | grep -E "fockrt|GET|CONNECT" | head -5
+          $HOME/.local/bin/mitmdump -nr /tmp/test.mitm --set flow_detail=1 2>/dev/null | grep -E "fockrt|GET|CONNECT" | head -5
           [ -s /tmp/test.mitm ] && echo "★T2_PASS(流量已记录)" || echo "★T2_FAIL"
       - name: "T3: redroid启动"
         run: |
@@ -43,7 +42,7 @@ jobs:
           CACERT=$(ls ~/.mitmproxy/mitmproxy-ca-cert.cer 2>/dev/null)
           if [ -z "$CACERT" ]; then
             # mitmdump跑一次生成CA
-            (python3 -m mitmproxy.tools.main -p 8083 >/dev/null 2>&1 &); sleep 4; pkill -f mitmdump
+            ($HOME/.local/bin/mitmdump -p 8083 >/dev/null 2>&1 &); sleep 4; pkill -f mitmdump
             CACERT=$(ls ~/.mitmproxy/mitmproxy-ca-cert.cer 2>/dev/null)
           fi
           echo "CA: $CACERT"
