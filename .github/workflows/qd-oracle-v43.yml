@@ -1,4 +1,4 @@
-name: qd-oracle-v16
+name: qd-oracle-v43
 # v9: 池子因果实验 (addKeypool 换池 → dk 变不变) + App 池子原文 + 双 blob 对照
 on:
   workflow_dispatch:
@@ -84,20 +84,28 @@ jobs:
           sleep 8
           timeout 20 adb -s $B forward tcp:27042 tcp:27042
           pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          timeout 8 adb -s $B shell logcat -c >/dev/null 2>&1
+          ( timeout 200 adb -s $B logcat -v brief > /tmp/logcat43.txt 2>&1 ) &
+          LCAT=$!
+          sleep 3
           P=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
           echo "attach PID=$P"
-          ( sleep 110 ) | timeout 120 frida -H 127.0.0.1:27042 -p "$P" -l ci/hook_v56.js > /tmp/oracle16.txt 2>&1
+          ( sleep 165 ) | timeout 180 frida -H 127.0.0.1:27042 -p "$P" -l ci/hook_v82.js > /tmp/oracle43.txt 2>&1
+          sleep 5; kill $LCAT 2>/dev/null
+          echo "===== logcat sha1key / QDReader_Jni ====="
+          grep -aiE 'sha1key|sha1id|bookid:|sign is|QDReader_Jni' /tmp/logcat43.txt | head -40
           echo "===== 全消息 ====="
-          python3 -c "import re;t=open('/tmp/oracle16.txt',errors='replace').read();[print(m[:320]) for m in re.findall(r\"'m': '((?:[^\']|\'\')*)'\", t)]" | head -90
+          python3 -c "import re;t=open('/tmp/oracle43.txt',errors='replace').read();[print(m[:320]) for m in re.findall(r\"'m': '((?:[^\']|\'\')*)'\", t)]" | head -90
           exit 0
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: oracle16
+          name: oracle43
           path: |
-            /tmp/oracle16.txt
+            /tmp/oracle43.txt
+            /tmp/logcat43.txt
             /tmp/v16_params.json
             /tmp/dev_pool.xml
           if-no-files-found: warn

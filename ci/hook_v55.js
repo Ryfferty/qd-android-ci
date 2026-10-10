@@ -49,50 +49,43 @@ Java.perform(function(){
     while((rn=ins.read(abuf))>0) bos.write(abuf,0,rn);
     var zipBytes=bos.toByteArray();
     S({m:'② 下载 java len='+zipBytes.length});
-    // ZIP 提取: FileOutputStream 原样落盘 + ZipFile(path) 全 Java 路径 (无 JS 字节转换)
+    // ZIP 提取 (字节现已完整, 常规 ZipInputStream 直解)
     try{
-      var fos=Java.use('java.io.FileOutputStream').$new('/data/local/tmp/ch.zip');
-      fos.write(zipBytes); fos.close();
-      var ZF=Java.use('java.util.zip.ZipFile').$new('/data/local/tmp/ch.zip');
-      var enu=ZF.entries();
-      while(enu.hasMoreElements()){
-        var ent=enu.nextElement();
-        S({m:'② 条目: '+ent.getName()+' size='+ent.getSize()});
+      var ZIS=Java.use('java.util.zip.ZipInputStream');
+      var zis=ZIS.$new(Java.use('java.io.ByteArrayInputStream').$new(zipBytes));
+      var ent;
+      while((ent=zis.getNextEntry())!==null){
+        S({m:'② 条目: '+ent.getName()+' ('+ent.getSize()+')'});
         if(ent.getName().toString().indexOf('.qd')>=0){
-          var eis=ZF.getInputStream(ent);
           var eb=Java.use('java.io.ByteArrayOutputStream').$new(); var x;
-          while((x=eis.read(abuf))>0) eb.write(abuf,0,x);
+          while((x=zis.read(abuf))>0) eb.write(abuf,0,x);
           qd=eb.toByteArray();
         }
       }
-      ZF.close();
-      S({m:'② ZipFile .qd len='+(qd?qd.length:0)});
-    }catch(e){S({m:'② ZipFile fail: '+String(e).slice(0,100)});}
-    // 兜底: 设备端下载缺 "PK" 两字节 (magic 直接从 03 04 起) → 补回后手解 local header
+      S({m:'② ZIS .qd len='+(qd?qd.length:0)});
+    }catch(e){S({m:'② ZIS fail: '+String(e).slice(0,80)});}
+    // 兜底: App cache 目录文件式解压 (App 进程有写权限; /data/local/tmp 是 EACCES)
     if(!qd||qd.length===0){
       try{
-        var z=zipBytes; var pre=(z[0]&255)===0x03&&(z[1]&255)===0x04?2:0;
-        var method=(z[pre+6]&255)|((z[pre+7]&255)<<8);
-        var csize=(z[pre+14]&255)|((z[pre+15]&255)<<8)|((z[pre+16]&255)<<16)|((z[pre+17]&255)<<24);
-        var ulen =(z[pre+18]&255)|((z[pre+19]&255)<<8)|((z[pre+20]&255)<<16)|((z[pre+21]&255)<<24);
-        var nlen =(z[pre+22]&255)|((z[pre+23]&255)<<8);
-        var elen =(z[pre+24]&255)|((z[pre+25]&255)<<8);
-        var carr=[]; for(var q2=0;q2<nlen;q2++)carr.push(z[pre+26+q2]);
-        var nameStr=Java.use('java.lang.String').$new(Java.array('byte',carr.map(function(c){return c>127?c-256:c;})),'UTF-8')+'';
-        S({m:'② 补PK手解: method='+method+' csize='+csize+' usize='+ulen+' name='+nameStr});
-        var dstart=pre+26+nlen+elen;
-        var dlen=csize>0?csize:(z.length-dstart);
-        var barr=[]; for(var q3=0;q3<dlen;q3++)barr.push(z[dstart+q3]);
-        var jarr=Java.array('byte',barr.map(function(c){return c>127?c-256:c;}));
-        if(method===0){ qd=jarr; }
-        else if(method===8){
-          var INF=Java.use('java.util.zip.InflaterInputStream').$new(Java.use('java.io.ByteArrayInputStream').$new(jarr),Java.use('java.util.zip.Inflater').$new(-15));
-          var ib=Java.use('java.io.ByteArrayOutputStream').$new(); var yy;
-          while((yy=INF.read(abuf))>0) ib.write(abuf,0,yy);
-          qd=ib.toByteArray();
+        var cdir=Java.use('android.app.ActivityThread').currentApplication().getCacheDir();
+        var zp=cdir.getAbsolutePath().toString()+'/ch.zip';
+        S({m:'② 兜底路径: '+zp});
+        var fos=Java.use('java.io.FileOutputStream').$new(zp);
+        fos.write(zipBytes); fos.close();
+        var ZF=Java.use('java.util.zip.ZipFile').$new(zp);
+        var enu=ZF.entries();
+        while(enu.hasMoreElements()){
+          var ent2=enu.nextElement();
+          if(ent2.getName().toString().indexOf('.qd')>=0){
+            var eis=ZF.getInputStream(ent2);
+            var eb2=Java.use('java.io.ByteArrayOutputStream').$new(); var x2;
+            while((x2=eis.read(abuf))>0) eb2.write(abuf,0,x2);
+            qd=eb2.toByteArray();
+          }
         }
-        S({m:'② 补PK .qd len='+(qd?qd.length:0)+' head='+(qd?hx(qd,16):'-')});
-      }catch(e2){S({m:'② 补PK失败 '+String(e2).slice(0,120)});}
+        ZF.close();
+        S({m:'② ZipFile .qd len='+(qd?qd.length:0)});
+      }catch(e2){S({m:'② ZipFile fail: '+String(e2).slice(0,100)});}
     }
     if(qd&&qd.length>0) S({m:'② .qd len='+qd.length+' head='+hx(qd,16)+' tail='+hx(qd.slice(qd.length-16),16)});
   }catch(e){S({m:'② 下载/解压失败 '+String(e).slice(0,140)});}

@@ -1,0 +1,154 @@
+name: qd-remote-ui10
+# redroid + ws-scrcpy + localhost.run隧道 → 用户浏览器直接操控起点App
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  remote:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: boot redroid + install 464 + scrcpy-web
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl unzip python3-pip nodejs npm || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=1080 androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+          B=localhost:5555
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do adb connect $B >/dev/null 2>&1; S=$(timeout 8 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r'); [ "$S" = "1" ] && break; sleep 6; done
+          echo "boot=$(timeout 8 adb -s $B shell getprop sys.boot_completed | tr -d '\r')"
+          # 随机设备
+          RANDAID=$(python3 -c "import random; print('%016x'%random.getrandbits(64))")
+          timeout 20 adb -s $B root >/dev/null 2>&1; sleep 3
+          for i in $(seq 1 8); do
+            IDOUT=$(timeout 6 adb -s $B shell id 2>/dev/null | tr -d "\r")
+            if echo "$IDOUT" | grep -q "uid=0"; then break; fi
+            adb disconnect $B >/dev/null 2>&1; sleep 1; adb connect $B >/dev/null 2>&1; sleep 3
+          done
+          timeout 20 adb -s $B shell "setenforce 0" 2>/dev/null
+          timeout 20 adb -s $B shell "settings put secure android_id $RANDAID" 2>/dev/null
+          echo "device aid=$RANDAID"
+          # 装464
+          for i in 1 2 3; do curl -sSL --max-time 1200 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk" && [ $(stat -c%s q464.apk) -gt 100000000 ] && break; sleep 10; done
+          timeout 300 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          bash write_consent.sh 2>&1 | tail -2
+          # ★装scrcpy(命令行版,抓屏+控制)
+          sudo -S -p '' snap install scrcpy 2>/dev/null || (sudo -S -p '' apt-get install -y -qq scrcpy 2>/dev/null) || echo SCRCPY_APT_FAIL
+          which scrcpy && scrcpy --version | head -1
+
+      - name: setup novnc via websocket + tunnel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          B=localhost:5555
+          # 方案: scrcpy --record直播不行 — 用ws-scrcpy(node服务)
+          # ★最稳: noVNC + x11vnc不行(无X) — 
+          # ★★★安卓专用: 用 scrcpy v2.4+ 的 websocket? 不支持
+          # ★正解: ws-scrcpy(NetrisTV) — node app, docker现成:
+          # ★ws-scrcpy npm直装
+          cd $GITHUB_WORKSPACE
+          git clone --depth 1 https://github.com/NetrisTV/ws-scrcpy.git 2>&1 | tail -2
+          cd ws-scrcpy
+          npm install --no-audit --no-fund 2>&1 | tail -5
+          (NODE_ENV=production nohup npm run start > /tmp/wss.log 2>&1 &) 2>/dev/null || true
+          sleep 25
+          cat /tmp/wss.log 2>/dev/null | head -5
+          curl -s http://localhost:8006/ -o /dev/null -w "ws-scrcpy:%{http_code}\n" 2>&1
+          sleep 5
+          # ws-scrcpy在8006端口 — 检查
+          curl -s http://localhost:8006/ -o /dev/null -w "ws-scrcpy:%{http_code}\n" 2>&1
+          # ★serveo隧道(重试3次,每次等25s)
+          for attempt in 1 2 3; do
+            nohup ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o ServerAliveInterval=30 -R 80:localhost:8006 serveo.net > /tmp/tunnel.log 2>&1 &
+            sleep 25
+            TURL=$(cat /tmp/tunnel.log | grep -o 'https://[a-z0-9-]*\.serveousercontent\.com' | head -1)
+            [ -n "$TURL" ] && break
+            echo "tunnel attempt $attempt failed: $(cat /tmp/tunnel.log | head -3)"
+            pkill -f "serveo" 2>/dev/null
+            sleep 5
+          done
+          echo "$TURL" > /tmp/tunnel_url.txt
+          echo "★TUNNEL_URL=$TURL"
+          # ★写release供外部秒读
+          echo "$TURL" > tunnel_url.txt
+          if [ -n "$TURL" ]; then
+            B64U=$(echo -n "$TURL" | base64 -w0)
+            gh api repos/Ryfferty/qd-android-ci/contents/tunnel_url.txt \
+              -X PUT -f message="tunnel: $TURL" -f content="$B64U" 2>&1 | tail -1 || true
+          else
+            gh api repos/Ryfferty/qd-android-ci/contents/tunnel_url.txt \
+              -X PUT -f message="tunnel FAILED - check serveo" -f content="$(echo -n FAILED | base64 -w0)" 2>&1 | tail -1 || true
+          fi
+
+      - name: publish url (debug)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -x
+          TURL=$(cat /tmp/tunnel_url.txt 2>/dev/null)
+          echo "URL_TO_PUBLISH=[$TURL]"
+          cat /tmp/tunnel.log 2>/dev/null | head -5 || echo "no tunnel.log"
+          if [ -n "$TURL" ]; then
+            B64U=$(echo -n "$TURL" | base64 -w0)
+            gh api repos/Ryfferty/qd-android-ci/contents/tunnel_url.txt \
+              -X PUT -f message="tunnel: $TURL" -f content="$B64U"
+          fi
+
+      - name: keep alive + log capture (100min)
+        run: |
+          set +e
+          B=localhost:5555
+          TURL=$(cat /tmp/tunnel_url.txt 2>/dev/null)
+          echo "TUNNEL=$TURL"
+          # 持续日志(adb logcat + 会话文件监控)
+          nohup timeout 5700 adb -s $B logcat -v time > /tmp/qd_logcat.log 2>&1 &
+          # 启动App(用户从浏览器操控)
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          # 心跳: 每5分钟确认隧道活着
+          for i in $(seq 1 20); do
+            sleep 300
+            pgrep -f "localhost.run" >/dev/null || {
+              nohup ssh -o StrictHostKeyChecking=no -R 80:localhost:8006 serveo.net > /tmp/tunnel2.log 2>&1 &
+              sleep 12
+              NT=$(cat /tmp/tunnel2.log 2>/dev/null | grep -o 'https://[a-z0-9-]*-[a-z0-9-]*\.serveousercontent\.com' | head -1)
+              [ -n "$NT" ] && echo "TUNNEL_RESTART=$NT" && echo "$NT" > /tmp/tunnel_url.txt
+            }
+            echo "alive_$(date +%H:%M) app=$(timeout 8 adb -s $B shell pidof com.qidian.QDReader 2>/dev/null | tr -d '\r')"
+          done
+          echo "日志大小: $(wc -l < /tmp/qd_logcat.log 2>/dev/null)"
+
+      - name: grab session files
+        run: |
+          set +e
+          B=localhost:5555
+          # 拉起点App的数据目录里的会话(shared_prefs)
+          timeout 30 adb -s $B shell "run-as com.qidian.QDReader ls shared_prefs/ 2>/dev/null || ls /data/data/com.qidian.QDReader/shared_prefs/ 2>/dev/null" 2>&1 | head -10
+          timeout 30 adb -s $B pull /data/data/com.qidian.QDReader/shared_prefs/ ./prefs/ 2>&1 | tail -1
+          ls -la prefs/ 2>/dev/null | head -10
+          cp /tmp/qd_logcat.log . 2>/dev/null
+          cp /tmp/tunnel_url.txt . 2>/dev/null
+
+      - name: upload all
+        uses: actions/upload-artifact@v4
+        with:
+          name: remote-session
+          path: |
+            prefs/
+            qd_logcat.log
+            tunnel_url.txt
+          if-no-files-found: ignore

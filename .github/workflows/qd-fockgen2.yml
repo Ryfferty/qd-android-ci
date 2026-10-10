@@ -1,0 +1,205 @@
+name: qd-fockgen2
+
+# ★ worker 配方复刻(九月成功路线): frida==16.7.19 锁版本 + python API attach + App 启动后等 75s 再挂
+# hook: hook_fockgen2.js (getH 被动+主动 oracle + App客户端打 autoreceive)
+on:
+  workflow_dispatch:
+    inputs:
+      hook:
+        description: 'hook 名 (release apks-v1 里的 js 文件名)'
+        default: 'hook_fockgen2'
+      secs:
+        description: '采集秒数'
+        default: '300'
+      delay:
+        description: 'App启动后等多少秒再attach(过壳初始化/反调试活跃期)'
+        default: '75'
+      apk_url:
+        default: 'https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.200.apk'
+
+jobs:
+  cap:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - name: Setup binder + adb + frida(锁定16.7.19)
+        run: |
+          set +e
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) adb curl xz-utils || echo APT_FAILED
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_FAILED
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -2
+          frida --version
+
+      - name: Start redroid
+        run: |
+          sudo docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do if [ -e /dev/$d ]; then VOLS="$VOLS -v /dev/$d:/dev/$d"; fi; done
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 || echo DOCKER_FAILED
+          sleep 15
+          adb start-server >/dev/null 2>&1 || true
+          for i in $(seq 1 30); do
+            timeout 15 adb connect localhost:5555 >/dev/null 2>&1 || true
+            B=$(timeout 15 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$B" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 8
+          done
+          adb -s localhost:5555 shell getprop ro.product.cpu.abi | tr -d '\r'
+
+      - name: 下载 APK + frida-server 16.7.19
+        run: |
+          set +e
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/qd.apk "${{ inputs.apk_url }}" || true
+            SZ=$(stat -c%s /tmp/qd.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"
+            [ "$SZ" -gt 10000000 ] && break
+            sleep 15
+          done
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 600 -o /tmp/fs.xz "https://github.com/frida/frida/releases/download/16.7.19/frida-server-16.7.19-android-arm64.xz" || true
+            if xz -t /tmp/fs.xz 2>/dev/null; then echo "fs ok try $i"; break; fi
+            sleep 15
+          done
+          unxz -f /tmp/fs.xz && chmod +x /tmp/fs
+          curl -sSL --max-time 120 -o /tmp/hook.js "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/${{ inputs.hook }}.js"
+          ls -l /tmp/qd.apk /tmp/fs /tmp/hook.js
+
+      - name: 装包 + frida-server
+        run: |
+          set +e
+          A="adb -s localhost:5555"
+          for i in 1 2 3; do
+            timeout 300 $A install -r -t /tmp/qd.apk 2>&1 | tail -2
+            if timeout 30 $A shell pm list packages 2>/dev/null | tr -d '\r' | grep -q qidian; then echo "INSTALL_OK try $i"; break; fi
+            echo "install try $i 失败, 重连adb"
+            sleep 8
+            timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          done
+          timeout 30 $A shell pm list packages | tr -d '\r' | grep qidian || echo NOT_INSTALLED
+          timeout 30 $A root 2>&1 | tail -1
+          sleep 8
+          timeout 20 adb connect localhost:5555 >/dev/null 2>&1 || true
+          timeout 120 $A push /tmp/fs /data/local/tmp/fs
+          timeout 30 $A shell chmod 755 /data/local/tmp/fs
+          timeout 30 $A shell "setsid /data/local/tmp/fs -D >/dev/null 2>&1 &"
+          sleep 12
+          timeout 30 $A shell "ps -A -o USER,UID,PID,NAME | grep -w fs" || echo NO_FS_PROC
+          timeout 30 $A forward tcp:27042 tcp:27042 || true
+          for i in 1 2 3; do timeout 30 frida-ps -H 127.0.0.1:27042 2>&1 | head -4 && break; sleep 5; done
+
+      - name: 注入会话(从 secret)
+        env:
+          SESS_JSON: ${{ secrets.SESS_JSON }}
+        run: |
+          set +e
+          if [ -n "$SESS_JSON" ]; then
+            printf '%s' "$SESS_JSON" > /tmp/sess.json
+            timeout 60 adb -s localhost:5555 push /tmp/sess.json /data/local/tmp/sess.json
+            timeout 30 adb -s localhost:5555 shell "ls -l /data/local/tmp/sess.json; cat /data/local/tmp/sess.json" | tr -d '\r' | sed 's/"ywkey":"[^"]*"/"ywkey":"***"/'
+          else
+            echo "(secret 未配置, 匿名模式)"
+          fi
+
+      - name: 启动 App + 等75s(过壳初始化危险窗) + python-frida attach
+        run: |
+          set +e
+          mkdir -p out
+          adb -s localhost:5555 shell "settings put global policy_control null*" 2>/dev/null
+          A=$(adb -s localhost:5555 shell "cmd package resolve-activity --brief com.qidian.QDReader" 2>/dev/null | tr -d '\r' | tail -1)
+          echo "主 Activity: $A"
+          [ -n "$A" ] && adb -s localhost:5555 shell "am start -n $A" 2>&1 | tail -2
+          echo "等 ${{ inputs.delay }}s 让 App+壳完成初始化..."
+          sleep ${{ inputs.delay }}
+          PID_APP=$(adb -s localhost:5555 shell "pidof com.qidian.QDReader" | tr -d '\r' | awk '{print $1}')
+          echo "PID_APP=$PID_APP"
+          HOOK='${{ inputs.hook }}' SECS='${{ inputs.secs }}' PID_APP="$PID_APP" python3 - <<'PY'
+          import frida, time, json, os, sys, subprocess
+          hname = os.environ['HOOK']; secs = int(os.environ.get('SECS','300'))
+          js = open('/tmp/hook.js').read()
+          dev = frida.get_device_manager().add_remote_device('127.0.0.1:27042')
+
+          def pidof():
+              try:
+                  out = subprocess.run(['adb','-s','localhost:5555','shell','pidof com.qidian.QDReader'],
+                                       capture_output=True, text=True, timeout=20).stdout.strip()
+                  return out.split()[0] if out else ''
+              except Exception:
+                  return ''
+
+          def diag():
+              try:
+                  ps = subprocess.run(['adb','-s','localhost:5555','shell','ps -A -o PID,NAME | grep -i qidian'],
+                                      capture_output=True, text=True, timeout=20).stdout.strip()
+                  print(f'[diag] adb侧: {ps or "无"}', flush=True)
+              except Exception as e:
+                  print(f'[diag] adb err {e}', flush=True)
+              try:
+                  fv = [f'{p.pid}:{p.name}' for p in dev.enumerate_processes() if 'qidian' in p.name.lower() or 'QDReader' in p.name]
+                  print(f'[diag] frida侧: {fv or "无"}', flush=True)
+                  return fv
+              except Exception as e:
+                  print(f'[diag] frida enum err {e}', flush=True)
+                  return []
+
+          sess = None; used_pid = None
+          for i in range(24):   # 最多 ~2分钟窗口
+              P = pidof()
+              fv = [] if P else diag()
+              if not P and not fv:
+                  print(f'[{i}] 进程没了, 等5s...', flush=True); time.sleep(5); continue
+              if P:
+                  try:
+                      sess = dev.attach(int(P)); used_pid = P
+                      print(f'attach ok pid={P} (try {i+1})', flush=True); break
+                  except Exception as e:
+                      print(f'attach fail pid={P}: {e}', flush=True)
+                      if 'find process' in str(e):
+                          diag()
+                          time.sleep(5); continue
+                  time.sleep(5); continue
+              # pidof 空但 frida 能看到(壳改名场景): 挂 frida 侧那个
+              if fv:
+                  fp = int(fv[0].split(':')[0])
+                  try:
+                      sess = dev.attach(fp); used_pid = fp
+                      print(f'attach ok (frida侧pid={fp})', flush=True); break
+                  except Exception as e:
+                      print(f'attach frida侧 {fp} fail: {e}', flush=True)
+              time.sleep(5)
+          if not sess:
+              diag()
+              open('out/capture.txt','w').write('ATTACH_ALL_FAILED'); sys.exit(0)
+          print(f'挂上 pid={used_pid}, 等待壳内类加载...', flush=True)
+          time.sleep(10)   # attach 后再给壳一点时间把 FockUtil 类加载进内存
+          msgs = []
+          def on_msg(m, d):
+              if m['type'] == 'send':
+                  line = json.dumps(m['payload'], ensure_ascii=False); msgs.append(line); print('[JS]', line[:400], flush=True)
+              else:
+                  print('[ERR]', str(m)[:200], flush=True); msgs.append('ERR '+str(m)[:200])
+          sc = sess.create_script(js)
+          sc.on('message', on_msg); sc.load()
+          for i in range(secs//5):
+              time.sleep(5)
+              if i % 6 == 0: print(f'alive t+{i*5}s msgs={len(msgs)}', flush=True)
+          open('out/capture.txt','w').write('\n'.join(msgs))
+          print(f'完成 {len(msgs)} 条', flush=True)
+          PY
+          echo "===== capture 行数 ====="
+          wc -l out/capture.txt
+          grep -cE "GETH|ORACLE|HTTP" out/capture.txt || echo "无关键命中"
+          head -40 out/capture.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fockgen2-capture
+          path: out/
+          if-no-files-found: warn

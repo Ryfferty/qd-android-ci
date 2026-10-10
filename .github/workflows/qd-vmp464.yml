@@ -178,32 +178,6 @@ jobs:
         run: |
           set +e
           SECS='${{ inputs.secs }}'
-          # ★/proc取证poller(后台): 每1s记录app pid的Sig位图/Seccomp计数/线程数
-          #   静默死亡时看哪一位翻转: SigCgt第4位=我们的SIGILL处理器还在不在
-          export SECS
-          nohup python3 - <<'PP' >/dev/null 2>&1 &
-          import subprocess, time, os
-          secs = int(os.environ.get('SECS', '240')) - 5
-          def sh(c):
-              try: return subprocess.run(['adb', '-s', 'localhost:5555', 'shell', c],
-                                         capture_output=True, text=True, timeout=10).stdout
-              except Exception: return ''
-          last = None
-          t0 = time.time()
-          while time.time() - t0 < secs:
-              pid = sh('pidof com.qidian.QDReader').strip()
-              if pid != last:
-                  open('out/proc_watch.txt', 'a').write(f'--- t+{int(time.time()-t0)}s pid[{pid}] (was[{last}])\n')
-                  last = pid
-              if pid and pid.replace(' ', '').isdigit():
-                  p0 = pid.split()[0].strip()
-                  st = sh('grep -E "Seccomp|SigIgn|SigCgt|Threads|TracerPid" /proc/{0}/status'.format(p0))
-                  cm = sh('cat /proc/{0}/cmdline | tr "\\0" " "'.format(p0)).strip()
-                  if st.strip():
-                      open('out/proc_watch.txt', 'a').write(f't+{int(time.time()-t0)} {st.strip()} cmdline[{cm[:100]}]\n')
-              time.sleep(1)
-          PP
-          echo "poller已启动"
           echo "等App跑 $SECS 秒(gadget自载hook.js, 捕获写cap.jsonl)..."
           sleep $SECS
           echo "===== 拉取文件捕获 ====="

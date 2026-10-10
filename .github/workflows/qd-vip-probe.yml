@@ -1,0 +1,12 @@
+name: qd-vip-probe
+on:
+  workflow_dispatch:
+jobs:
+  p:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          pip install -q pycryptodome 2>&1 | tail -1
+          python3 ci/qd_vip_probe.py
