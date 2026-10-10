@@ -16,8 +16,8 @@ jobs:
           sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
           # mitmproxy官方二进制(免pip/PATH坑): release tar.gz里有bin/mitmdump
           MITMVER=10.4.2
-          curl -sSL --max-time 240 -o /tmp/mitm.tar.gz "https://downloads.mitmproxy.org/${MITMVER}/mitmproxy-${MITMVER}-linux.tar.gz" || echo MITM_DL_FAIL
-          tar -xzf /tmp/mitm.tar.gz -C /tmp && ls /tmp/ | grep mitm || true
+          curl -sSL --max-time 240 -o /tmp/mitm.tar.gz "https://downloads.mitmproxy.org/${MITMVER}/mitmproxy-${MITMVER}-linux-x86_64.tar.gz" || echo MITM_DL_FAIL
+          tar -xf /tmp/mitm.tar.gz -C /tmp && ls /tmp/ | grep -i mitm || true
           [ -x /tmp/mitmdump ] && echo "mitmdump二进制OK" || echo MITM_BIN_FAIL
           sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
           sudo -S -p '' docker rm -f redroid 2>/dev/null || true
