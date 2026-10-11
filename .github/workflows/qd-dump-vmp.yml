@@ -95,6 +95,7 @@ jobs:
                               console.log("[MODULE] " + m.name + " base=" + m.base + " size=" + m.size);
                               // Dump!
                               try {
+                                  try { Memory.protect(m.base, m.size, 'rwx'); } catch(e) { console.log("[PROT_ERR] " + e); }
                                   var data = Memory.readByteArray(m.base, Math.min(m.size, 5*1024*1024));
                                   var filename = "/data/local/tmp/dump_" + m.name;
                                   var file = new File(filename, "wb");

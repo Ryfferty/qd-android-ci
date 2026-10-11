@@ -97,7 +97,7 @@ jobs:
                               if (k === "QDInfo" && v.length > 20) qdinfo = v;
                           }
                           console.log("[PAIR] url=" + url1 + " ts=" + ts + " borgus=" + borgus);
-                          Java.sleep(100);
+                          
                       }
                       
                       // 测试2: 不同URL(看URL依赖)!
