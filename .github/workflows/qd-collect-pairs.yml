@@ -182,20 +182,62 @@ jobs:
           
           timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l collect_pairs.js 2>&1 | tee /tmp/pairs_output.log
           
-          echo "=== Memory Dump ==="
-          mkdir -p /tmp/vmp_dumps
-          timeout 10 adb -s localhost:5555 shell "cat /proc/$STABLE_PID/maps" > /tmp/vmp_dumps/memory_maps.txt 2>&1
+          echo "=== Frida Memory Dump ==="
+          cat > dump_mem.js << 'DUMPEOF'
+          Java.perform(function() {
+              setTimeout(function() {
+                  // Dump模块内存!
+                  var modules = Process.enumerateModules();
+                  modules.forEach(function(m) {
+                      if (m.name.indexOf("fock") !== -1 || m.name.indexOf("jiagu") !== -1) {
+                          console.log("[DUMP_START] " + m.name + " " + m.base + " " + m.size);
+                          try {
+                              // 小块读取(4KB)!
+                              var chunkSize = 4096;
+                              var numChunks = Math.min(Math.ceil(m.size / chunkSize), 500);
+                              var allData = new Array();
+                              for (var i = 0; i < numChunks; i++) {
+                                  var offset = i * chunkSize;
+                                  if (offset >= m.size) break;
+                                  var readSize = Math.min(chunkSize, m.size - offset);
+                                  try {
+                                      var chunk = m.base.add(offset).readByteArray(readSize);
+                                      allData.push(chunk);
+                                  } catch(e) {
+                                      // 跳过不可读块!
+                                      allData.push(null);
+                                  }
+                              }
+                              // 写文件!
+                              var filename = "/data/local/tmp/mem_" + m.name;
+                              var file = new File(filename, "wb");
+                              var nullChunk = new Uint8Array(chunkSize);
+                              for (var i = 0; i < allData.length; i++) {
+                                  if (allData[i] !== null) {
+                                      file.write(allData[i]);
+                                  } else {
+                                      file.write(nullChunk);
+                                  }
+                              }
+                              file.close();
+                              console.log("[DUMP_OK] " + m.name + " → " + filename + " (" + (numChunks * chunkSize) + " bytes)");
+                          } catch(e) {
+                              console.log("[DUMP_ERR] " + m.name + ": " + e);
+                          }
+                      }
+                  });
+              }, 2000);
+          });
+          DUMPEOF
           
-          for MOD in $(grep "\[MOD\]" /tmp/pairs_output.log | sed 's/.*\[MOD\] //' | head -5); do
-              MNAME=$(echo $MOD | awk '{print $1}')
-              MBASE=$(echo $MOD | awk '{print $2}')
-              MSIZE=$(echo $MOD | awk '{print $3}')
-              echo "Dump: $MNAME base=$MBASE size=$MSIZE"
-              BASE_NUM=$(python3 -c "print(int('$MBASE', 16))")
-              PAGES=$((BASE_NUM / 4096))
-              COUNT=$((MSIZE / 4096 + 1))
-              timeout 60 adb -s localhost:5555 shell "dd if=/proc/$STABLE_PID/mem bs=4096 skip=$PAGES count=$COUNT of=/data/local/tmp/d_${MNAME}" 2>&1 | tail -1
-              adb -s localhost:5555 pull "/data/local/tmp/d_${MNAME}" "/tmp/vmp_dumps/${MNAME}.bin" 2>&1 | tail -1
+          timeout 120 frida -H 127.0.0.1:27042 -p $STABLE_PID -l dump_mem.js 2>&1 | tee -a /tmp/pairs_output.log
+          
+          mkdir -p /tmp/vmp_dumps
+          # 下载dump文件!
+          for f in $(adb -s localhost:5555 shell "ls /data/local/tmp/mem_*" 2>/dev/null | tr -d '\r'); do
+              fname=$(basename $f)
+              adb -s localhost:5555 pull "$f" "/tmp/vmp_dumps/$fname" 2>&1 | tail -1
+              echo "Pulled: $fname"
           done
           ls -la /tmp/vmp_dumps/
           echo "=== DONE ==="
