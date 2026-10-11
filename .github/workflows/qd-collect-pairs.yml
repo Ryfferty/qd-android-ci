@@ -182,63 +182,83 @@ jobs:
           
           timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l collect_pairs.js 2>&1 | tee /tmp/pairs_output.log
           
-          echo "=== Frida Memory Dump ==="
-          cat > dump_mem.js << 'DUMPEOF'
+          echo "=== Stalker Trace ==="
+          cat > trace_geth.js << 'TRACEEOF'
           Java.perform(function() {
               setTimeout(function() {
-                  // Dump模块内存!
-                  var modules = Process.enumerateModules();
-                  modules.forEach(function(m) {
-                      if (m.name.indexOf("fock") !== -1 || m.name.indexOf("jiagu") !== -1) {
-                          console.log("[DUMP_START] " + m.name + " " + m.base + " " + m.size);
-                          try {
-                              // 小块读取(4KB)!
-                              var chunkSize = 4096;
-                              var numChunks = Math.min(Math.ceil(m.size / chunkSize), 500);
-                              var allData = new Array();
-                              for (var i = 0; i < numChunks; i++) {
-                                  var offset = i * chunkSize;
-                                  if (offset >= m.size) break;
-                                  var readSize = Math.min(chunkSize, m.size - offset);
-                                  try {
-                                      var chunk = m.base.add(offset).readByteArray(readSize);
-                                      allData.push(chunk);
-                                  } catch(e) {
-                                      // 跳过不可读块!
-                                      allData.push(null);
+                  try {
+                      var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var instance = FockUtil.INSTANCE.value;
+                      var RequestBody = Java.use("okhttp3.RequestBody");
+                      var MediaType = Java.use("okhttp3.MediaType");
+                      var mediaType = MediaType.parse("application/x-www-form-urlencoded");
+                      
+                      // 找libfock的范围!
+                      var fockModule = Process.findModuleByName("libfock.so");
+                      if (fockModule) {
+                          console.log("[FOCK] base=" + fockModule.base + " size=" + fockModule.size);
+                          
+                          // ★ Stalker: 追踪fock模块内的执行!
+                          var tid = Process.getCurrentThreadId();
+                          Stalker.follow(tid, {
+                              events: {
+                                  call: false,
+                                  ret: false,
+                                  exec: true,
+                                  block: false
+                              },
+                              transform: function(iterator) {
+                                  var instruction = iterator.next();
+                                  while (instruction !== null) {
+                                      // 只记录fock模块内的指令!
+                                      if (instruction.address >= fockModule.base && 
+                                          instruction.address < fockModule.base.add(fockModule.size)) {
+                                          iterator.keep();
+                                      } else {
+                                          // 跳过非fock代码!
+                                          // 但还是keep让它执行!
+                                          iterator.keep();
+                                      }
+                                      instruction = iterator.next();
                                   }
+                              },
+                              onReceive: function(events) {
+                                  // 处理事件!
                               }
-                              // 写文件!
-                              var filename = "/data/local/tmp/mem_" + m.name;
-                              var file = new File(filename, "wb");
-                              var nullChunk = new Uint8Array(chunkSize);
-                              for (var i = 0; i < allData.length; i++) {
-                                  if (allData[i] !== null) {
-                                      file.write(allData[i]);
-                                  } else {
-                                      file.write(nullChunk);
-                                  }
-                              }
-                              file.close();
-                              console.log("[DUMP_OK] " + m.name + " → " + filename + " (" + (numChunks * chunkSize) + " bytes)");
-                          } catch(e) {
-                              console.log("[DUMP_ERR] " + m.name + ": " + e);
+                          });
+                          
+                          // 调用getH!
+                          console.log("[*] Calling getH with Stalker active...");
+                          var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                          var body = RequestBody.create(mediaType, "localLabels=&gender=0");
+                          var result = instance.getH(url, "POST", body);
+                          console.log("[*] getH done!");
+                          
+                          // 停止Stalker!
+                          Stalker.unfollow(tid);
+                          Stalker.flush();
+                          console.log("[*] Stalker done!");
+                          
+                          // 输出结果!
+                          var rm = Java.cast(result, Java.use("java.util.Map"));
+                          var iter = rm.entrySet().iterator();
+                          while (iter.hasNext()) {
+                              var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                              console.log("[RESULT] " + en.getKey() + " = " + String(en.getValue()).substring(0, 80));
                           }
+                      } else {
+                          console.log("[ERR] libfock not found!");
                       }
-                  });
-              }, 2000);
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 3000);
           });
-          DUMPEOF
+          TRACEEOF
           
-          timeout 120 frida -H 127.0.0.1:27042 -p $STABLE_PID -l dump_mem.js 2>&1 | tee -a /tmp/pairs_output.log
+          timeout 120 frida -H 127.0.0.1:27042 -p $STABLE_PID -l trace_geth.js 2>&1 | tee -a /tmp/pairs_output.log
           
           mkdir -p /tmp/vmp_dumps
-          # 下载dump文件!
-          for f in $(adb -s localhost:5555 shell "ls /data/local/tmp/mem_*" 2>/dev/null | tr -d '\r'); do
-              fname=$(basename $f)
-              adb -s localhost:5555 pull "$f" "/tmp/vmp_dumps/$fname" 2>&1 | tail -1
-              echo "Pulled: $fname"
-          done
           ls -la /tmp/vmp_dumps/
           echo "=== DONE ==="
 
