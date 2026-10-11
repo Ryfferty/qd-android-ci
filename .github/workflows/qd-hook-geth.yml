@@ -9,6 +9,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache APK
+        uses: actions/cache@v4
+        with:
+          path: q464.apk
+          key: qidian-7.9.464-apk
+          restore-keys: |
+            qidian-apk
+
       - name: Setup redroid + frida
         run: |
           set +e
@@ -50,7 +58,12 @@ jobs:
           set +e
                     B=localhost:5555
           
-          curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          if [ ! -f q464.apk ] || [ $(stat -c%s q464.apk 2>/dev/null || echo 0) -lt 100000000 ]; then
+            echo "APK not cached, downloading..."
+            curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          else
+            echo "APK from cache! $(du -h q464.apk | cut -f1)"
+          fi
           echo "=== DEBUG: APK file ==="
           ls -la q464.apk || echo "APK MISSING!"
           echo "=== DEBUG: ADB devices ==="
