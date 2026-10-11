@@ -53,19 +53,19 @@ jobs:
           B=localhost:5555
           
           curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
-          adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
-          adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
           adb -s $B logcat -c 2>/dev/null
           
-          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
           
           STABLE_PID=""
           for i in $(seq 1 15); do
             sleep 3
-            P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             if [ -n "$P" ]; then
               sleep 5
-              P2=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
               if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
                 STABLE_PID=$P
                 echo "App stable PID=$STABLE_PID"
@@ -76,9 +76,9 @@ jobs:
           
           [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
           
-          adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
           sleep 8
-          adb -s $B forward tcp:27042 tcp:27042
+          timeout 10 adb -s $B forward tcp:27042 tcp:27042
           
           cat > hook_geth.js << 'HOOKEOF'
           Java.perform(function() {
