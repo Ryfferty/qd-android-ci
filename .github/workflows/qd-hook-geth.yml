@@ -215,45 +215,49 @@ jobs:
                       var instance = FockUtil2.INSTANCE.value;
                       console.log("[*] INSTANCE: " + instance);
                       var result = instance.getH(url, method, requestBody);
-                      // 展开Map结果!
-// 多组URL调用getH收集数据!
+                      console.log("[getH] FIRST RESULT: " + result.$className);
+                      try {
+                          var rm = Java.cast(result, Java.use("java.util.Map"));
+                          var it = rm.entrySet().iterator();
+                          while (it.hasNext()) {
+                              var en = Java.cast(it.next(), Java.use("java.util.Map$Entry"));
+                              console.log("[getH] " + en.getKey() + " = " + en.getValue());
+                          }
+                      } catch(e) { console.log("[getH] toString: " + result.toString()); }
+                      
+                      // ★ 多组URL调用收集数据!
                       var urls = [
                           "https://bravev6.if.qidian.com/argus/api/v1/client/getconf",
                           "https://bravev6.if.qidian.com/argus/api/v1/freshman/limitfreepopup",
                           "https://bravev6.if.qidian.com/argus/api/v3/freshman/autoreceive",
                           "https://bravev6.if.qidian.com/argus/api/v2/bookcontent/safegetcontent?bookId=1049120379&chapterId=903350205",
                           "https://fockrt.yuewen.com/files?t=1",
-                          "https://bravev6.if.qidian.com/argus/api/v1/bookchapterlist/chapterlist?bookId=1049120379"
+                          "https://bravev6.if.qidian.com/argus/api/v1/bookchapterlist/chapterlist?bookId=1049120379",
+                          "https://bravev6.if.qidian.com/argus/api/v1/user/getuserinfo",
+                          "https://ptlogin.yuewen.com/sdk/qrcode"
                       ];
-                      var methods = ["POST", "GET", "POST", "GET", "GET", "GET"];
-                      var bodies = ["localLabels=&gender=0", "", "", "", "", ""];
+                      var m2 = ["POST", "GET", "POST", "GET", "GET", "GET", "GET", "POST"];
+                      var b2 = ["localLabels=&gender=0", "", "", "", "", "", "", ""];
                       
                       for (var u = 0; u < urls.length; u++) {
                           try {
-                              var body2 = null;
-                              if (bodies[u] && bodies[u].length > 0) {
-                                  body2 = RequestBody.create(mediaType, bodies[u]);
-                              } else {
-                                  body2 = RequestBody.create(mediaType, "");
-                              }
-                              var r2 = instance.getH(urls[u], methods[u], body2);
+                              var rb = RequestBody.create(mediaType, b2[u] || "");
+                              var r2 = instance.getH(urls[u], m2[u], rb);
                               var rm2 = Java.cast(r2, Java.use("java.util.Map"));
-                              var iter2 = rm2.entrySet().iterator();
-                              var resultStr = "";
-                              while (iter2.hasNext()) {
-                                  var e2 = Java.cast(iter2.next(), Java.use("java.util.Map$Entry"));
-                                  resultStr += e2.getKey() + "=" + e2.getValue() + "; ";
+                              var it2 = rm2.entrySet().iterator();
+                              var ts = "";
+                              while (it2.hasNext()) {
+                                  var e2 = Java.cast(it2.next(), Java.use("java.util.Map$Entry"));
+                                  ts += e2.getKey() + "=" + e2.getValue() + "; ";
                               }
-                              console.log("[PAIR-" + u + "] URL=" + urls[u]);
-                              console.log("[PAIR-" + u + "] METHOD=" + methods[u]);
-                              console.log("[PAIR-" + u + "] BODY=" + bodies[u]);
-                              console.log("[PAIR-" + u + "] RESULT: " + resultStr);
+                              console.log("[PAIR" + u + "] " + m2[u] + " " + urls[u]);
+                              console.log("[PAIR" + u + "] " + ts);
                               console.log("");
                           } catch(e) {
-                              console.log("[PAIR-" + u + "] ERROR: " + e);
+                              console.log("[PAIR" + u + "] ERROR: " + e);
                           }
                       }
-                      send({type: "directCall", result: "multi-pairs-done"});
+                      send({type: "done", pairs: urls.length});
                       send({type: "directCall", result: String(result)});
                       send({type: "directCall", result: String(result)});
                           send({type: "directCall", result: String(result)});
