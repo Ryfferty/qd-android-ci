@@ -1,0 +1,184 @@
+name: qd-collect-pairs
+on:
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup + collect I/O pairs
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
+            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
+          
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          echo "BOOT_OK"
+          
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+          
+          curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 120 adb -s localhost:5555 push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s localhost:5555 shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s localhost:5555 shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          
+          STABLE_PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s localhost:5555 shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(timeout 10 adb -s localhost:5555 shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
+                STABLE_PID=$P
+                echo "App PID=$STABLE_PID"
+                break
+              fi
+            fi
+          done
+          [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
+          
+          timeout 10 adb -s localhost:5555 shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 10 adb -s localhost:5555 forward tcp:27042 tcp:27042
+          
+          # ★ 大量收集I/O对!
+          cat > collect_pairs.js << 'JSEOF'
+          Java.perform(function() {
+              setTimeout(function() {
+                  try {
+                      var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var instance = FockUtil.INSTANCE.value;
+                      var RequestBody = Java.use("okhttp3.RequestBody");
+                      var MediaType = Java.use("okhttp3.MediaType");
+                      var mediaType = MediaType.parse("application/x-www-form-urlencoded");
+                      
+                      // 测试1: 同一URL多次调用(看时间依赖)!
+                      var url1 = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      console.log("=== 同URL多次调用 ===");
+                      for (var i = 0; i < 5; i++) {
+                          var body = RequestBody.create(mediaType, "localLabels=&gender=0");
+                          var result = instance.getH(url1, "POST", body);
+                          var rm = Java.cast(result, Java.use("java.util.Map"));
+                          var iter = rm.entrySet().iterator();
+                          var ts = "", borgus = "", qdinfo = "";
+                          while (iter.hasNext()) {
+                              var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                              var k = String(en.getKey());
+                              var v = String(en.getValue());
+                              if (k === "tstamp") ts = v;
+                              if (k === "borgus") borgus = v;
+                              if (k === "QDInfo" && v.length > 20) qdinfo = v;
+                          }
+                          console.log("[PAIR] url=" + url1 + " ts=" + ts + " borgus=" + borgus);
+                          Java.sleep(100);
+                      }
+                      
+                      // 测试2: 不同URL(看URL依赖)!
+                      console.log("=== 不同URL ===");
+                      var urls = [
+                          "https://bravev6.if.qidian.com/argus/api/v1/client/getconf",
+                          "https://bravev6.if.qidian.com/argus/api/v1/freshman/limitfreepopup",
+                          "https://bravev6.if.qidian.com/argus/api/v3/freshman/autoreceive",
+                          "https://bravev6.if.qidian.com/argus/api/v2/bookcontent/safegetcontent",
+                          "https://bravev6.if.qidian.com/argus/api/v1/user/getuserinfo",
+                          "https://fockrt.yuewen.com/files",
+                          "https://ptlogin.yuewen.com/sdk/qrcode",
+                          "https://bravev6.if.qidian.com/argus/api/v1/bookchapterlist/chapterlist",
+                          "https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0",
+                          "https://a.b.c.d/test1",
+                          "https://a.b.c.d/test2",
+                          "https://a.b.c.d/test3"
+                      ];
+                      var methods = ["POST","GET","POST","GET","GET","GET","POST","GET","POST","GET","GET","GET"];
+                      for (var i = 0; i < urls.length; i++) {
+                          var body = RequestBody.create(mediaType, "");
+                          var result = instance.getH(urls[i], methods[i], body);
+                          var rm = Java.cast(result, Java.use("java.util.Map"));
+                          var iter = rm.entrySet().iterator();
+                          var ts = "", borgus = "", qdinfo = "";
+                          while (iter.hasNext()) {
+                              var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                              var k = String(en.getKey());
+                              var v = String(en.getValue());
+                              if (k === "tstamp") ts = v;
+                              if (k === "borgus") borgus = v;
+                              if (k === "QDInfo" && v.length > 20) qdinfo = v;
+                          }
+                          console.log("[PAIR] url=" + urls[i] + " method=" + methods[i] + " ts=" + ts + " borgus=" + borgus);
+                      }
+                      
+                      // 测试3: 同URL同时间连续调用(看确定性)!
+                      console.log("=== 连续快速调用(确定性测试) ===");
+                      var url3 = "https://test.example.com/same";
+                      for (var i = 0; i < 3; i++) {
+                          var body = RequestBody.create(mediaType, "");
+                          var result = instance.getH(url3, "GET", body);
+                          var rm = Java.cast(result, Java.use("java.util.Map"));
+                          var iter = rm.entrySet().iterator();
+                          var ts = "", borgus = "";
+                          while (iter.hasNext()) {
+                              var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                              var k = String(en.getKey());
+                              var v = String(en.getValue());
+                              if (k === "tstamp") ts = v;
+                              if (k === "borgus") borgus = v;
+                          }
+                          console.log("[PAIR] rapid#" + i + " ts=" + ts + " borgus=" + borgus);
+                      }
+                      
+                      // 测试4: 输出完整QDInfo(一次)!
+                      console.log("=== 完整头(一次) ===");
+                      var body = RequestBody.create(mediaType, "localLabels=&gender=0");
+                      var result = instance.getH(url1, "POST", body);
+                      var rm = Java.cast(result, Java.use("java.util.Map"));
+                      var iter = rm.entrySet().iterator();
+                      while (iter.hasNext()) {
+                          var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                          console.log("[FULL] " + en.getKey() + " = " + String(en.getValue()));
+                      }
+                      
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 3000);
+          });
+          JSEOF
+          
+          timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l collect_pairs.js 2>&1 | tee /tmp/pairs_output.log
+          echo "=== DONE ==="
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: io-pairs-data
+          path: |
+            /tmp/pairs_output.log
+          if-no-files-found: warn
