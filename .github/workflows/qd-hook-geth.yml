@@ -60,8 +60,16 @@ jobs:
           B=localhost:5555
           
           curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
-          adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
-          adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          echo "=== DEBUG: APK file ==="
+          ls -la q464.apk || echo "APK MISSING!"
+          echo "=== DEBUG: ADB devices ==="
+          adb devices
+          echo "=== DEBUG: APK push ==="
+          adb -s $B push q464.apk /data/local/tmp/q464.apk 2>&1 | tail -2
+          echo "=== DEBUG: APK install ==="
+          adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -3
+          echo "=== DEBUG: App start ==="
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1
           adb -s $B logcat -c 2>/dev/null
           
           adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
