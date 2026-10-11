@@ -20,6 +20,7 @@ jobs:
           export PATH="$(pwd)/platform-tools:$PATH"
           echo 'export PATH="$(pwd)/platform-tools:$PATH"' >> ~/.bashrc
           which adb && adb version | head -1
+          echo "$(pwd)/platform-tools" >> $GITHUB_PATH
           sudo -S -p '' -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
           pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
           
@@ -54,6 +55,8 @@ jobs:
       - name: Install App + Generate borgus
         run: |
           set +e
+          export PATH="$(pwd)/platform-tools:$PATH"
+          which adb || { echo "NO_ADB"; ls platform-tools/adb; exit 1; }
           B=localhost:5555
           
           curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
