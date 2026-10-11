@@ -387,7 +387,7 @@ jobs:
             
             if [ -n "$BORGUS" ]; then
               echo "--- 调用getconf ---"
-              RESP=$(curl -s -X POST "https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0" \
+              RESP=$(curl -s -X POST "https://bravev6.if.qidian.com/argus/api/v1/client/getconf" \
                 -H "Content-Type: application/x-www-form-urlencoded" \
                 -H "User-Agent: $UA" \
                 -H "Cookie: $COOKIESTR; QDInfo=$QDINFO" \
