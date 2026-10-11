@@ -195,7 +195,15 @@ jobs:
           
           # Run Frida hook
           echo "=== Running Frida hook ==="
-          timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_geth.js --no-pause 2>&1 | tee /tmp/geth_output.log
+          # Trigger App to make API calls (so getH gets called)
+          sleep 10
+          # Simulate user interaction to trigger network requests
+          adb -s $B shell "input tap 360 500" 2>/dev/null
+          sleep 5
+          adb -s $B shell "input tap 360 800" 2>/dev/null
+          sleep 5
+          
+          timeout 120 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_geth.js 2>&1 | tee /tmp/geth_output.log
           
           echo ""
           echo "=== Hook Results ==="
