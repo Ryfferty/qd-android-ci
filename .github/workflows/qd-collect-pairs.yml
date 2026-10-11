@@ -194,7 +194,7 @@ jobs:
                       var mediaType = MediaType.parse("application/x-www-form-urlencoded");
                       
                       // 找libfock的范围!
-                      var fockModule = Process.findModuleByName("libfock.so");
+                      var fockModule = Process.findModuleByName("libjiagu_vip.so") || Process.findModuleByName("libjiagu.so");
                       if (fockModule) {
                           console.log("[FOCK] base=" + fockModule.base + " size=" + fockModule.size);
                           
@@ -232,10 +232,10 @@ jobs:
                           var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
                           var body = RequestBody.create(mediaType, "localLabels=&gender=0");
                           // Stalker追踪!
-                      var fockModule = Process.findModuleByName("libfock.so");
+                      var fockModule = Process.findModuleByName("libjiagu_vip.so") || Process.findModuleByName("libjiagu.so");
                       var calls = [];
                       if (fockModule) {
-                          console.log("[FOCK] " + fockModule.base + " size=" + fockModule.size);
+                          console.log("[JUAGU] " + fockModule.base + " size=" + fockModule.size);
                           var tid = Process.getCurrentThreadId();
                           Stalker.follow(tid, {
                               events: { call: true },
@@ -257,7 +257,7 @@ jobs:
                       if (fockModule) {
                           Stalker.unfollow(tid);
                           Stalker.flush();
-                          console.log("[CALLS] " + calls.length + " calls into fock");
+                          console.log("[CALLS] " + calls.length + " calls into jiagu");
                           for (var ci = 0; ci < Math.min(calls.length, 50); ci++) {
                               console.log("[TRACE] " + calls[ci]);
                           }
