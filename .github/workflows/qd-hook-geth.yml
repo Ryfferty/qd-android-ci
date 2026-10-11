@@ -211,8 +211,12 @@ jobs:
                       var MediaType = Java.use("okhttp3.MediaType");
                       var mediaType = MediaType.parse("application/x-www-form-urlencoded");
                       var requestBody = RequestBody.create(mediaType, body);
-                      var result = FockUtil2.getH(url, method, requestBody);
+                      // 获取FockUtil实例!
+                      var instance = FockUtil2.INSTANCE.value;
+                      console.log("[*] INSTANCE: " + instance);
+                      var result = instance.getH(url, method, requestBody);
                       console.log("[getH] ★★★RESULT: " + String(result));
+                      send({type: "directCall", result: String(result)});
                       send({type: "directCall", result: String(result)});
                           send({type: "directCall", result: String(result)});
                       }
