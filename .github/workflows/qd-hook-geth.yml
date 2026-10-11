@@ -215,7 +215,21 @@ jobs:
                       var instance = FockUtil2.INSTANCE.value;
                       console.log("[*] INSTANCE: " + instance);
                       var result = instance.getH(url, method, requestBody);
-                      console.log("[getH] ★★★RESULT: " + String(result));
+                      // 展开Map结果!
+                      console.log("[getH] ★★★RESULT type: " + result.$className);
+                      try {
+                          var resultMap = Java.cast(result, Java.use("java.util.Map"));
+                          var entrySet = resultMap.entrySet();
+                          var iter = entrySet.iterator();
+                          while (iter.hasNext()) {
+                              var entry = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                              console.log("[getH] ★ " + entry.getKey() + " = " + entry.getValue());
+                          }
+                      } catch(e) {
+                          console.log("[getH] Map展开失败: " + e);
+                          console.log("[getH] toString: " + result.toString());
+                      }
+                      send({type: "directCall", result: String(result)});
                       send({type: "directCall", result: String(result)});
                       send({type: "directCall", result: String(result)});
                           send({type: "directCall", result: String(result)});
