@@ -231,7 +231,37 @@ jobs:
                           console.log("[*] Calling getH with Stalker active...");
                           var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
                           var body = RequestBody.create(mediaType, "localLabels=&gender=0");
-                          var result = instance.getH(url, "POST", body);
+                          // Stalker追踪!
+                      var fockModule = Process.findModuleByName("libfock.so");
+                      var calls = [];
+                      if (fockModule) {
+                          console.log("[FOCK] " + fockModule.base + " size=" + fockModule.size);
+                          var tid = Process.getCurrentThreadId();
+                          Stalker.follow(tid, {
+                              events: { call: true },
+                              onReceive: function(events) {
+                                  var parsed = Stalker.parse(events, {stringify: false, annotate: false});
+                                  for (var pi = 0; pi < parsed.length; pi++) {
+                                      var pe = parsed[pi];
+                                      if (pe[0] === "call") {
+                                          var target = pe[2];
+                                          if (target >= fockModule.base && target < fockModule.base.add(fockModule.size)) {
+                                              calls.push("+0x" + target.sub(fockModule.base).toString(16));
+                                          }
+                                      }
+                                  }
+                              }
+                          });
+                      }
+                      var result = instance.getH(url, "POST", body);
+                      if (fockModule) {
+                          Stalker.unfollow(tid);
+                          Stalker.flush();
+                          console.log("[CALLS] " + calls.length + " calls into fock");
+                          for (var ci = 0; ci < Math.min(calls.length, 50); ci++) {
+                              console.log("[TRACE] " + calls[ci]);
+                          }
+                      }
                           console.log("[*] getH done!");
                           
                           // 停止Stalker!
