@@ -190,6 +190,38 @@ jobs:
                       });
                   }
               }, 3000);
+              
+              // ★ 主动调用getH(不等App触发)!
+              setTimeout(function() {
+                  console.log("[*] Directly calling getH...");
+                  try {
+                      // 构造测试参数
+                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      var method = "POST";
+                      var body = "localLabels=&gender=0";
+                      
+                      // 找到getH方法并调用!
+                      var FockUtil2 = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var getHMethod = FockUtil2.getH;
+                      if (getHMethod) {
+                          console.log("[*] Calling getH(" + url + ", " + method + ", " + body + ")");
+                          // 调用!
+                          var result = getHMethod.call(FockUtil2, url, method, body);
+                          console.log("[getH] DIRECT CALL RESULT: " + String(result));
+                          send({type: "directCall", result: String(result)});
+                      }
+                  } catch(e) {
+                      console.log("[!] Direct call error: " + e);
+                      // 尝试addRetrofitH!
+                      try {
+                          var FockUtil3 = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                          var addRH = FockUtil3.addRetrofitH;
+                          console.log("[*] addRetrofitH type: " + typeof addRH);
+                      } catch(e2) {
+                          console.log("[!] addRetrofitH: " + e2);
+                      }
+                  }
+              }, 8000);
           });
           HOOKEOF
           
