@@ -13,7 +13,13 @@ jobs:
         run: |
           set +e
           sudo -S -p '' -S -p '' apt-get update -qq || true
-          sudo -S -p '' -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          # ADB: 直接下载platform-tools!
+          curl -sSL https://dl.google.com/android/repository/platform-tools-latest-linux.zip -o pt.zip
+          unzip -qo pt.zip
+          export PATH="$(pwd)/platform-tools:$PATH"
+          echo 'export PATH="$(pwd)/platform-tools:$PATH"' >> ~/.bashrc
+          which adb && adb version | head -1
           sudo -S -p '' -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
           pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
           
