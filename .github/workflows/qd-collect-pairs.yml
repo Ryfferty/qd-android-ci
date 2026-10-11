@@ -231,45 +231,72 @@ jobs:
                           console.log("[*] Calling getH with Stalker active...");
                           var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
                           var body = RequestBody.create(mediaType, "localLabels=&gender=0");
-                          // Stalker追踪!
-                      var fockModule = Process.findModuleByName("libjiagu_vip.so") || Process.findModuleByName("libjiagu.so");
-                      var calls = [];
-                      if (fockModule) {
-                          console.log("[JUAGU] " + fockModule.base + " size=" + fockModule.size);
-                          var tid = Process.getCurrentThreadId();
-                          Stalker.follow(tid, {
-                              events: { call: true },
-                              onReceive: function(events) {
-                                  var parsed = Stalker.parse(events, {stringify: true, annotate: false});
-                                  for (var pi = 0; pi < parsed.length; pi++) {
-                                      var pe = parsed[pi];
-                                      if (typeof pe === "string" && pe.indexOf("call") === 0) {
-                                          calls.push(pe);
-                                      } else if (pe && pe.type === "call") {
-                                          calls.push(pe.type + " " + pe.from + " → " + pe.to);
-                                      }
+                                                // ★ Hook RegisterNatives找getH!
+                      var gethAddr = null;
+                      var artModule = Process.findModuleByName("libart.so");
+                      if (artModule) {
+                          // 找RegisterNatives!
+                          var regNatives = Module.findExportByName("libart.so", "_ZN3art3JNI15RegisterNativesEP7_JNIEnvP7_jclassPK15JNINativeMethodi");
+                          if (!regNatives) {
+                              // 尝试其他符号名!
+                              var exports = artModule.enumerateExports();
+                              for (var ei = 0; ei < exports.length; ei++) {
+                                  if (exports[ei].name.indexOf("RegisterNatives") !== -1) {
+                                      regNatives = exports[ei].address;
+                                      console.log("[FOUND] RegisterNatives at " + regNatives);
+                                      break;
                                   }
                               }
-                          });
-                      }
-                      var result = instance.getH(url, "POST", body);
-                      if (fockModule) {
-                          Stalker.unfollow(tid);
-                          Stalker.flush();
-                          console.log("[CALLS] total events: " + calls.length);
-                          for (var ci = 0; ci < Math.min(calls.length, 50); ci++) {
-                              console.log("[TRACE] " + calls[ci]);
+                          }
+                          if (regNatives) {
+                              Interceptor.attach(regNatives, {
+                                  onEnter: function(args) {
+                                      try {
+                                          var env = args[0];
+                                          var jclass = args[1];
+                                          var methods = args[2];
+                                          var count = args[3].toInt32();
+                                          
+                                          // 获取类名!
+                                          var getClassName = new NativeFunction(
+                                              Module.findExportByName("libart.so", "_ZN3art3JNI12GetObjectRefEP7_JNIEnvP8_jobject"),
+                                              'pointer', ['pointer', 'pointer']);
+                                          
+                                          // 遍历方法!
+                                          for (var mi = 0; mi < count; mi++) {
+                                              try {
+                                                  var methodPtr = methods.add(mi * Process.pointerSize * 3);
+                                                  var name = methodPtr.readPointer().readCString();
+                                                  var sig = methodPtr.add(Process.pointerSize).readPointer().readCString();
+                                                  var fnPtr = methodPtr.add(Process.pointerSize * 2).readPointer();
+                                                  
+                                                  if (name && (name.indexOf("getH") !== -1 || name.indexOf("addRetrofit") !== -1)) {
+                                                      console.log("[JNI] " + name + " sig=" + sig + " addr=" + fnPtr);
+                                                      if (name === "getH") {
+                                                          gethAddr = fnPtr;
+                                                      }
+                                                  }
+                                              } catch(me) {}
+                                          }
+                                      } catch(e) {}
+                                  }
+                              });
+                              console.log("[+] RegisterNatives hooked");
                           }
                       }
-                          console.log("[*] getH done!");
-                          
-                          // 停止Stalker!
-                          Stalker.unfollow(tid);
-                          Stalker.flush();
-                          console.log("[*] Stalker done!");
-                          
-                          // 输出结果!
-                          var rm = Java.cast(result, Java.use("java.util.Map"));
+                      
+                      var result = instance.getH(url, "POST", body);
+                      if (gethAddr) {
+                          console.log("[★★★GETH_ADDR] " + gethAddr);
+                          // 计算在哪个模块!
+                          var gm = Process.getModuleByAddress(gethAddr);
+                          if (gm) {
+                              console.log("[★★★GETH_MODULE] " + gm.name + " offset=" + gethAddr.sub(gm.base));
+                          }
+                      } else {
+                          console.log("[!] getH address not captured");
+                      }
+                      var rm = Java.cast(result, Java.use("java.util.Map"));
                           var iter = rm.entrySet().iterator();
                           while (iter.hasNext()) {
                               var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
