@@ -80,6 +80,35 @@ jobs:
                       var MediaType = Java.use("okhttp3.MediaType");
                       var mediaType = MediaType.parse("application/x-www-form-urlencoded");
                       
+                      console.log("[*] Triggering getH...");
+                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      var body = RequestBody.create(mediaType, "localLabels=&gender=0");
+                      var result = instance.getH(url, "POST", body);
+                      console.log("[*] getH done!");
+                      
+                      // 列出所有fock相关模块!
+                      var modules = Process.enumerateModules();
+                      for (var i = 0; i < modules.length; i++) {
+                          var m = modules[i];
+                          if (m.name.indexOf("fock") !== -1 || m.name.indexOf("jiagu") !== -1 || m.name.indexOf("knobs") !== -1 || m.name.indexOf("omg") !== -1) {
+                              console.log("[MOD] " + m.name + " " + m.base + " " + m.size + " " + m.path);
+                          }
+                      }
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 3000);
+          });
+          JSEOF'
+          Java.perform(function() {
+              setTimeout(function() {
+                  try {
+                      var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var instance = FockUtil.INSTANCE.value;
+                      var RequestBody = Java.use("okhttp3.RequestBody");
+                      var MediaType = Java.use("okhttp3.MediaType");
+                      var mediaType = MediaType.parse("application/x-www-form-urlencoded");
+                      
                       // 先调用一次getH触发VMP解密!
                       console.log("[*] Triggering getH to decrypt VMP...");
                       var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
@@ -124,17 +153,33 @@ jobs:
           
           timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l dump_vmp.js 2>&1 | tee /tmp/dump_output.log
           
-          # 下载dump的文件!
-          mkdir -p /tmp/vmp_dumps
-          timeout 60 adb -s localhost:5555 shell "ls -la /data/local/tmp/dump_*" 2>&1
-          for f in $(adb -s localhost:5555 shell "ls /data/local/tmp/dump_*" 2>/dev/null | tr -d '\r'); do
-              fname=$(basename $f)
-              adb -s localhost:5555 pull "$f" "/tmp/vmp_dumps/$fname" 2>&1 | tail -1
-              echo "Pulled: $fname"
-          done
-          ls -la /tmp/vmp_dumps/
+          # ★ 用root + dd dump内存!
+          echo "=== Dumping memory via root ==="
+          # 获取模块地址!
+          MODS=$(grep "\[MOD\]" /tmp/dump_output.log | sed 's/.*\[MOD\] //')
+          echo "Modules found:"
+          echo "$MODS"
           
-          # 也dump /proc/PID/maps!
+          for MOD in $MODS; do
+              NAME=$(echo $MOD | cut -d' ' -f1)
+              BASE=$(echo $MOD | cut -d' ' -f2)
+              SIZE=$(echo $MOD | cut -d' ' -f3)
+              echo "Dumping $NAME base=$BASE size=$SIZE..."
+              
+              # 转换地址(16进制)!
+              BASE_DEC=$((16#${BASE#x}))
+              # 计算页对齐!
+              PAGE_SIZE=4096
+              SKIP=$((BASE_DEC / PAGE_SIZE))
+              COUNT=$((SIZE / PAGE_SIZE + 1))
+              
+              # 用root dd读!
+              timeout 30 adb -s localhost:5555 shell "su 0 dd if=/proc/$STABLE_PID/mem bs=$PAGE_SIZE skip=$SKIP count=$COUNT of=/data/local/tmp/dump_${NAME}.bin 2>&1" | tail -2
+              # 下载!
+              adb -s localhost:5555 pull "/data/local/tmp/dump_${NAME}.bin" "/tmp/vmp_dumps/" 2>&1 | tail -1
+          done
+          
+          ls -la /tmp/vmp_dumps/
           timeout 10 adb -s localhost:5555 shell "cat /proc/$STABLE_PID/maps" > /tmp/vmp_dumps/memory_maps.txt 2>&1
           
           echo "=== DONE ==="
