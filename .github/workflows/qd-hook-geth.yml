@@ -12,15 +12,15 @@ jobs:
       - name: Setup redroid + frida
         run: |
           set +e
-          sudo -S -p '' -S -p '' apt-get update -qq || true
-          sudo -S -p '' -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
-          sudo -S -p '' -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
-          pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
           
-          sudo -S -p '' -S -p '' docker rm -f redroid 2>/dev/null || true
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
-          sudo -S -p '' -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
             redroid/redroid:11.0.0-latest \
             androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
             androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
@@ -34,6 +34,7 @@ jobs:
           done
           adb -s localhost:5555 shell "echo BOOT_OK"
           
+          # frida-server
           FR=16.7.19
           curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
           unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
@@ -45,27 +46,28 @@ jobs:
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
           echo "Setup complete"
 
-      - name: Install App + Generate borgus
+      - name: Install App + Hook getH
         run: |
           set +e
-          which adb || sudo apt-get install -y -qq android-tools-adb
-          which adb || { echo "NO_ADB"; exit 1; }
           B=localhost:5555
           
+          # Download and install 464 APK
           curl -sSL --max-time 900 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
-          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
-          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
           adb -s $B logcat -c 2>/dev/null
           
-          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          # Start App (don't start frida-server yet - avoid detection)
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
           
+          # Wait for App to stabilize
           STABLE_PID=""
           for i in $(seq 1 15); do
             sleep 3
-            P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            P=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
             if [ -n "$P" ]; then
               sleep 5
-              P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              P2=$(adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
               if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
                 STABLE_PID=$P
                 echo "App stable PID=$STABLE_PID"
@@ -76,49 +78,200 @@ jobs:
           
           [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
           
-          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          # NOW start frida-server (after App is stable)
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
           sleep 8
-          timeout 10 adb -s $B forward tcp:27042 tcp:27042
+          adb -s $B forward tcp:27042 tcp:27042
           
+          # Write Frida hook script
           cat > hook_geth.js << 'HOOKEOF'
+          // Hook FockUtil.getH — capture borgus generation
+          console.log("[*] Hook script loaded");
+          
           Java.perform(function() {
+              console.log("[*] Java.perform started");
+              
+              // Wait for class to load
               setTimeout(function() {
                   try {
                       var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
-                      var instance = FockUtil.INSTANCE.value;
+                      console.log("[+] FockUtil class found!");
+                      
+                      // List all methods
+                      var methods = FockUtil.class.getDeclaredMethods();
+                      console.log("[*] Methods count: " + methods.length);
+                      
+                      methods.forEach(function(method) {
+                          var name = method.getName();
+                          var params = method.getParameterTypes();
+                          var paramStr = "";
+                          for (var i = 0; i < params.length; i++) {
+                              paramStr += params[i].getName() + ", ";
+                          }
+                          console.log("  Method: " + name + "(" + paramStr + ")");
+                      });
+                      
+                      // Hook getH (all overloads)
+                      try {
+                          var getH = FockUtil.getH;
+                          if (getH) {
+                              var overloads = getH.overloads;
+                              overloads.forEach(function(overload) {
+                                  overload.implementation = function() {
+                                      var args = [];
+                                      for (var i = 0; i < arguments.length; i++) {
+                                          args.push(String(arguments[i]));
+                                      }
+                                      console.log("[getH] INPUT: " + args.join(" | "));
+                                      var result = overload.apply(this, arguments);
+                                      console.log("[getH] OUTPUT: " + String(result));
+                                      // Save to file
+                                      send({type: "getH", input: args, output: String(result)});
+                                      return result;
+                                  };
+                              });
+                              console.log("[+] getH hooked! (" + overloads.length + " overloads)");
+                          }
+                      } catch(e) {
+                          console.log("[!] getH hook: " + e);
+                      }
+                      
+                      // Hook addRetrofitH
+                      try {
+                          var addRH = FockUtil.addRetrofitH;
+                          if (addRH) {
+                              addRH.overloads.forEach(function(overload) {
+                                  overload.implementation = function() {
+                                      var args = [];
+                                      for (var i = 0; i < arguments.length; i++) {
+                                          args.push(String(arguments[i]));
+                                      }
+                                      console.log("[addRetrofitH] INPUT: " + args.join(" | "));
+                                      var result = overload.apply(this, arguments);
+                                      console.log("[addRetrofitH] OUTPUT: " + String(result));
+                                      send({type: "addRetrofitH", input: args, output: String(result)});
+                                      return result;
+                                  };
+                              });
+                              console.log("[+] addRetrofitH hooked!");
+                          }
+                      } catch(e) {
+                          console.log("[!] addRetrofitH: " + e);
+                      }
+                      
+                      // Hook getQDInfoEncrypt
+                      try {
+                          var gqdi = FockUtil.getQDInfoEncrypt;
+                          if (gqdi) {
+                              gqdi.overloads.forEach(function(overload) {
+                                  overload.implementation = function() {
+                                      var result = overload.apply(this, arguments);
+                                      console.log("[getQDInfoEncrypt] OUTPUT: " + String(result).substring(0, 100));
+                                      send({type: "getQDInfoEncrypt", output: String(result)});
+                                      return result;
+                                  };
+                              });
+                              console.log("[+] getQDInfoEncrypt hooked!");
+                          }
+                      } catch(e) {
+                          console.log("[!] getQDInfoEncrypt: " + e);
+                      }
+                      
+                  } catch(e) {
+                      console.log("[!] FockUtil: " + e);
+                      // Try to list loaded classes
+                      Java.enumerateLoadedClasses({
+                          onMatch: function(name) {
+                              if (name.indexOf("Fock") !== -1 || name.indexOf("fock") !== -1) {
+                                  console.log("[CLASS] " + name);
+                              }
+                          },
+                          onComplete: function() {}
+                      });
+                  }
+              }, 3000);
+              
+              // ★ 主动调用getH(不等App触发)!
+              setTimeout(function() {
+                  console.log("[*] Directly calling getH...");
+                  try {
+                      // 构造测试参数
+                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      var method = "POST";
+                      var body = "localLabels=&gender=0";
+                      
+                      // 找到getH方法并调用!
+                      var FockUtil2 = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var getHMethod = FockUtil2.getH;
+                      if (getHMethod) {
+                          console.log("[*] Calling getH(" + url + ", " + method + ", " + body + ")");
+                          // 调用!
+                      // 创建okhttp3.RequestBody!
                       var RequestBody = Java.use("okhttp3.RequestBody");
                       var MediaType = Java.use("okhttp3.MediaType");
                       var mediaType = MediaType.parse("application/x-www-form-urlencoded");
-                      
-                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0";
-                      var body = RequestBody.create(mediaType, "localLabels=&gender=0");
-                      var result = instance.getH(url, "POST", body);
-                      
-                      var rm = Java.cast(result, Java.use("java.util.Map"));
-                      var iter = rm.entrySet().iterator();
-                      var output = {};
-                      while (iter.hasNext()) {
-                          var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
-                          output[String(en.getKey())] = String(en.getValue());
+                      var requestBody = RequestBody.create(mediaType, body);
+                      // 获取FockUtil实例!
+                      var instance = FockUtil2.INSTANCE.value;
+                      console.log("[*] INSTANCE: " + instance);
+                      var result = instance.getH(url, method, requestBody);
+                      // 展开Map结果!
+                      console.log("[getH] ★★★RESULT type: " + result.$className);
+                      try {
+                          var resultMap = Java.cast(result, Java.use("java.util.Map"));
+                          var entrySet = resultMap.entrySet();
+                          var iter = entrySet.iterator();
+                          while (iter.hasNext()) {
+                              var entry = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                              console.log("[getH] ★ " + entry.getKey() + " = " + entry.getValue());
+                          }
+                      } catch(e) {
+                          console.log("[getH] Map展开失败: " + e);
+                          console.log("[getH] toString: " + result.toString());
                       }
-                      console.log("[BORGUS_DATA] " + JSON.stringify(output));
-                      
+                      send({type: "directCall", result: String(result)});
+                      send({type: "directCall", result: String(result)});
+                      send({type: "directCall", result: String(result)});
+                          send({type: "directCall", result: String(result)});
+                      }
                   } catch(e) {
-                      console.log("[ERROR] " + e);
+                      console.log("[!] Direct call error: " + e);
+                      // 尝试addRetrofitH!
+                      try {
+                          var FockUtil3 = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                          var addRH = FockUtil3.addRetrofitH;
+                          console.log("[*] addRetrofitH type: " + typeof addRH);
+                      } catch(e2) {
+                          console.log("[!] addRetrofitH: " + e2);
+                      }
                   }
-              }, 3000);
+              }, 8000);
           });
           HOOKEOF
           
-          timeout 30 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_geth.js 2>&1 | tee /tmp/geth_output.log
-          echo "Frida done"
-
-      - name: Call getconf with borgus
-        run: |
-          set +e
-          echo "=== Calling getconf with fresh borgus ==="
-          python3 getconf_test.py /tmp/geth_output.log 2>&1
-          echo "=== Done ==="
+          # Run Frida hook
+          echo "=== Running Frida hook ==="
+          # Trigger App to make API calls (so getH gets called)
+          sleep 10
+          # Simulate user interaction to trigger network requests
+          adb -s $B shell "input tap 360 500" 2>/dev/null
+          sleep 5
+          adb -s $B shell "input tap 360 800" 2>/dev/null
+          sleep 5
+          
+          timeout 120 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_geth.js 2>&1 | tee /tmp/geth_output.log
+          
+          echo ""
+          echo "=== Hook Results ==="
+          cat /tmp/geth_output.log | grep -E "\[getH\]|\[addRetrofitH\]|\[getQDInfoEncrypt\]|\[\+\]|\[CLASS\]" | head -50
+          
+          # Also check logcat for App activity
+          echo ""
+          echo "=== App logcat (Fock related) ==="
+          adb -s $B logcat -d | grep -i "fock\|FockUtil\|getH\|borgus" | tail -20
+          
+          adb -s $B logcat -d > /tmp/logcat.txt 2>/dev/null
+          exit 0
 
       - name: Upload Results
         if: always()
@@ -127,4 +280,5 @@ jobs:
           name: geth-hook-result
           path: |
             /tmp/geth_output.log
+            /tmp/logcat.txt
           if-no-files-found: warn
