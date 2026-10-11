@@ -231,45 +231,46 @@ jobs:
                           console.log("[*] Calling getH with Stalker active...");
                           var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
                           var body = RequestBody.create(mediaType, "localLabels=&gender=0");
-                                                                      // ★ Stalker + putCallout (正确方式)!
-                      var jiagu = Process.findModuleByName("libjiagu_vip.so") || Process.findModuleByName("libjiagu.so");
-                      if (jiagu) {
-                          console.log("[JG] base=" + jiagu.base + " size=" + jiagu.size);
-                          var jBase = jiagu.base;
-                          var jEnd = jiagu.base.add(jiagu.size);
-                          var execCount = 0;
-                          var tid = Process.getCurrentThreadId();
-                          
-                          Stalker.follow(tid, {
-                              transform: function(iterator) {
-                                  var instruction = iterator.next();
-                                  while (instruction !== null) {
-                                      var addr = instruction.address;
-                                      // 只追踪jiagu内的指令!
-                                      if (addr >= jBase && addr < jEnd) {
-                                          var offset = addr.sub(jBase);
-                                          var mnem = instruction.mnemonic;
-                                          var ops = instruction.opStr;
-                                          iterator.putCallout(function(context) {
-                                              execCount++;
-                                              if (execCount <= 200) {
-                                                  console.log("[EX] " + context.pc.sub(jBase) + " " + mnem + " " + ops);
-                                              }
-                                          });
+                                                                                            // ★ 追踪所有模块的执行!
+                      var moduleCounts = {};
+                      var totalCount = 0;
+                      var tid = Process.getCurrentThreadId();
+                      
+                      Stalker.follow(tid, {
+                          transform: function(iterator) {
+                              var instruction = iterator.next();
+                              while (instruction !== null) {
+                                  var addr = instruction.address;
+                                  iterator.putCallout(function(context) {
+                                      totalCount++;
+                                      if (totalCount <= 5000) {
+                                          var mod = null;
+                                          try { mod = Process.getModuleByAddress(context.pc); } catch(e) {}
+                                          if (mod) {
+                                              var name = mod.name;
+                                              if (!moduleCounts[name]) moduleCounts[name] = 0;
+                                              moduleCounts[name]++;
+                                          } else {
+                                              if (!moduleCounts['anonymous']) moduleCounts['anonymous'] = 0;
+                                              moduleCounts['anonymous']++;
+                                          }
                                       }
-                                      iterator.keep();
-                                      instruction = iterator.next();
-                                  }
+                                  });
+                                  iterator.keep();
+                                  instruction = iterator.next();
                               }
-                          });
-                          console.log("[*] Stalker following thread " + tid);
-                      }
+                          }
+                      });
+                      console.log("[*] Stalker following ALL - tid=" + tid);
                       
                       var result = instance.getH(url, "POST", body);
-                      if (jiagu) {
-                          Stalker.unfollow(tid);
-                          Stalker.flush();
-                          console.log("[TOTAL] " + execCount + " instructions executed in jiagu");
+                      Stalker.unfollow(tid);
+                      Stalker.flush();
+                      console.log("[TOTAL] " + totalCount + " total instructions");
+                      console.log("[MODULES] " + JSON.stringify(moduleCounts));
+                      var sorted = Object.entries(moduleCounts).sort(function(a, b) { return b[1] - a[1]; });
+                      for (var si = 0; si < Math.min(sorted.length, 15); si++) {
+                          console.log("[MOD_COUNT] " + sorted[si][0] + ": " + sorted[si][1]);
                       }
                       var rm = Java.cast(result, Java.use("java.util.Map"));
                           var iter = rm.entrySet().iterator();
