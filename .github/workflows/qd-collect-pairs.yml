@@ -183,73 +183,7 @@ jobs:
           timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l collect_pairs.js 2>&1 | tee /tmp/pairs_output.log
           
           echo "=== Stalker Trace ==="
-                    cat > trace_geth.js << 'TRACEEOF'
-          Java.perform(function() {
-              setTimeout(function() {
-                  try {
-                      var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
-                      var instance = FockUtil.INSTANCE.value;
-                      var RequestBody = Java.use("okhttp3.RequestBody");
-                      var MediaType = Java.use("okhttp3.MediaType");
-                      var mediaType = MediaType.parse("application/x-www-form-urlencoded");
-                      
-                      var fockModule = Process.findModuleByName("libfock.so");
-                      console.log("[FOCK] " + fockModule.base + " " + fockModule.size);
-                      var fockBase = fockModule.base;
-                      var fockEnd = fockModule.base.add(fockModule.size);
-                      
-                      // ★ 追踪所有调用到fock的函数!
-                      var calls = [];
-                      var tid = Process.getCurrentThreadId();
-                      
-                      Stalker.follow(tid, {
-                          events: { call: true, ret: false },
-                          onReceive: function(events) {
-                              var parsed = Stalker.parse(events, {stringify: false, annotate: false});
-                              for (var i = 0; i < parsed.length; i++) {
-                                  var ev = parsed[i];
-                                  if (ev[0] === "call") {
-                                      var target = ev[2];
-                                      var from = ev[1];
-                                      // 只记录fock内的调用!
-                                      if (target >= fockBase && target < fockEnd) {
-                                          var offset = target.sub(fockBase);
-                                          calls.push("call:+" + offset.toString(16) + " from:+" + from.sub(fockBase).toString(16));
-                                      }
-                                  }
-                              }
-                          }
-                      });
-                      
-                      console.log("[*] Calling getH...");
-                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
-                      var body = RequestBody.create(mediaType, "localLabels=&gender=0");
-                      var result = instance.getH(url, "POST", body);
-                      console.log("[*] getH done!");
-                      
-                      Stalker.unfollow(tid);
-                      Stalker.flush();
-                      
-                      // 输出calls!
-                      console.log("[CALLS] total=" + calls.length);
-                      for (var i = 0; i < calls.length && i < 100; i++) {
-                          console.log("[TRACE] " + calls[i]);
-                      }
-                      
-                      // borgus结果!
-                      var rm = Java.cast(result, Java.use("java.util.Map"));
-                      var iter = rm.entrySet().iterator();
-                      while (iter.hasNext()) {
-                          var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
-                          console.log("[RESULT] " + en.getKey() + " = " + String(en.getValue()).substring(0, 80));
-                      }
-                  } catch(e) {
-                      console.log("[ERROR] " + e);
-                  }
-              }, 3000);
-          });
-          TRACEEOF
-F'
+          cat > trace_geth.js << 'TRACEEOF'
           Java.perform(function() {
               setTimeout(function() {
                   try {
