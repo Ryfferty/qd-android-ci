@@ -375,10 +375,10 @@ jobs:
             echo "Found Pair0 headers!"
             # 提取各个头!
             BORGUS=$(echo "$BORING_LINE" | grep -oP 'borgus=[a-f0-9]+' | cut -d= -f2)
-            QDINFO=$(echo "$BORING_LINE" | grep -oP 'QDInfo=[^;]+' | tail -1 | cut -d= -f2)
+            QDINFO=$(echo "$BORING_LINE" | grep -oP 'QDInfo=[^;]+' | tail -1 | cut -d= -f2 | tr -d '\n\r')
             TSTAMP=$(echo "$BORING_LINE" | grep -oP 'tstamp=[0-9]+' | cut -d= -f2)
-            QDSIGN=$(echo "$BORING_LINE" | grep -oP 'QDSign=[^;]+' | head -1 | cut -d= -f2)
-            UA=$(echo "$BORING_LINE" | grep -oP 'User-Agent=[^;]+' | cut -d= -f2)
+            QDSIGN=$(echo "$BORING_LINE" | grep -oP 'QDSign=[^;]+' | head -1 | cut -d= -f2 | tr -d ' \n\r')
+            UA=$(echo "$BORING_LINE" | grep -oP 'User-Agent=[^;]+' | cut -d= -f2 | tr -d '\n\r')
             COOKIESTR=$(echo "$BORING_LINE" | grep -oP 'Cookie=[^;]+' | head -1 | cut -d= -f2)
             
             echo "BORGUS=$BORGUS"
