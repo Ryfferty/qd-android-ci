@@ -276,6 +276,65 @@ jobs:
                           }
                       }
                       send({type: "done", pairs: urls.length});
+                      
+                      // ★ 用getH的头立即调真实API!
+                      var requestHeaders = {};
+                      // 先用Pair0(getconf)的头!
+                      var r0 = instance.getH(urls[0], m2[0], RequestBody.create(mediaType, b2[0]));
+                      var rm0 = Java.cast(r0, Java.use("java.util.Map"));
+                      var it0 = rm0.entrySet().iterator();
+                      while (it0.hasNext()) {
+                          var en0 = Java.cast(it0.next(), Java.use("java.util.Map$Entry"));
+                          requestHeaders[String(en0.getKey())] = String(en0.getValue());
+                      }
+                      console.log("[API] Headers ready: " + JSON.stringify(Object.keys(requestHeaders)));
+                      
+                      // 用Java的URL发请求!
+                      var URL2 = Java.use("java.net.URL");
+                      var HttpURLConnection = Java.use("java.net.HttpURLConnection");
+                      var BufferedReader = Java.use("java.io.BufferedReader");
+                      var InputStreamReader = Java.use("java.io.InputStreamReader");
+                      var String = Java.use("java.lang.String");
+                      
+                      try {
+                          var urlObj = URL2.$new(urls[0] + "?localLabels=&gender=0");
+                          var conn = urlObj.openConnection();
+                          conn.setRequestMethod("POST");
+                          conn.setDoOutput(true);
+                          conn.setConnectTimeout(15000);
+                          conn.setReadTimeout(15000);
+                          
+                          // 设置头!
+                          var itH = rm0.entrySet().iterator();
+                          while (itH.hasNext()) {
+                              var enH = Java.cast(itH.next(), Java.use("java.util.Map$Entry"));
+                              conn.setRequestProperty(String(enH.getKey()), String(enH.getValue()));
+                          }
+                          conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+                          
+                          // 发body!
+                          var os = conn.getOutputStream();
+                          os.write(new Java.array("byte", []));
+                          var bodyStr = "localLabels=&gender=0";
+                          os.write(bodyStr.getBytes("UTF-8"));
+                          os.flush();
+                          os.close();
+                          
+                          var code = conn.getResponseCode();
+                          console.log("[API] HTTP Status: " + code);
+                          
+                          var reader = BufferedReader.$new(InputStreamReader.$new(conn.getInputStream()));
+                          var response = "";
+                          var line = reader.readLine();
+                          while (line !== null) {
+                              response += String.valueOf(line);
+                              line = reader.readLine();
+                          }
+                          reader.close();
+                          console.log("[API] ★★★RESPONSE: " + response);
+                      } catch(e) {
+                          console.log("[API] ERROR: " + e);
+                      }
                       send({type: "directCall", result: String(result)});
                       send({type: "directCall", result: String(result)});
                           send({type: "directCall", result: String(result)});
