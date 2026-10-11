@@ -206,8 +206,14 @@ jobs:
                       if (getHMethod) {
                           console.log("[*] Calling getH(" + url + ", " + method + ", " + body + ")");
                           // 调用!
-                          var result = getHMethod.call(FockUtil2, url, method, body);
-                          console.log("[getH] DIRECT CALL RESULT: " + String(result));
+                      // 创建okhttp3.RequestBody!
+                      var RequestBody = Java.use("okhttp3.RequestBody");
+                      var MediaType = Java.use("okhttp3.MediaType");
+                      var mediaType = MediaType.parse("application/x-www-form-urlencoded");
+                      var requestBody = RequestBody.create(mediaType, body);
+                      var result = FockUtil2.getH(url, method, requestBody);
+                      console.log("[getH] ★★★RESULT: " + String(result));
+                      send({type: "directCall", result: String(result)});
                           send({type: "directCall", result: String(result)});
                       }
                   } catch(e) {
