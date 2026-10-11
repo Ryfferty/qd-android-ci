@@ -226,6 +226,24 @@ jobs:
                       } catch(e) { console.log("[getH] toString: " + result.toString()); }
                       
                       // ★ 多组URL调用收集数据!
+                      // ★ Dump密钥!
+                      try {
+                          var keys = ["getKey", "getNibKey", "getRtKey", "getPreUserKey", "getCloudConfigKey"];
+                          keys.forEach(function(kn) {
+                              try {
+                                  var km = instance[kn];
+                                  if (km) {
+                                      var kv = km.call(instance);
+                                      console.log("[KEY] " + kn + " = " + String(kv));
+                                  }
+                              } catch(e) {
+                                  console.log("[KEY] " + kn + " ERR: " + e);
+                              }
+                          });
+                      } catch(e) {
+                          console.log("[KEY] ERR: " + e);
+                      }
+                      
                       var urls = [
                           "https://bravev6.if.qidian.com/argus/api/v1/client/getconf",
                           "https://bravev6.if.qidian.com/argus/api/v1/freshman/limitfreepopup",
