@@ -240,14 +240,13 @@ jobs:
                           Stalker.follow(tid, {
                               events: { call: true },
                               onReceive: function(events) {
-                                  var parsed = Stalker.parse(events, {stringify: false, annotate: false});
+                                  var parsed = Stalker.parse(events, {stringify: true, annotate: false});
                                   for (var pi = 0; pi < parsed.length; pi++) {
                                       var pe = parsed[pi];
-                                      if (pe[0] === "call") {
-                                          var target = pe[2];
-                                          if (target >= fockModule.base && target < fockModule.base.add(fockModule.size)) {
-                                              calls.push("+0x" + target.sub(fockModule.base).toString(16));
-                                          }
+                                      if (typeof pe === "string" && pe.indexOf("call") === 0) {
+                                          calls.push(pe);
+                                      } else if (pe && pe.type === "call") {
+                                          calls.push(pe.type + " " + pe.from + " → " + pe.to);
                                       }
                                   }
                               }
@@ -257,7 +256,7 @@ jobs:
                       if (fockModule) {
                           Stalker.unfollow(tid);
                           Stalker.flush();
-                          console.log("[CALLS] " + calls.length + " calls into jiagu");
+                          console.log("[CALLS] total events: " + calls.length);
                           for (var ci = 0; ci < Math.min(calls.length, 50); ci++) {
                               console.log("[TRACE] " + calls[ci]);
                           }
