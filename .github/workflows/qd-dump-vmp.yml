@@ -9,18 +9,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup + dump VMP memory
+      - name: Setup + dump
         run: |
           set +e
-          sudo -S -p '' apt-get update -qq || true
-          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
-          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          sudo -S -p '' -S -p '' apt-get update -qq || true
+          sudo -S -p '' -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip || echo APT
+          sudo -S -p '' -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
           pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
           
-          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          sudo -S -p '' -S -p '' docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
-          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+          sudo -S -p '' -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
             redroid/redroid:11.0.0-latest \
             androidboot.redroid_width=720 androidboot.redroid_height=1184 \
             androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
@@ -43,7 +43,6 @@ jobs:
           adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
           
-          # 安装App!
           curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
           timeout 120 adb -s localhost:5555 push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
           timeout 120 adb -s localhost:5555 shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
@@ -58,7 +57,7 @@ jobs:
               P2=$(timeout 10 adb -s localhost:5555 shell pidof com.qidian.QDReader | tr -d '\r')
               if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
                 STABLE_PID=$P
-                echo "App PID=$STABLE_PID"
+                echo "PID=$STABLE_PID"
                 break
               fi
             fi
@@ -69,8 +68,7 @@ jobs:
           sleep 8
           timeout 10 adb -s localhost:5555 forward tcp:27042 tcp:27042
           
-          # ★ Dump VMP解密后的libfock内存!
-          cat > dump_vmp.js << 'JSEOF'
+          cat > dump_vmp.js << 'EOFJS'
           Java.perform(function() {
               setTimeout(function() {
                   try {
@@ -79,110 +77,43 @@ jobs:
                       var RequestBody = Java.use("okhttp3.RequestBody");
                       var MediaType = Java.use("okhttp3.MediaType");
                       var mediaType = MediaType.parse("application/x-www-form-urlencoded");
-                      
-                      console.log("[*] Triggering getH...");
                       var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
                       var body = RequestBody.create(mediaType, "localLabels=&gender=0");
                       var result = instance.getH(url, "POST", body);
-                      console.log("[*] getH done!");
-                      
-                      // 列出所有fock相关模块!
+                      console.log("[OK] getH called");
                       var modules = Process.enumerateModules();
                       for (var i = 0; i < modules.length; i++) {
                           var m = modules[i];
-                          if (m.name.indexOf("fock") !== -1 || m.name.indexOf("jiagu") !== -1 || m.name.indexOf("knobs") !== -1 || m.name.indexOf("omg") !== -1) {
-                              console.log("[MOD] " + m.name + " " + m.base + " " + m.size + " " + m.path);
+                          if (m.name.indexOf("fock") !== -1 || m.name.indexOf("jiagu") !== -1 || m.name.indexOf("knobs") !== -1) {
+                              console.log("[MOD] " + m.name + " " + m.base + " " + m.size);
                           }
                       }
                   } catch(e) {
-                      console.log("[ERROR] " + e);
+                      console.log("[ERR] " + e);
                   }
               }, 3000);
           });
-          JSEOF'
-          Java.perform(function() {
-              setTimeout(function() {
-                  try {
-                      var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
-                      var instance = FockUtil.INSTANCE.value;
-                      var RequestBody = Java.use("okhttp3.RequestBody");
-                      var MediaType = Java.use("okhttp3.MediaType");
-                      var mediaType = MediaType.parse("application/x-www-form-urlencoded");
-                      
-                      // 先调用一次getH触发VMP解密!
-                      console.log("[*] Triggering getH to decrypt VMP...");
-                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
-                      var body = RequestBody.create(mediaType, "localLabels=&gender=0");
-                      var result = instance.getH(url, "POST", body);
-                      console.log("[*] getH called, borgus generated!");
-                      
-                      // Dump libfock.so内存(VMP解密后)!
-                      var modules = Process.enumerateModules();
-                      for (var i = 0; i < modules.length; i++) {
-                          var m = modules[i];
-                          if (m.name.indexOf("fock") !== -1 || m.name.indexOf("jiagu") !== -1) {
-                              console.log("[MODULE] " + m.name + " base=" + m.base + " size=" + m.size);
-                              // Dump!
-                              try {
-                                  try { Memory.protect(m.base, m.size, 'rwx'); } catch(e) { console.log("[PROT_ERR] " + e); }
-                                  var data = Memory.readByteArray(m.base, Math.min(m.size, 5*1024*1024));
-                                  var filename = "/data/local/tmp/dump_" + m.name;
-                                  var file = new File(filename, "wb");
-                                  file.write(data);
-                                  file.close();
-                                  console.log("[DUMP] " + m.name + " → " + filename);
-                              } catch(e) {
-                                  console.log("[DUMP_ERR] " + m.name + ": " + e);
-                              }
-                          }
-                      }
-                      
-                      // 也dump所有包含fock的内存区域!
-                      Process.enumerateRanges('r-x').forEach(function(range) {
-                          if (range.file && range.file.path && range.file.path.indexOf("fock") !== -1) {
-                              console.log("[RANGE] " + range.base + " size=" + range.size + " file=" + range.file.path);
-                          }
-                      });
-                      
-                  } catch(e) {
-                      console.log("[ERROR] " + e);
-                  }
-              }, 3000);
-          });
-          JSEOF
+          EOFJS
           
-          timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l dump_vmp.js 2>&1 | tee /tmp/dump_output.log
+          timeout 30 frida -H 127.0.0.1:27042 -p $STABLE_PID -l dump_vmp.js 2>&1 | tee /tmp/dump_output.log
           
-          # ★ 用root + dd dump内存!
-          echo "=== Dumping memory via root ==="
-          # 获取模块地址!
-          MODS=$(grep "\[MOD\]" /tmp/dump_output.log | sed 's/.*\[MOD\] //')
-          echo "Modules found:"
-          echo "$MODS"
+          echo "=== Root memory dump ==="
+          mkdir -p /tmp/vmp_dumps
+          timeout 10 adb -s localhost:5555 shell "cat /proc/$STABLE_PID/maps" > /tmp/vmp_dumps/memory_maps.txt 2>&1
           
-          for MOD in $MODS; do
-              NAME=$(echo $MOD | cut -d' ' -f1)
-              BASE=$(echo $MOD | cut -d' ' -f2)
-              SIZE=$(echo $MOD | cut -d' ' -f3)
-              echo "Dumping $NAME base=$BASE size=$SIZE..."
-              
-              # 转换地址(16进制)!
-              BASE_DEC=$((16#${BASE#x}))
-              # 计算页对齐!
-              PAGE_SIZE=4096
-              SKIP=$((BASE_DEC / PAGE_SIZE))
-              COUNT=$((SIZE / PAGE_SIZE + 1))
-              
-              # 用root dd读!
-              timeout 30 adb -s localhost:5555 shell "su 0 dd if=/proc/$STABLE_PID/mem bs=$PAGE_SIZE skip=$SKIP count=$COUNT of=/data/local/tmp/dump_${NAME}.bin 2>&1" | tail -2
-              # 下载!
-              adb -s localhost:5555 pull "/data/local/tmp/dump_${NAME}.bin" "/tmp/vmp_dumps/" 2>&1 | tail -1
+          for MOD in $(grep "\[MOD\]" /tmp/dump_output.log | sed 's/.*\[MOD\] //' | head -5); do
+              NAME=$(echo $MOD | awk '{print $1}')
+              BASE=$(echo $MOD | awk '{print $2}')
+              SIZE=$(echo $MOD | awk '{print $3}')
+              echo "Dumping $NAME at $BASE size=$SIZE"
+              BASE_NUM=$(python3 -c "print(int('$BASE', 16))")
+              PAGES=$((BASE_NUM / 4096))
+              COUNT=$((SIZE / 4096 + 1))
+              timeout 60 adb -s localhost:5555 shell "dd if=/proc/$STABLE_PID/mem bs=4096 skip=$PAGES count=$COUNT of=/data/local/tmp/d_${NAME}" 2>&1 | tail -1
+              adb -s localhost:5555 pull "/data/local/tmp/d_${NAME}" "/tmp/vmp_dumps/${NAME}.bin" 2>&1 | tail -1
           done
           
           ls -la /tmp/vmp_dumps/
-          timeout 10 adb -s localhost:5555 shell "cat /proc/$STABLE_PID/maps" > /tmp/vmp_dumps/memory_maps.txt 2>&1
-          
-          echo "=== DONE ==="
 
       - name: Upload
         if: always()
