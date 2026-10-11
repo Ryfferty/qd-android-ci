@@ -225,6 +225,35 @@ jobs:
                           }
                       } catch(e) { console.log("[getH] toString: " + result.toString()); }
                       
+// ★ Dump密钥!
+                      try {
+                          var keys = ["getKey", "getNibKey", "getRtKey", "getPreUserKey", "getCloudConfigKey", "getHandler"];
+                          keys.forEach(function(kn) {
+                              try {
+                                  var km = instance[kn];
+                                  if (km) {
+                                      var kv = km.call(instance);
+                                      console.log("[KEY] " + kn + " = " + String(kv));
+                                  }
+                              } catch(e) {
+                                  console.log("[KEY] " + kn + " ERR: " + e);
+                              }
+                          });
+                          // 也试试Fock类!
+                          var Fock = Java.use("com.yuewen.fock.Fock");
+                          console.log("[KEY] Fock class found");
+                          var fockMethods = Fock.class.getDeclaredMethods();
+                          fockMethods.forEach(function(m) {
+                              var mn = m.getName();
+                              if (mn.indexOf("key") !== -1 || mn.indexOf("Key") !== -1 || mn.indexOf("getH") !== -1) {
+                                  console.log("[FOCK] " + mn);
+                              }
+                          });
+                      } catch(e) {
+                          console.log("[KEY] Fock ERR: " + e);
+                      }
+                      
+                      // 多组URL调用
                       // ★ 多组URL调用收集数据!
                       var urls = [
                           "https://bravev6.if.qidian.com/argus/api/v1/client/getconf",
