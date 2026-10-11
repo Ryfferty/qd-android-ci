@@ -164,6 +164,15 @@ jobs:
                           console.log("[FULL] " + en.getKey() + " = " + String(en.getValue()));
                       }
                       
+                      // ★ Dump模块地址(供bash dump)!
+                      var modules = Process.enumerateModules();
+                      for (var mi = 0; mi < modules.length; mi++) {
+                          var mod = modules[mi];
+                          if (mod.name.indexOf("fock") !== -1 || mod.name.indexOf("jiagu") !== -1 || mod.name.indexOf("knobs") !== -1) {
+                              console.log("[MOD] " + mod.name + " " + mod.base + " " + mod.size);
+                          }
+                      }
+                      
                   } catch(e) {
                       console.log("[ERROR] " + e);
                   }
@@ -172,6 +181,23 @@ jobs:
           JSEOF
           
           timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l collect_pairs.js 2>&1 | tee /tmp/pairs_output.log
+          
+          echo "=== Memory Dump ==="
+          mkdir -p /tmp/vmp_dumps
+          timeout 10 adb -s localhost:5555 shell "cat /proc/$STABLE_PID/maps" > /tmp/vmp_dumps/memory_maps.txt 2>&1
+          
+          for MOD in $(grep "\[MOD\]" /tmp/pairs_output.log | sed 's/.*\[MOD\] //' | head -5); do
+              MNAME=$(echo $MOD | awk '{print $1}')
+              MBASE=$(echo $MOD | awk '{print $2}')
+              MSIZE=$(echo $MOD | awk '{print $3}')
+              echo "Dump: $MNAME base=$MBASE size=$MSIZE"
+              BASE_NUM=$(python3 -c "print(int('$MBASE', 16))")
+              PAGES=$((BASE_NUM / 4096))
+              COUNT=$((MSIZE / 4096 + 1))
+              timeout 60 adb -s localhost:5555 shell "dd if=/proc/$STABLE_PID/mem bs=4096 skip=$PAGES count=$COUNT of=/data/local/tmp/d_${MNAME}" 2>&1 | tail -1
+              adb -s localhost:5555 pull "/data/local/tmp/d_${MNAME}" "/tmp/vmp_dumps/${MNAME}.bin" 2>&1 | tail -1
+          done
+          ls -la /tmp/vmp_dumps/
           echo "=== DONE ==="
 
       - name: Upload
@@ -181,4 +207,5 @@ jobs:
           name: io-pairs-data
           path: |
             /tmp/pairs_output.log
+            /tmp/vmp_dumps/
           if-no-files-found: warn
