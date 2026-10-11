@@ -231,47 +231,59 @@ jobs:
                           console.log("[*] Calling getH with Stalker active...");
                           var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
                           var body = RequestBody.create(mediaType, "localLabels=&gender=0");
-                                                                                            // ★ 追踪所有模块的执行!
+                                                                                                                  // ★ 在getH hook内部启动Stalker(正确线程)!
                       var moduleCounts = {};
                       var totalCount = 0;
-                      var tid = Process.getCurrentThreadId();
+                      var stalkerActive = false;
                       
-                      Stalker.follow(tid, {
-                          transform: function(iterator) {
-                              var instruction = iterator.next();
-                              while (instruction !== null) {
-                                  var addr = instruction.address;
-                                  iterator.putCallout(function(context) {
-                                      totalCount++;
-                                      if (totalCount <= 5000) {
-                                          var mod = null;
-                                          try { mod = Process.getModuleByAddress(context.pc); } catch(e) {}
-                                          if (mod) {
-                                              var name = mod.name;
+                      // Hook getH — 在hook内部启动Stalker!
+                      FockUtil.getH.implementation = function(url, method, body) {
+                          console.log("[HOOK] getH called, url=" + url);
+                          var tid = Process.getCurrentThreadId();
+                          console.log("[HOOK] thread=" + tid);
+                          
+                          Stalker.follow(tid, {
+                              transform: function(iterator) {
+                                  var inst = iterator.next();
+                                  while (inst !== null) {
+                                      iterator.putCallout(function(context) {
+                                          totalCount++;
+                                          if (totalCount <= 3000) {
+                                              var mn = null;
+                                              try { mn = Process.getModuleByAddress(context.pc); } catch(e) {}
+                                              var name = mn ? mn.name : 'anon';
                                               if (!moduleCounts[name]) moduleCounts[name] = 0;
                                               moduleCounts[name]++;
-                                          } else {
-                                              if (!moduleCounts['anonymous']) moduleCounts['anonymous'] = 0;
-                                              moduleCounts['anonymous']++;
                                           }
-                                      }
-                                  });
-                                  iterator.keep();
-                                  instruction = iterator.next();
+                                      });
+                                      iterator.keep();
+                                      inst = iterator.next();
+                                  }
+                              }
+                          });
+                          stalkerActive = true;
+                          console.log("[HOOK] Stalker started");
+                          
+                          // 调用原始getH!
+                          var result = this.getH(url, method, body);
+                          
+                          if (stalkerActive) {
+                              Stalker.unfollow(tid);
+                              Stalker.flush();
+                              stalkerActive = false;
+                              console.log("[TOTAL] " + totalCount + " instructions");
+                              var sorted = Object.entries(moduleCounts).sort(function(a, b) { return b[1] - a[1]; });
+                              for (var si = 0; si < Math.min(sorted.length, 15); si++) {
+                                  console.log("[MC] " + sorted[si][0] + ": " + sorted[si][1]);
                               }
                           }
-                      });
-                      console.log("[*] Stalker following ALL - tid=" + tid);
+                          
+                          return result;
+                      };
                       
+                      // 触发getH!
                       var result = instance.getH(url, "POST", body);
-                      Stalker.unfollow(tid);
-                      Stalker.flush();
-                      console.log("[TOTAL] " + totalCount + " total instructions");
-                      console.log("[MODULES] " + JSON.stringify(moduleCounts));
-                      var sorted = Object.entries(moduleCounts).sort(function(a, b) { return b[1] - a[1]; });
-                      for (var si = 0; si < Math.min(sorted.length, 15); si++) {
-                          console.log("[MOD_COUNT] " + sorted[si][0] + ": " + sorted[si][1]);
-                      }
+                      console.log("[*] getH completed");
                       var rm = Java.cast(result, Java.use("java.util.Map"));
                           var iter = rm.entrySet().iterator();
                           while (iter.hasNext()) {
