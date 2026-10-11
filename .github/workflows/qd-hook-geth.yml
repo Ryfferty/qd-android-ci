@@ -387,79 +387,19 @@ jobs:
             
             if [ -n "$BORGUS" ]; then
               echo "--- 调用getconf ---"
-              # 用Python: getH的borgus + 自己算的QDSign!
-            RESP=$(python3 -c "
-import json, hashlib, base64, urllib.request, urllib.parse, urllib.error, gzip, time
-from Crypto.Cipher import DES3
-
-# 从getH输出读取!
-import re
-log = open('/tmp/geth_output.log').read()
-# 找PAIR0!
-m = re.search(r'\[PAIR0\].*?$', log, re.MULTILINE)
-if not m:
-    # 试试第一个getH结果!
-    borgus_m = re.search(r'borgus=([a-f0-9]{32})', log)
-    qdinfo_m = re.search(r'QDInfo=([^;\s]+)', log)
-    ts_m = re.search(r'tstamp=(\d+)', log)
-    if borgus_m and qdinfo_m and ts_m:
-        BORGUS = borgus_m.group(1)
-        QDINFO = qdinfo_m.group(1)
-        TS = ts_m.group(1)
-    else:
-        print('CANNOT_EXTRACT')
-        exit()
-else:
-    line = m.group(0)
-    BORGUS = re.search(r'borgus=([a-f0-9]{32})', line).group(1)
-    QDINFO = re.search(r'QDInfo=([^;\s]+)', line).group(1)
-    TS = re.search(r'tstamp=(\d+)', line).group(1)
-
-# 计算QDSign(已知算法)!
-body = 'localLabels=&gender=0'
-md5_body = hashlib.md5(body.encode()).hexdigest()
-# QDSign明文!
-plain = f'Rv1rPTnczce|{TS}|0|||1|7.9.464|1|{md5_body}|f189adc92b816b3e9da29ea304d4a7e4'
-# 3DES!
-key = b'sewxf03hhz3ew9qcCXMHiDMk'
-iv = b'sh331nt1'
-pad = 8 - len(plain) % 8
-if pad == 0: pad = 8
-plain_padded = plain.encode() + bytes([pad]) * pad
-enc = DES3.new(key, DES3.MODE_CBC, iv).encrypt(plain_padded)
-qdsign = base64.b64encode(enc).decode()
-
-# 发请求!
-headers = {{
-    'User-Agent': 'Mozilla/mobile QDReaderAndroid/7.9.464/1906/1000009/redroid/getTabHeight_68',
-    'Cookie': f'QDInfo={{QDINFO}}; ywkey=; ywguid=; appId=12; areaId=30; lang=cn; mode=normal; bar=36; qid=; qidth=; ',
-    'QDInfo': QDINFO,
-    'tstamp': TS,
-    'cecelia': '',
-    'borgus': BORGUS,
-    'QDSign': qdsign,
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'Referer': 'http://android.qidian.com',
-    'Accept-Encoding': 'gzip',
-}}
-url = 'https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0'
-try:
-    req = urllib.request.Request(url, data=body.encode(), headers=headers, method='POST')
-    r = urllib.request.urlopen(req, timeout=30)
-    raw = r.read()
-    try: raw = gzip.decompress(raw)
-    except: pass
-    print(raw.decode('utf-8', errors='replace')[:500])
-except urllib.error.HTTPError as e:
-    body2 = e.read()
-    try: body2 = gzip.decompress(body2)
-    except: pass
-    print(f'HTTP{{e.code}}: {{body2.decode(\"utf-8\", errors=\"replace\")[:500]}}')
-except Exception as e:
-    print(f'ERR: {{e}}')
-" 2>&1)
-            echo "★★★ GETCONF RESPONSE: $RESP"
-            echo "$RESP" > /tmp/getconf_response.jsonfi
+              RESP=$(curl -s -X POST "https://bravev6.if.qidian.com/argus/api/v1/client/getconf" \
+                -H "Content-Type: application/x-www-form-urlencoded" \
+                -H "User-Agent: $UA" \
+                -H "Cookie: $COOKIESTR; QDInfo=$QDINFO" \
+                -H "QDInfo: $QDINFO" \
+                -H "tstamp: $TSTAMP" \
+                -H "borgus: $BORGUS" \
+                -H "QDSign: $QDSIGN" \
+                -H "Referer: http://android.qidian.com" \
+                -d "localLabels=&gender=0" --max-time 30 2>&1)
+              echo "★★★ GETCONF RESPONSE: $RESP"
+              echo "$RESP" > /tmp/getconf_response.json
+            fi
           fi
           
           echo "=== Hook Results ==="
