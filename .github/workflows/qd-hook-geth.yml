@@ -367,6 +367,41 @@ jobs:
           timeout 120 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_geth.js 2>&1 | tee /tmp/geth_output.log
           
           echo ""
+          # ★ 解析borgus头并用curl调真实API!
+          echo "=== Fresh API Call ==="
+          # 从frida输出提取Pair0的完整头!
+          BORING_LINE=$(grep "\[PAIR0\]" /tmp/geth_output.log | tail -1)
+          if [ -n "$BORING_LINE" ]; then
+            echo "Found Pair0 headers!"
+            # 提取各个头!
+            BORGUS=$(echo "$BORING_LINE" | grep -oP 'borgus=[a-f0-9]+' | cut -d= -f2)
+            QDINFO=$(echo "$BORING_LINE" | grep -oP 'QDInfo=[^;]+' | tail -1 | cut -d= -f2)
+            TSTAMP=$(echo "$BORING_LINE" | grep -oP 'tstamp=[0-9]+' | cut -d= -f2)
+            QDSIGN=$(echo "$BORING_LINE" | grep -oP 'QDSign=[^;]+' | head -1 | cut -d= -f2)
+            UA=$(echo "$BORING_LINE" | grep -oP 'User-Agent=[^;]+' | cut -d= -f2)
+            COOKIESTR=$(echo "$BORING_LINE" | grep -oP 'Cookie=[^;]+' | head -1 | cut -d= -f2)
+            
+            echo "BORGUS=$BORGUS"
+            echo "TSTAMP=$TSTAMP"
+            echo "QDINFO=${QDINFO:0:50}..."
+            
+            if [ -n "$BORGUS" ]; then
+              echo "--- 调用getconf ---"
+              RESP=$(curl -s -X POST "https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0" \
+                -H "Content-Type: application/x-www-form-urlencoded" \
+                -H "User-Agent: $UA" \
+                -H "Cookie: $COOKIESTR; QDInfo=$QDINFO" \
+                -H "QDInfo: $QDINFO" \
+                -H "tstamp: $TSTAMP" \
+                -H "borgus: $BORGUS" \
+                -H "QDSign: $QDSIGN" \
+                -H "Referer: http://android.qidian.com" \
+                -d "localLabels=&gender=0" --max-time 30 2>&1)
+              echo "★★★ GETCONF RESPONSE: $RESP"
+              echo "$RESP" > /tmp/getconf_response.json
+            fi
+          fi
+          
           echo "=== Hook Results ==="
           cat /tmp/geth_output.log | grep -E "\[getH\]|\[addRetrofitH\]|\[getQDInfoEncrypt\]|\[\+\]|\[CLASS\]" | head -50
           
