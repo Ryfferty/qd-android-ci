@@ -387,19 +387,11 @@ jobs:
             
             if [ -n "$BORGUS" ]; then
               echo "--- 调用getconf ---"
-              RESP=$(curl -s -X POST "https://bravev6.if.qidian.com/argus/api/v1/client/getconf" \
-                -H "Content-Type: application/x-www-form-urlencoded" \
-                -H "User-Agent: $UA" \
-                -H "Cookie: $COOKIESTR; QDInfo=$QDINFO" \
-                -H "QDInfo: $QDINFO" \
-                -H "tstamp: $TSTAMP" \
-                -H "borgus: $BORGUS" \
-                -H "QDSign: $QDSIGN" \
-                -H "Referer: http://android.qidian.com" \
-                -d "localLabels=&gender=0" --max-time 30 2>&1)
-              echo "★★★ GETCONF RESPONSE: $RESP"
-              echo "$RESP" > /tmp/getconf_response.json
-            fi
+              # 用独立Python脚本!
+            pip install -q pycryptodome 2>/dev/null || pip3 install -q pycryptodome
+            RESP=$(python3 getconf_test.py /tmp/geth_output.log 2>&1)
+            echo "★★★ GETCONF RESPONSE: $RESP"
+            echo "$RESP" > /tmp/getconf_response.jsonfi
           fi
           
           echo "=== Hook Results ==="
