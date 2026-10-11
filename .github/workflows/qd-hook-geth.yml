@@ -85,167 +85,48 @@ jobs:
           
           # Write Frida hook script
           cat > hook_geth.js << 'HOOKEOF'
-          // Hook FockUtil.getH — capture borgus generation
-          console.log("[*] Hook script loaded");
-          
           Java.perform(function() {
-              console.log("[*] Java.perform started");
-              
-              // Wait for class to load
               setTimeout(function() {
                   try {
                       var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
-                      console.log("[+] FockUtil class found!");
-                      
-                      // List all methods
-                      var methods = FockUtil.class.getDeclaredMethods();
-                      console.log("[*] Methods count: " + methods.length);
-                      
-                      methods.forEach(function(method) {
-                          var name = method.getName();
-                          var params = method.getParameterTypes();
-                          var paramStr = "";
-                          for (var i = 0; i < params.length; i++) {
-                              paramStr += params[i].getName() + ", ";
-                          }
-                          console.log("  Method: " + name + "(" + paramStr + ")");
-                      });
-                      
-                      // Hook getH (all overloads)
-                      try {
-                          var getH = FockUtil.getH;
-                          if (getH) {
-                              var overloads = getH.overloads;
-                              overloads.forEach(function(overload) {
-                                  overload.implementation = function() {
-                                      var args = [];
-                                      for (var i = 0; i < arguments.length; i++) {
-                                          args.push(String(arguments[i]));
-                                      }
-                                      console.log("[getH] INPUT: " + args.join(" | "));
-                                      var result = overload.apply(this, arguments);
-                                      console.log("[getH] OUTPUT: " + String(result));
-                                      // Save to file
-                                      send({type: "getH", input: args, output: String(result)});
-                                      return result;
-                                  };
-                              });
-                              console.log("[+] getH hooked! (" + overloads.length + " overloads)");
-                          }
-                      } catch(e) {
-                          console.log("[!] getH hook: " + e);
-                      }
-                      
-                      // Hook addRetrofitH
-                      try {
-                          var addRH = FockUtil.addRetrofitH;
-                          if (addRH) {
-                              addRH.overloads.forEach(function(overload) {
-                                  overload.implementation = function() {
-                                      var args = [];
-                                      for (var i = 0; i < arguments.length; i++) {
-                                          args.push(String(arguments[i]));
-                                      }
-                                      console.log("[addRetrofitH] INPUT: " + args.join(" | "));
-                                      var result = overload.apply(this, arguments);
-                                      console.log("[addRetrofitH] OUTPUT: " + String(result));
-                                      send({type: "addRetrofitH", input: args, output: String(result)});
-                                      return result;
-                                  };
-                              });
-                              console.log("[+] addRetrofitH hooked!");
-                          }
-                      } catch(e) {
-                          console.log("[!] addRetrofitH: " + e);
-                      }
-                      
-                      // Hook getQDInfoEncrypt
-                      try {
-                          var gqdi = FockUtil.getQDInfoEncrypt;
-                          if (gqdi) {
-                              gqdi.overloads.forEach(function(overload) {
-                                  overload.implementation = function() {
-                                      var result = overload.apply(this, arguments);
-                                      console.log("[getQDInfoEncrypt] OUTPUT: " + String(result).substring(0, 100));
-                                      send({type: "getQDInfoEncrypt", output: String(result)});
-                                      return result;
-                                  };
-                              });
-                              console.log("[+] getQDInfoEncrypt hooked!");
-                          }
-                      } catch(e) {
-                          console.log("[!] getQDInfoEncrypt: " + e);
-                      }
-                      
-                  } catch(e) {
-                      console.log("[!] FockUtil: " + e);
-                      // Try to list loaded classes
-                      Java.enumerateLoadedClasses({
-                          onMatch: function(name) {
-                              if (name.indexOf("Fock") !== -1 || name.indexOf("fock") !== -1) {
-                                  console.log("[CLASS] " + name);
-                              }
-                          },
-                          onComplete: function() {}
-                      });
-                  }
-              }, 3000);
-              
-              // ★ 主动调用getH(不等App触发)!
-              setTimeout(function() {
-                  console.log("[*] Directly calling getH...");
-                  try {
-                      // 构造测试参数
-                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
-                      var method = "POST";
-                      var body = "localLabels=&gender=0";
-                      
-                      // 找到getH方法并调用!
-                      var FockUtil2 = Java.use("com.qidian.QDReader.component.util.FockUtil");
-                      var getHMethod = FockUtil2.getH;
-                      if (getHMethod) {
-                          console.log("[*] Calling getH(" + url + ", " + method + ", " + body + ")");
-                          // 调用!
-                      // 创建okhttp3.RequestBody!
+                      var instance = FockUtil.INSTANCE.value;
                       var RequestBody = Java.use("okhttp3.RequestBody");
                       var MediaType = Java.use("okhttp3.MediaType");
                       var mediaType = MediaType.parse("application/x-www-form-urlencoded");
-                      var requestBody = RequestBody.create(mediaType, body);
-                      // 获取FockUtil实例!
-                      var instance = FockUtil2.INSTANCE.value;
-                      console.log("[*] INSTANCE: " + instance);
-                      var result = instance.getH(url, method, requestBody);
-                      // 展开Map结果!
-                      console.log("[getH] ★★★RESULT type: " + result.$className);
-                      try {
-                          var resultMap = Java.cast(result, Java.use("java.util.Map"));
-                          var entrySet = resultMap.entrySet();
-                          var iter = entrySet.iterator();
-                          while (iter.hasNext()) {
-                              var entry = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
-                              console.log("[getH] ★ " + entry.getKey() + " = " + entry.getValue());
+                      
+                      FockUtil.encryptionMD5.implementation = function(input) {
+                          var hex = "";
+                          for (var i = 0; i < input.length && i < 64; i++) {
+                              hex += ("0" + (input[i] & 0xFF).toString(16)).slice(-2);
                           }
-                      } catch(e) {
-                          console.log("[getH] Map展开失败: " + e);
-                          console.log("[getH] toString: " + result.toString());
-                      }
-                      send({type: "directCall", result: String(result)});
-                      send({type: "directCall", result: String(result)});
-                      send({type: "directCall", result: String(result)});
-                          send({type: "directCall", result: String(result)});
+                          console.log("[MD5_IN] hex: " + hex);
+                          var str = "";
+                          for (var i = 0; i < input.length && i < 64; i++) {
+                              var ch = input[i] & 0xFF;
+                              if (ch >= 32 && ch < 127) str += String.fromCharCode(ch);
+                              else str += ".";
+                          }
+                          console.log("[MD5_IN] str: " + str);
+                          var result = this.encryptionMD5(input);
+                          console.log("[MD5_OUT] " + result);
+                          return result;
+                      };
+                      console.log("[+] encryptionMD5 hooked");
+                      
+                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0";
+                      var body = RequestBody.create(mediaType, "localLabels=&gender=0");
+                      var result = instance.getH(url, "POST", body);
+                      
+                      var rm = Java.cast(result, Java.use("java.util.Map"));
+                      var iter = rm.entrySet().iterator();
+                      while (iter.hasNext()) {
+                          var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                          console.log("[RESULT] " + en.getKey() + " = " + String(en.getValue()).substring(0, 80));
                       }
                   } catch(e) {
-                      console.log("[!] Direct call error: " + e);
-                      // 尝试addRetrofitH!
-                      try {
-                          var FockUtil3 = Java.use("com.qidian.QDReader.component.util.FockUtil");
-                          var addRH = FockUtil3.addRetrofitH;
-                          console.log("[*] addRetrofitH type: " + typeof addRH);
-                      } catch(e2) {
-                          console.log("[!] addRetrofitH: " + e2);
-                      }
+                      console.log("[ERROR] " + e);
                   }
-              }, 8000);
+              }, 3000);
           });
           HOOKEOF
           
