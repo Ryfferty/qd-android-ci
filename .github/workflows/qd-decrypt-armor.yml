@@ -214,68 +214,46 @@ jobs:
                           console.log("[HOOK_ERR] " + e);
                       }
                       
-                      // ★ 读取lk()的XOR函数指针!
-                      console.log("\n[TRACE] 读取lk()的XOR函数指针...");
-                      try {
-                          var BASE = Module.findBaseAddress("libnib.so");
-                          if (BASE) {
-                              // lk() JNI入口 @ 0x178a0!
-                              // 从反编译: __ptr = *(*(DAT_00017940 + 0x178dc)) ^ (DAT_00017940 + 0x178dc)
-                              // DAT_00017940在literal pool!
-                              // 读literal pool值!
-                              var pool_addr = BASE.add(0x17940);
-                              var pool_val = pool_addr.readU32();
-                              console.log("[TRACE] literal_pool[0x17940] = 0x" + pool_val.toString(16));
-                              
-                              // PC at 0x178dc: 0x178dc + 4 = 0x178e0, aligned = 0x178e0
-                              // 但实际看指令: ldr r1, [pool]; add r1, pc
-                              // PC = (当前地址+4)&~1
-                              // 对于add指令在0x178e0: PC = 0x178e0+4 = 0x178e4, &~1 = 0x178e4
-                              
-                              // 计算实际地址!
-                              var r1 = pool_val;  // literal pool value
-                              // 需要PC值! 从反编译: DAT_00017940 + 0x178dc
-                              // 0x178dc是指令地址附近!
-                              // 实际PC计算: 指令在0x178d8-0x178dc附近!
-                              var pc = 0x178e0;  // 近似PC!
-                              var data_addr = r1 + pc;
-                              console.log("[TRACE] data_addr = 0x" + pool_val.toString(16) + " + 0x" + pc.toString(16) + " = 0x" + data_addr.toString(16));
-                              
-                              // 读取XOR值!
-                              var stored_val = ptr(data_addr).readU32();
-                              console.log("[TRACE] stored_val = 0x" + stored_val.toString(16));
-                              
-                              // XOR解密!
-                              var fn_ptr = stored_val ^ data_addr;
-                              console.log("[TRACE] ★ lk()函数地址 = 0x" + fn_ptr.toString(16));
-                              
-                              // Hook这个函数!
-                              if (fn_ptr > 0x7000 && fn_ptr < 0x28000) {
-                                  var actual_fn = BASE.add(fn_ptr & ~1);
-                                  console.log("[TRACE] 实际函数(libnib内偏移): 0x" + (fn_ptr & ~1).toString(16));
-                                  
-                                  Interceptor.attach(actual_fn, {
-                                      onEnter: function(args) {
-                                          console.log("[LK_FN] called! arg0=" + args[0] + " arg1=" + args[1] + " arg2=" + args[2]);
-                                          // 读取input数据!
-                                          if (args[1].toInt32() > 0 && args[1].toInt32() < 100) {
-                                              var input_hex = "";
-                                              for (var i = 0; i < args[1].toInt32(); i++) {
-                                                  input_hex += ("0" + args[0].add(i).readU8().toString(16)).slice(-2);
-                                              }
-                                              console.log("[LK_FN] input(" + args[1] + "B): " + input_hex);
-                                          }
-                                      },
-                                      onLeave: function(retval) {
-                                          console.log("[LK_FN] returned: " + retval);
+                      // ★ 用Stalker trace lk()的调用链!
+                      console.log("\n[STALKER] Trace lk()调用链...");
+                      var NW_trace = Java.use("com.yuewen.nib.NativeWrapper");
+                      
+                      // 获取当前线程!
+                      var tid = Process.getCurrentThreadId();
+                      var base = Module.findBaseAddress("libnib.so");
+                      console.log("[STALKER] libnib base: " + base);
+                      
+                      // 开启Stalker!
+                      Stalker.follow(tid, {
+                          events: {
+                              call: true,  // 跟踪调用!
+                              ret: false,
+                              exec: false
+                          },
+                          onReceive: function(events) {
+                              // 处理调用事件!
+                              for (var i = 0; i < events.length; i++) {
+                                  var ev = events[i];
+                                  if (ev[0] === "call") {
+                                      var from = ev[1];
+                                      var to = ev[2];
+                                      // 只记录libnib内的调用!
+                                      if (to >= base && to < base.add(0x30000)) {
+                                          console.log("[CALL] " + from.sub(base) + " → " + to.sub(base));
                                       }
-                                  });
-                                  console.log("[TRACE] lk()函数已hook!");
+                                  }
                               }
                           }
-                      } catch(e) {
-                          console.log("[TRACE_ERR] " + e);
-                      }
+                      });
+                      
+                      // 调用lk()!
+                      console.log("[STALKER] 调用lk('test')...");
+                      var trace_result = NW_trace.a("test");
+                      console.log("[STALKER] lk()结果: " + trace_result);
+                      
+                      // 停止Stalker!
+                      Stalker.unfollow(tid);
+                      console.log("[STALKER] Trace完成!");
                       
                       // 简化lk()测试!
                       var NW = Java.use("com.yuewen.nib.NativeWrapper");
