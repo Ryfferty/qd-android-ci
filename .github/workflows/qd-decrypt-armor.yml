@@ -256,31 +256,11 @@ jobs:
                           } catch(e) {}
                       }
                       
-                      // ★ 正确hook — 修复闭包bug! 用let!
-                      console.log("\n[IO2] 修复闭包重新hook...");
+                      // ★ 干净版本: 只有attach,无replace!
+                      console.log("\n[IO3] Hook(只有attach)...");
                       var called_fns = {};
                       
-                      // 重新hook所有(用正确的闭包)!
-                      for (let ei = 0; ei < nib_exports.length; ei++) {
-                          let exp = nib_exports[ei];
-                          try {
-                              Interceptor.replace(exp.address, new NativeCallback(function(a, b, c, d) {
-                                  // 记录调用!
-                                  var key = exp.name;
-                                  if (!called_fns[key]) {
-                                      called_fns[key] = { count: 0, addr: exp.address.sub(BASE).toString() };
-                                  }
-                                  called_fns[key].count++;
-                                  
-                                  // 调原函数!
-                                  // 但Interceptor.replace需要完整实现...
-                                  // 换用attach!
-                              }, 'void', ['pointer', 'pointer', 'pointer', 'pointer']));
-                          } catch(e) {}
-                      }
-                      
-                      // 用attach代替replace!
-                      called_fns = {};
+                      // 重新hook所有(用let闭包)!
                       for (let ei = 0; ei < nib_exports.length; ei++) {
                           let exp = nib_exports[ei];
                           try {
@@ -297,11 +277,11 @@ jobs:
                       }
                       
                       // 调lk()!
-                      var NW4 = Java.use("com.yuewen.nib.NativeWrapper");
-                      console.log("[IO2] 调lk('AB')...");
-                      var res = NW4.a("AB");
-                      console.log("[IO2] 结果: " + res);
-                      console.log("[IO2] 被调用的函数: " + JSON.stringify(called_fns));
+                      var NW5 = Java.use("com.yuewen.nib.NativeWrapper");
+                      console.log("[IO3] 调lk('AB')...");
+                      var res = NW5.a("AB");
+                      console.log("[IO3] 结果: " + res);
+                      console.log("[IO3] 被调用: " + JSON.stringify(called_fns));
                       
                       // 简化lk()测试!
                       var NW = Java.use("com.yuewen.nib.NativeWrapper");
