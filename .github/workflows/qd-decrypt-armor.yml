@@ -63,7 +63,7 @@ jobs:
           timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
           sleep 8
           adb -s $B forward tcp:27042 tcp:27042
-          timeout 90 frida -H 127.0.0.1:27042 -p $PID -l trace_sa3.js 2>&1 | tee /tmp/decrypt_output.log
+          timeout 90 frida -H 127.0.0.1:27042 -p $PID -l trace_ttable.js 2>&1 | tee /tmp/decrypt_output.log
           echo "=== Done ==="
 
       - name: Upload
