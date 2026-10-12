@@ -350,7 +350,7 @@ jobs:
                           if (ostarBase) {
                               var offsets = {z: 0x4ccb8, z2: 0x4cd50, o: 0x4cc1c, u: 0x4c774, p: 0x4c980, r: 0x4cdfc, x: 0x4c884};
                               var env = Java.vm.getEnv();
-                              var envPtr = env.handle.readPointer();
+                              var envPtr = env.handle; // NOT readPointer!
                               var ctx = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
                               var ctxPtr = ctx.$handle;
                               try {
