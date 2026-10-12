@@ -328,6 +328,61 @@ jobs:
                               } catch(e) {
                                   console.log("[NBT_ERR] " + e);
                               }
+                              // ★ Dump匿名内存区域!
+                              try {
+                                  // 找backtrace第一个地址所在的内存范围!
+                                  var targetAddr = nbt[0];
+                                  var ranges = Process.enumerateRanges('r-x');
+                                  var targetRange = null;
+                                  for (var tri = 0; tri < ranges.length; tri++) {
+                                      var tr = ranges[tri];
+                                      if (targetAddr >= tr.base && targetAddr < tr.base.add(tr.size)) {
+                                          targetRange = tr;
+                                          console.log("[RANGE] Found: " + tr.base + " size=" + tr.size + " prot=" + (tr.protection || 'r-x'));
+                                          break;
+                                      }
+                                  }
+                                  if (!targetRange) {
+                                      // 也试r--和rw-!
+                                      var allRanges = Process.enumerateRanges('r--');
+                                      for (var ari = 0; ari < allRanges.length; ari++) {
+                                          var ar = allRanges[ari];
+                                          if (targetAddr >= ar.base && targetAddr < ar.base.add(ar.size)) {
+                                              targetRange = ar;
+                                              console.log("[RANGE] Found r--: " + ar.base + " size=" + ar.size);
+                                              break;
+                                          }
+                                      }
+                                  }
+                                  if (targetRange) {
+                                      // Dump这个区域(最大10MB)!
+                                      var dumpSize = Math.min(targetRange.size, 10 * 1024 * 1024);
+                                      console.log("[DUMP] Reading " + dumpSize + " bytes from " + targetRange.base);
+                                      try {
+                                          var dumpData = Memory.readByteArray(targetRange.base, dumpSize);
+                                          var dumpFile = new File("/data/local/tmp/vmp_code.bin", "wb");
+                                          dumpFile.write(dumpData);
+                                          dumpFile.close();
+                                          console.log("[DUMP] Saved to /data/local/tmp/vmp_code.bin");
+                                      } catch(de) {
+                                          console.log("[DUMP_ERR] " + de);
+                                          // 试小块!
+                                          try {
+                                              var smallDump = Memory.readByteArray(targetAddr, 4096);
+                                              var sf = new File("/data/local/tmp/vmp_small.bin", "wb");
+                                              sf.write(smallDump);
+                                              sf.close();
+                                              console.log("[DUMP] Small dump saved (4KB at " + targetAddr + ")");
+                                          } catch(se) {
+                                              console.log("[DUMP_ERR2] " + se);
+                                          }
+                                      }
+                                  } else {
+                                      console.log("[RANGE] Not found in any range!");
+                                  }
+                              } catch(e) {
+                                  console.log("[RANGE_ERR] " + e);
+                              }
                           }
                           return this.put(key, value);
                       };
@@ -367,4 +422,6 @@ jobs:
           path: |
             /tmp/pairs_output.log
             /tmp/vmp_dumps/
+            /tmp/vmp_code.bin
+            /tmp/vmp_small.bin
           if-no-files-found: warn
