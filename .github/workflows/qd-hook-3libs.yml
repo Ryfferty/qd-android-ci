@@ -413,7 +413,6 @@ jobs:
                               console.log("[BEACON_ERR] " + be);
                           }
                           
-} catch(e) { console.log("[CAL_OSTAR_ERR] " + e); }
                       
                       console.log("[DONE] All calls completed!");
                   }, 5000);
