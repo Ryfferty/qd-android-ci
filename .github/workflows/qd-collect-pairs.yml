@@ -299,61 +299,52 @@ jobs:
                           console.log("[LOC] " + foundAddrs[fi].addr + " in " + foundAddrs[fi].module + " (" + foundAddrs[fi].pattern + ")");
                       }
                       
-                      // ★ MemoryAccessMonitor: 监视第一个位置!
-                      if (foundAddrs.length > 0) {
-                          var watchAddr = foundAddrs[0].addr;
-                          console.log("[WATCH] monitoring " + watchAddr);
-                          var accessLog = [];
-                          try {
-                              MemoryAccessMonitor.enable([{base: watchAddr, size: 64}], {
-                                  onAccess: function(details) {
-                                      accessLog.push({
-                                          op: details.operation,
-                                          from: details.from,
-                                          addr: details.address
-                                      });
-                                      // ★ 捕获调用栈!
-                                      console.log("[ACC] " + details.operation + " from " + details.from);
-                                      try {
-                                          var bt = Thread.backtrace(details.context, Backtracer.ACCURATE);
-                                          for (var bi = 0; bi < bt.length; bi++) {
-                                              var sym = null;
-                                              var mod = null;
-                                              try { 
-                                                  mod = Process.getModuleByAddress(bt[bi]);
-                                              } catch(e) {}
-                                              if (mod) {
-                                                  var offset = bt[bi].sub(mod.base);
-                                                  console.log("[BT] " + bi + ": " + mod.name + "+" + offset.toString(16));
-                                              } else {
-                                                  console.log("[BT] " + bi + ": " + bt[bi] + " (anon)");
-                                              }
-                                          }
-                                      } catch(e) {
-                                          console.log("[BT_ERR] " + e);
-                                      }
-                                  }
-                              });
-                              console.log("[WATCH] enabled");
-                              
-                              // 第二次调用getH!
-                              var body2 = RequestBody.create(mediaType, "localLabels=&gender=0");
-                              var result2 = instance.getH(url, "POST", body2);
-                              console.log("[*] second getH done");
-                              
-                              MemoryAccessMonitor.disable();
-                              
-                              console.log("[ACCESS] " + accessLog.length + " accesses");
-                              for (var ai = 0; ai < Math.min(accessLog.length, 20); ai++) {
-                                  var a = accessLog[ai];
-                                  var fromMod = null;
-                                  try { fromMod = Process.getModuleByAddress(a.from); } catch(e) {}
-                                  console.log("[ACC] " + a.op + " from " + a.from + " (" + (fromMod ? fromMod.name : 'anon') + ")");
+                                            // ★ Hook NewStringUTF — 抓VMP创建borgus的时刻!
+                      // 找NewStringUTF!
+                      var newStringUTF = null;
+                      var artModule = Process.findModuleByName("libart.so");
+                      if (artModule) {
+                          // 遍历导出找NewStringUTF!
+                          var exports = artModule.enumerateExports();
+                          for (var ei = 0; ei < exports.length; ei++) {
+                              if (exports[ei].name.indexOf("NewStringUTF") !== -1) {
+                                  newStringUTF = exports[ei].address;
+                                  console.log("[NSU] Found: " + exports[ei].name + " at " + newStringUTF);
+                                  break;
                               }
-                          } catch(e) {
-                              console.log("[WATCH_ERR] " + e);
                           }
                       }
+                      
+                      if (newStringUTF) {
+                          Interceptor.attach(newStringUTF, {
+                              onEnter: function(args) {
+                                  // 读取C字符串!
+                                  try {
+                                      var str = args[1].readCString();
+                                      if (str && str.length === 32 && /^[0-9a-f]+$/.test(str)) {
+                                          console.log("[★★★BORGUS_STR] " + str);
+                                          // 调用栈!
+                                          var bt = Thread.backtrace(this.context, Backtracer.ACCURATE);
+                                          for (var bi = 0; bi < Math.min(bt.length, 20); bi++) {
+                                              var mod = null;
+                                              try { mod = Process.getModuleByAddress(bt[bi]); } catch(e) {}
+                                              if (mod) {
+                                                  console.log("[★BT] " + bi + ": " + mod.name + "+" + bt[bi].sub(mod.base).toString(16));
+                                              } else {
+                                                  console.log("[★BT] " + bi + ": " + bt[bi] + " (anon)");
+                                              }
+                                          }
+                                      }
+                                  } catch(e) {}
+                              }
+                          });
+                          console.log("[+] NewStringUTF hooked!");
+                      }
+                      
+                      // 调用getH!
+                      var body2 = RequestBody.create(mediaType, "localLabels=&gender=0");
+                      var result2 = instance.getH(url, "POST", body2);
+                      console.log("[*] getH done");
                       var rm = Java.cast(result, Java.use("java.util.Map"));
                           var iter = rm.entrySet().iterator();
                           while (iter.hasNext()) {
