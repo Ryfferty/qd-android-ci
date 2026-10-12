@@ -360,17 +360,9 @@ jobs:
                                   console.log("[BEACON] ctx: " + ctx);
                                   
                                   // 先查是否已初始化!
-                                  try {
-                                      var isStarted = report.isStarted();
-                                      console.log("[BEACON] isStarted: " + isStarted);
-                                  } catch(se) {
-                                      console.log("[BEACON] isStarted err: " + se);
-                                  }
-                                  
-                                  // 如果没启动, 启动它!
-                                  if (!isStarted) {
-                                      try {
-                                          report.start(ctx, "qidian");
+                                  // 直接start!
+                                  {
+                                          report.start(ctx, "0I000JZU8B16UN21", null);
                                           console.log("[BEACON] started!");
                                       } catch(stE) {
                                           console.log("[BEACON] start err: " + stE);
