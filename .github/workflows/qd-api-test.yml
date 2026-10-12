@@ -101,11 +101,11 @@ jobs:
                   } catch(e) {
                       console.log("[ERROR] " + e);
                   }
-              }, 3000);
+              }, 500);
           });
           JSEOF
           
-          timeout 30 frida -H 127.0.0.1:27042 -p $STABLE_PID -l gen_borgus.js 2>&1 | tee /tmp/borgus_output.log
+          timeout 8 frida -H 127.0.0.1:27042 -p $STABLE_PID -l gen_borgus.js 2>&1 | tee /tmp/borgus_output.log
           
           # ★ 提取borgus数据并立刻调API!
           echo "=== Extracting borgus data ==="
