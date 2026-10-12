@@ -305,14 +305,28 @@ jobs:
                           var k = key ? key.toString() : "";
                           if (k === "borgus") {
                               console.log("[★★★PUT] borgus = " + value);
+                              // Java栈!
                               try {
                                   var stack = Java.use("java.lang.Thread").currentThread().getStackTrace();
-                                  console.log("[★STACK] length=" + stack.length);
                                   for (var si = 0; si < Math.min(stack.length, 30); si++) {
                                       console.log("[★S] " + stack[si].toString());
                                   }
+                              } catch(e) {}
+                              // ★ Native栈!
+                              try {
+                                  var nbt = Thread.backtrace(this.context, Backtracer.ACCURATE);
+                                  console.log("[★NBT] " + nbt.length + " native frames");
+                                  for (var ni = 0; ni < Math.min(nbt.length, 30); ni++) {
+                                      var nmod = null;
+                                      try { nmod = Process.getModuleByAddress(nbt[ni]); } catch(e) {}
+                                      if (nmod) {
+                                          console.log("[★N] " + ni + ": " + nmod.name + "+" + nbt[ni].sub(nmod.base).toString(16));
+                                      } else {
+                                          console.log("[★N] " + ni + ": " + nbt[ni] + " (anon)");
+                                      }
+                                  }
                               } catch(e) {
-                                  console.log("[STK_ERR] " + e);
+                                  console.log("[NBT_ERR] " + e);
                               }
                           }
                           return this.put(key, value);
