@@ -20,7 +20,9 @@ ts = str(int(time.time() * 1000))
 
 # QDSign!
 body = 'localLabels=&gender=0'
-md5_body = hashlib.md5(body.encode()).hexdigest()
+# ★ 正确的canon: 排序+小写!
+query_canon = 'gender=0&locallabels='
+md5_body = hashlib.md5(query_canon.encode()).hexdigest()
 plain = f'Rv1rPTnczce|{ts}|0||1|7.9.480|1|{md5_body}|f189adc92b816b3e9da29ea304d4a7e4'
 key = b'sewxf03hhz3ew9qcCXMHiDMk'
 iv = b'sh331nt1'
@@ -60,7 +62,7 @@ headers = {
     'Accept-Encoding': 'gzip',
 }
 
-url = 'https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0'
+url = 'https://bravev6.if.qidian.com/argus/api/v1/client/getconf?gender=0&locallabels='
 
 def call_api(h, label):
     print(f"\n--- {label} ---")
