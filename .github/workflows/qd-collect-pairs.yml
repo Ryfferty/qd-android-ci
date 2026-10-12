@@ -314,8 +314,21 @@ jobs:
                               } catch(e) {}
                               // ★ Native栈!
                               try {
-                                  var nbt = Thread.backtrace(this.context, Backtracer.ACCURATE);
-                                  console.log("[★NBT] " + nbt.length + " native frames");
+                                  var nbt = Thread.backtrace(this.context, Backtracer.FUZZY);
+                                  // 过滤掉Frida agent地址!
+                                  var fridaBase = Module.findBaseAddress("frida-agent-64.so");
+                                  var filtered = [];
+                                  for (var fbi = 0; fbi < nbt.length; fbi++) {
+                                      var fa = nbt[fbi];
+                                      var isFrida = false;
+                                      if (fridaBase) {
+                                          var fridaEnd = fridaBase.add(Module.findModuleByName("frida-agent-64.so").size);
+                                          if (fa >= fridaBase && fa < fridaEnd) isFrida = true;
+                                      }
+                                      if (!isFrida) filtered.push(fa);
+                                  }
+                                  nbt = filtered;
+                                  console.log("[★NBT] " + nbt.length + " frames (after filtering Frida)");
                                   for (var ni = 0; ni < Math.min(nbt.length, 30); ni++) {
                                       var nmod = null;
                                       try { nmod = Process.getModuleByAddress(nbt[ni]); } catch(e) {}
