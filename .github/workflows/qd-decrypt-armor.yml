@@ -1,0 +1,163 @@
+name: qd-decrypt-armor
+on:
+  workflow_dispatch:
+
+jobs:
+  decrypt:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
+            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
+          
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          echo "BOOT_OK"
+          
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+
+      - name: Decrypt
+        run: |
+          set +e
+          B=localhost:5555
+          
+          curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          
+          PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
+                PID=$P
+                break
+              fi
+            fi
+          done
+          [ -z "$PID" ] && { echo "NO_APP"; exit 0; }
+          echo "PID=$PID"
+          
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+          
+          cat > decrypt_armor.js << 'JSEOF'
+          Java.perform(function() {
+              setTimeout(function() {
+                  console.log("[START] Decrypting StringArmor strings...");
+                  
+                  // 37个加密字符串!
+                  var encrypted = [
+                      'Y=]l"pHLk!nakZc>cW,CS9P,]NfyX$@8"d+JVl$D',
+                      'ew>K&:jM@rNXx{P[9XigRb7(>ZnXmn95a8r{gx9B',
+                      'lg!0q^<n]G()U2!cN)=z@+ToL*AUmPm3tnoUTL2E',
+                      'Dm6wy]q|O+j;XC2i>9JwG6#Md42,%#=7hDB@iukB',
+                      'yt,mY^BH|$(xtiC[PvJ~2aR]F|i%N~%%UBEex]%E',
+                      'ekI:B{w_(}#^f,TpY@`}(:YYLNMmetJht%!mo1HI>.UvX*6C:SxuiT:ozcYB',
+                      'n!x`byK.A!7YfKil!:E$`qZSWSF_96Rnhp/,FpC1Ulh:mZznulEbo^2:934',
+                      '^J[0,JVqqZXwqKBwTUQIC1$5f_]u@zxfH~[%^.e{2UOukR9xS)ldMt$aHSt',
+                      '$yZA);DX<@Yi/}/4F+U4OP{RT4r.h]vbyH3jHJeC',
+                      '`|N7zh_qHmz;b54f`o5G5`{vh+#*,X?zIWMl8kNE',
+                      'x%Vh04f35HBXZs/j!EM3RKUQ24sZX&Y;~`CIhC||fucr,a1yLkhf$$8`o{L',
+                      'oGs/oK(G^FqCW)7uewl@:k,Qs>VYno_7/LFqANrlDw3i8_3OowAiU[6n<7d',
+                      'Bsyv41}{cQ.kRmYS?ZPz8c2~cnye[q^+U4vlo09&9wEoQ6em<!hE6Fl7>;SB',
+                      '}VF~8HXip^}UGx#4Cpy:S6pu:NY6Kx|U?IS4w,3y~iuPIqJI@mt8t:QJy.*',
+                      ')%71|6byM>F<_6Q<xgH|ANh7?@kNj;{k%%)Tg^OADtE/&c<w;Uy7UtgYin3',
+                      'd83_Y?V7t/lo+)ZF>Cthu8yMq7VpCDfD`+Nfk[EOrqtRl&#{DQbq5r@fwQe',
+                      ';U?mCW8~GaZmBFgrMSx$CMKi~s@Cj48DOOa$uH)D',
+                      'WH#Z^{GJ5nxU]m|Nq<)d_Udxr*sjf(Nb!7JiKLW1*FT^2rB(E@U3vN^#Qa',
+                      'D=%/QIoq[BUK16b!Rjy!{>b0<Cg_$ecLO(A#[nET1NJ2)jF2xMl+KTz_X(m',
+                      'ZYgUAb^/p@N$<5X7oi9]TsJnh=A7k,mWQ[N,+5vI<8G`,}7@q[zYu2>_)wXB',
+                      '8?sS+{J>X@xP;Q*<UStrm1cU=*xadM%5GUi8Rf(_5JPD:($ekE{DX[t;%,UB',
+                      'f)EK7J&J[`M4FkYt?dyk|wAW!0%)WTO[GQhx1dAJ(biSIf/0kIPKB,~E~}p',
+                      '#!${%Czf[{vxcHS|Nlo{!eLIbKAs:e,Ps=9D{::Mb;sdzH)v&K45L=EnOLk',
+                      'z?|b/!*;xqUb&^<B6.l`>Zz@l>v{L>(uc)_pwk0axaqJz6gqHknlRTmi5K',
+                      'vP]4Lbm?bc%(w#sG[>1Pbz~pHY~9%th1?WVMwsQa=LW,zhY#l>LtecKW8qq',
+                      ']5`^Px*\\\"751u:i4qzZ7pefx~xA2{3QZ,PQO@X@I97?3cfc0M@iiXjw!r$Nmh',
+                      'D43E\\\"vrcwbaY9*y8Q2Z;<cI~EA_l:#lOa}=5hhSC',
+                      'j8w?J.$<9z++T>j&&}F!35)q0e:RDA7#S8~P~2AxNbb(Jt|i#{v`]^4{WX4',
+                      '&e&xq*zUi1SD|8Q:(Iz|N7zh_qHmz;b54f`o5G5`{vh+#*,X?zIWMl8kNE',
+                      'x)c5n7j/%V6HK{A~zx<noc!>X_7gg*+7w*^IwH$zL~jd45OOpwC;X`dvjM',
+                      '\\\"&v$^gbQrp*:OV0dIPGOZ0PkDf{x<u*ydDvSV6<E',
+                      '{>O,/\\\"xhE=X2:=T(@#z5xNi%bSl*+G^EO*hXo{DB',
+                      'c3#T>e3}oOO5i.|G5,k9;5W[7._du0PZ[;(+iO@E',
+                      '5`Cr_Nk2~ZuzBhQUbP.4g:UcFr1;N!xe<nO[~ejD',
+                      '8`}.u~%VHZ*.QK$}&t$s*v}@5T[JE?=up<y!AY1:zTj/4UtZnpi>e[L7y`',
+                      '2g@(~_wU;Su792zougrr.4kYm2i>:o7k1UMDnk@:Zi(2TlF6K8kY3vM@9',
+                      '9Q#$mg!i3q<DI8Wr+v,!1FZ9KpJ2OsoW?ZSWSF_96Rnhp/,FpC1Ulh:mZ',
+                  ];
+                  
+                  try {
+                      var StringArmor = Java.use("com.yuewen.nib.StringArmor");
+                      console.log("[+] StringArmor loaded");
+                      
+                      var results = {};
+                      var success = 0;
+                      var fail = 0;
+                      
+                      for (var i = 0; i < encrypted.length; i++) {
+                          try {
+                              var decrypted = StringArmor.d(encrypted[i]);
+                              results[i] = decrypted;
+                              console.log("[DECRYPT] [" + i + "] '" + encrypted[i].substring(0, 20) + "...' → '" + decrypted + "'");
+                              success++;
+                          } catch(e) {
+                              results[i] = "ERROR: " + e;
+                              console.log("[FAIL] [" + i + "] " + e);
+                              fail++;
+                          }
+                      }
+                      
+                      console.log("\n[SUMMARY] " + success + " success, " + fail + " fail");
+                      console.log("[ALL_RESULTS] " + JSON.stringify(results));
+                      
+                  } catch(e) {
+                      console.log("[ERR] " + e);
+                  }
+                  
+              }, 5000);
+          });
+          JSEOF
+          
+          timeout 30 frida -H 127.0.0.1:27042 -p $PID -l decrypt_armor.js 2>&1 | tee /tmp/decrypt_output.log
+          echo "=== Decrypt done ==="
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: armor-plaintext
+          path: /tmp/decrypt_output.log
+          if-no-files-found: warn
