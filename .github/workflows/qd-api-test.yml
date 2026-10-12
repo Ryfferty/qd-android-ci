@@ -110,102 +110,83 @@ jobs:
           # ★ 提取borgus数据并立刻调API!
           echo "=== Extracting borgus data ==="
           python3 << 'PYEOF'
-import json, re, hashlib, base64, urllib.request, urllib.parse, urllib.error, gzip, time
-from Crypto.Cipher import DES3
-
-log = open('/tmp/borgus_output.log').read()
-m = re.search(r'\[BORGUS_DATA\] (\{.*\})', log)
-if not m:
-    print("NO_BORGUS_DATA")
-    exit()
-
-data = json.loads(m.group(1))
-borgus = data.get('borgus', '')
-print(f"BORGUS: {borgus}")
-
-# ★ 用原来成功的headers格式 + 只加borgus!
-# 原来成功时用的是argus_fetch.py的格式!
-IMEI = '8acb7b94f48245c'
-Q16 = '84323495d5e35160'
-ts = str(int(time.time() * 1000))
-
-# QDSign(原来成功的格式)!
-body = 'localLabels=&gender=0'
-md5_body = hashlib.md5(body.encode()).hexdigest()
-plain = f'Rv1rPTnczce|{ts}|0||1|7.9.480|1|{md5_body}|f189adc92b816b3e9da29ea304d4a7e4'
-key = b'sewxf03hhz3ew9qcCXMHiDMk'
-iv = b'sh331nt1'
-pad = 8 - len(plain) % 8
-if pad == 0: pad = 8
-plain_padded = plain.encode() + bytes([pad]) * pad
-enc = DES3.new(key, DES3.MODE_CBC, iv).encrypt(plain_padded)
-qdsign = base64.b64encode(enc).decode()
-
-# QDInfo(原来成功的)!
-def make_qdinfo():
-    fields = [IMEI, '7.9.480', '720', '1184', '10000431', '12', '1', 'OnePlus_PKR110', '1956', '10000431', '4', '0', ts, '1', '', '', '', '', '0']
-    plain = '|'.join(fields)
-    pad = 8 - len(plain) % 8
-    if pad == 0: pad = 8
-    plain_padded = plain.encode() + bytes([pad]) * pad
-    key = bytes.fromhex('0821CAAD409B8402')
-    key24 = key + key[:8]
-    iv = b'\x00' * 8
-    enc = DES3.new(key24, DES3.MODE_CBC, iv).encrypt(plain_padded)
-    return base64.b64encode(enc).decode()
-
-qdinfo = make_qdinfo()
-
-headers = {
-    'User-Agent': 'Mozilla/mobile QDReaderAndroid/7.9.480/1956/10000431/OnePlus',
-    'Cookie': f'QDInfo={qdinfo}; ywkey=; ywguid=; appId=12; areaId=30; lang=cn; mode=normal; bar=36; qid=; qidth=; ',
-    'QDInfo': qdinfo,
-    'tstamp': ts,
-    'QDSign': qdsign,
-    'Referer': 'http://android.qidian.com',
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'Accept-Encoding': 'gzip',
-}
-
-print(f"\n--- Test 1: WITHOUT borgus (original working) ---")
-url = 'https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0'
-try:
-    req = urllib.request.Request(url, data=body.encode(), headers=headers, method='POST')
-    r = urllib.request.urlopen(req, timeout=30)
-    raw = r.read()
-    try: raw = gzip.decompress(raw)
-    except: pass
-    resp = raw.decode('utf-8', errors='replace')
-    j = json.loads(resp)
-    print(f"Result: {j.get('Result')}")
-except urllib.error.HTTPError as e:
-    print(f"HTTP {e.code}")
-
-print(f"\n--- Test 2: WITH borgus (same headers + borgus) ---")
-headers2 = dict(headers)
-headers2['borgus'] = borgus
-try:
-    req2 = urllib.request.Request(url, data=body.encode(), headers=headers2, method='POST')
-    r2 = urllib.request.urlopen(req2, timeout=30)
-    raw2 = r2.read()
-    try: raw2 = gzip.decompress(raw2)
-    except: pass
-    resp2 = raw2.decode('utf-8', errors='replace')
-    j2 = json.loads(resp2)
-    print(f"Result: {j2.get('Result')}")
-    d = j2.get('Data', {})
-    fm = d.get('Freshman', {})
-    if fm:
-        print(f"  IsFreshman = {fm.get('IsFreshman')}")
-        print(f"  ShowLimitFreePopup = {fm.get('ShowLimitFreePopup')}")
-except urllib.error.HTTPError as e:
-    b2 = e.read()
-    try: b2 = gzip.decompress(b2)
-    except: pass
-    print(f"HTTP {e.code}: {b2.decode('utf-8', errors='replace')[:200]}")
-except Exception as e:
-    print(f"Error: {e}")
-PYEOF
+          import json, re, hashlib, base64, urllib.request, urllib.parse, urllib.error, gzip, time
+          from Crypto.Cipher import DES3
+          
+          log = open('/tmp/borgus_output.log').read()
+          m = re.search(r'\[BORGUS_DATA\] (\{.*\})', log)
+          if not m:
+              print("NO_BORGUS_DATA")
+              exit()
+          
+          data = json.loads(m.group(1))
+          borgus = data.get('borgus', '')
+          qdinfo = data.get('QDInfo', '')
+          tstamp = data.get('tstamp', '')
+          ua = data.get('User-Agent', '')
+          cookie = data.get('Cookie', '')
+          
+          print(f"BORGUS: {borgus}")
+          print(f"TSTAMP: {tstamp}")
+          print(f"QDINFO: {qdinfo[:50]}...")
+          print(f"UA: {ua[:50]}...")
+          
+          # ★ 直接用getH的QDSign(去掉空格)!
+          qdsign = data.get('QDSign', '').replace(' ', '').replace('\n', '').replace('\r', '')
+          fresh_ts = tstamp  # 用getH的原始tstamp!
+          print(f"Using getH QDSign: {qdsign[:40]}...")
+          print(f"Using getH tstamp: {tstamp}")
+          # QDSign from getH!
+          
+          # 发请求!
+          body = 'localLabels=&gender=0'
+          
+          headers = {
+              'User-Agent': ua,
+              'Cookie': cookie,
+              'QDInfo': qdinfo,
+              'tstamp': fresh_ts,
+              'cecelia': '',
+              'borgus': borgus,
+              'QDSign': qdsign,
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Referer': 'http://android.qidian.com',
+              'Accept-Encoding': 'gzip',
+          }
+          
+          url = 'https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0'
+          
+          print(f"\n--- Calling getconf ---")
+          print(f"Time since borgus: {int(time.time()*1000) - int(tstamp)}ms")
+          try:
+              req = urllib.request.Request(url, data=body.encode(), headers=headers, method='POST')
+              r = urllib.request.urlopen(req, timeout=30)
+              raw = r.read()
+              try: raw = gzip.decompress(raw)
+              except: pass
+              resp = raw.decode('utf-8', errors='replace')
+              print(f"HTTP: {r.status}")
+              print(f"★★★RESPONSE: {resp[:800]}")
+              
+              j = json.loads(resp)
+              print(f"\nResult: {j.get('Result')}")
+              d = j.get('Data', {})
+              fm = d.get('Freshman', {})
+              if fm:
+                  print(f"\n★ FreshmanBean:")
+                  print(f"  IsFreshman = {fm.get('IsFreshman')}")
+                  print(f"  IsNewDevice = {fm.get('IsNewDevice')}")
+                  print(f"  ShowLimitFreePopup = {fm.get('ShowLimitFreePopup')}")
+                  print(f"  Source = {fm.get('Source')}")
+              print(f"\nIsFreshmanLimitFree: {d.get('IsFreshmanLimitFree')}")
+          except urllib.error.HTTPError as e:
+              body2 = e.read()
+              try: body2 = gzip.decompress(body2)
+              except: pass
+              print(f"HTTP Error {e.code}: {body2.decode('utf-8', errors='replace')[:300]}")
+          except Exception as e:
+              print(f"Error: {e}")
+          PYEOF
 
       - name: Upload
         if: always()
