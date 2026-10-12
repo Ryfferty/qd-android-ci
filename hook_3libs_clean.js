@@ -235,7 +235,9 @@ Java.perform(function() {
             
             if (!alreadyLoaded) {
                 // 用System.load(完整路径)!
-                System.load(nativeLibDir + "/libostar.so");
+                var Runtime = Java.use("java.lang.Runtime");
+                var runtime = Runtime.getRuntime();
+                runtime.load(nativeLibDir + "/libostar.so");
                 console.log("[LOAD] System.load(libostar.so) OK!");
                 
                 // 再检查!
