@@ -64,167 +64,190 @@ jobs:
           sleep 8
           adb -s $B forward tcp:27042 tcp:27042
           
-          cat > trace_v3.js << 'JSEOF'
-Java.perform(function() {
-    // ★ 等待libnib.so加载!
-    function waitForLib(name, cb, maxWait) {
-        var start = Date.now();
-        var check = function() {
-            var base = Module.findBaseAddress(name);
-            if (base) {
-                console.log("[V3] " + name + " loaded at " + base);
-                cb(base);
-            } else if (Date.now() - start < (maxWait || 60000)) {
-                setTimeout(check, 2000);
-            } else {
-                console.log("[V3] TIMEOUT waiting for " + name);
-            }
-        };
-        check();
-    }
-    
-    waitForLib("libnib.so", function(BASE) {
-        console.log("[V3] Setting up hooks...");
-        
-        var MD4U_ADDR = BASE.add(0x21454);
-        var C8_ADDR = BASE.add(0x7c30);
-        var C16_ADDR = BASE.add(0x7b84);
-        var MD4C_ADDR = BASE.add(0x20f40);
-        
-        // Hook MD4 update!
-        try {
-            Interceptor.attach(MD4U_ADDR, {
-                onEnter: function(args) {
-                    var len = args[2].toInt32();
-                    if (len > 0 && len < 200) {
-                        var data = "";
-                        for (var i = 0; i < Math.min(len, 32); i++) {
-                            data += ("0" + args[1].add(i).readU8().toString(16)).slice(-2);
-                        }
-                        console.log("[MD4U] len=" + len + " data=" + data);
-                    }
-                }
-            });
-            console.log("[V3] MD4U hooked!");
-        } catch(e) { console.log("[V3] MD4U FAIL: " + e); }
-        
-        // Hook cipher8!
-        try {
-            Interceptor.attach(C8_ADDR, {
-                onEnter: function(args) {
-                    this.inp = args[0]; this.len = args[1].toInt32();
-                    this.key = args[2]; this.outp = args[3];
-                    if (this.len > 0 && this.len < 100) {
-                        var d = "";
-                        for (var i = 0; i < this.len; i++) {
-                            d += ("0" + this.inp.add(i).readU8().toString(16)).slice(-2);
-                        }
-                        console.log("[C8_IN] len=" + this.len + " data=" + d);
-                    }
-                    if (this.key && !this.key.isNull()) {
-                        var k = "";
-                        for (var i = 0; i < 16; i++) {
-                            try { k += ("0" + this.key.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
-                        }
-                        console.log("[C8_KEY] " + k);
-                    }
-                },
-                onLeave: function(retval) {
-                    if (retval && !retval.isNull()) {
-                        var o = "";
-                        for (var i = 0; i < 20; i++) {
-                            try { o += ("0" + retval.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
-                        }
-                        console.log("[C8_RET] " + o);
-                    }
-                    if (this.outp && !this.outp.isNull()) {
-                        var b = "";
-                        for (var i = 0; i < 16; i++) {
-                            try { b += ("0" + this.outp.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
-                        }
-                        console.log("[C8_BUF] " + b);
-                    }
-                }
-            });
-            console.log("[V3] C8 hooked!");
-        } catch(e) { console.log("[V3] C8 FAIL: " + e); }
-        
-        // Hook cipher16!
-        try {
-            Interceptor.attach(C16_ADDR, {
-                onEnter: function(args) {
-                    this.inp = args[0]; this.len = args[1].toInt32();
-                    this.key = args[2];
-                    if (this.len > 0 && this.len < 100) {
-                        var d = "";
-                        for (var i = 0; i < this.len; i++) {
-                            d += ("0" + this.inp.add(i).readU8().toString(16)).slice(-2);
-                        }
-                        console.log("[C16_IN] len=" + this.len + " data=" + d);
-                    }
-                    if (this.key && !this.key.isNull()) {
-                        var k = "";
-                        for (var i = 0; i < 16; i++) {
-                            try { k += ("0" + this.key.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
-                        }
-                        console.log("[C16_KEY] " + k);
-                    }
-                },
-                onLeave: function(retval) {
-                    if (retval && !retval.isNull()) {
-                        var o = "";
-                        for (var i = 0; i < 20; i++) {
-                            try { o += ("0" + retval.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
-                        }
-                        console.log("[C16_RET] " + o);
-                    }
-                }
-            });
-            console.log("[V3] C16 hooked!");
-        } catch(e) { console.log("[V3] C16 FAIL: " + e); }
-        
-        // Hook MD4 compress!
-        try {
-            Interceptor.attach(MD4C_ADDR, {
-                onEnter: function(args) {
-                    this.ctx = args[0];
-                    var s = [];
-                    for (var i = 0; i < 4; i++) {
-                        s.push(args[0].add(8 + i*4).readU32().toString(16));
-                    }
-                    console.log("[MD4C_IN] " + s.join(","));
-                },
-                onLeave: function(retval) {
-                    var s = [];
-                    for (var i = 0; i < 4; i++) {
-                        s.push(this.ctx.add(8 + i*4).readU32().toString(16));
-                    }
-                    console.log("[MD4C_OUT] " + s.join(","));
-                }
-            });
-            console.log("[V3] MD4C hooked!");
-        } catch(e) { console.log("[V3] MD4C FAIL: " + e); }
-        
-        // 测试!
-        setTimeout(function() {
-            var NW = Java.use("com.yuewen.nib.NativeWrapper");
-            var tests = ["AB", "AA", "test", "hello"];
-            for (var ti = 0; ti < tests.length; ti++) {
-                console.log("\n===== lk('" + tests[ti] + "') =====");
-                try {
-                    var result = NW.a(tests[ti]);
-                    console.log("[RESULT] " + result);
-                } catch(e) {
-                    console.log("[ERR] " + e);
-                }
-            }
-            console.log("[V3_DONE]");
-        }, 3000);
-    }, 60000);
-});
-JSEOF
+          cat > trace_v2.js << 'JSEOF'
+          Java.perform(function() {
+              setTimeout(function() {
+                  console.log("[V2] Starting...");
+                  
+                  // ★ 等libnib加载!
+                  var BASE = Module.findBaseAddress("libnib.so");
+                  console.log("[V2] libnib base: " + BASE);
+                  
+                  if (!BASE) {
+                      console.log("[V2] ERROR: libnib.so NOT loaded!");
+                      return;
+                  }
+                  
+                  // ★ 用地址直接hook(不用findExport)!
+                  // 从readelf已知的地址!
+                  var MD4U_ADDR = BASE.add(0x21454);   // nib_67453634
+                  var C8_ADDR = BASE.add(0x7c30);      // nib_58940238
+                  var C16_ADDR = BASE.add(0x7b84);     // nib_58940235
+                  var MD4C_ADDR = BASE.add(0x20f40);   // nib_65464522
+                  
+                  console.log("[V2] MD4U addr: " + MD4U_ADDR);
+                  console.log("[V2] C8 addr: " + C8_ADDR);
+                  console.log("[V2] C16 addr: " + C16_ADDR);
+                  
+                  // ★ Hook MD4 update — 用绝对地址!
+                  try {
+                      Interceptor.attach(MD4U_ADDR, {
+                          onEnter: function(args) {
+                              var len = args[2].toInt32();
+                              if (len > 0 && len < 200) {
+                                  var data = "";
+                                  for (var i = 0; i < Math.min(len, 32); i++) {
+                                      data += ("0" + args[1].add(i).readU8().toString(16)).slice(-2);
+                                  }
+                                  console.log("[MD4U] len=" + len + " data=" + data);
+                              }
+                          }
+                      });
+                      console.log("[V2] MD4U hooked!");
+                  } catch(e) {
+                      console.log("[V2] MD4U hook FAILED: " + e);
+                  }
+                  
+                  // ★ Hook cipher8 — 用绝对地址!
+                  try {
+                      Interceptor.attach(C8_ADDR, {
+                          onEnter: function(args) {
+                              this.inp = args[0]; 
+                              this.len = args[1].toInt32();
+                              this.key = args[2];
+                              this.outp = args[3];
+                              this.outlen = args[4];
+                              
+                              // 输入!
+                              if (this.len > 0 && this.len < 100) {
+                                  var d = "";
+                                  for (var i = 0; i < this.len; i++) {
+                                      d += ("0" + this.inp.add(i).readU8().toString(16)).slice(-2);
+                                  }
+                                  console.log("[C8_IN] len=" + this.len + " data=" + d);
+                              }
+                              
+                              // Key!
+                              if (this.key && !this.key.isNull()) {
+                                  var k = "";
+                                  for (var i = 0; i < 16; i++) {
+                                      try { k += ("0" + this.key.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C8_KEY] " + k);
+                              }
+                          },
+                          onLeave: function(retval) {
+                              var r = retval;
+                              if (r && !r.isNull()) {
+                                  var o = "";
+                                  for (var i = 0; i < 20; i++) {
+                                      try { o += ("0" + r.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C8_RET] " + o);
+                              }
+                              // 输出buffer!
+                              if (this.outp && !this.outp.isNull()) {
+                                  var b = "";
+                                  for (var i = 0; i < 16; i++) {
+                                      try { b += ("0" + this.outp.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C8_BUF] " + b);
+                              }
+                              // 输出长度!
+                              if (this.outlen && !this.outlen.isNull()) {
+                                  try {
+                                      console.log("[C8_LEN] " + this.outlen.readU32());
+                                  } catch(e) {}
+                              }
+                          }
+                      });
+                      console.log("[V2] C8 hooked!");
+                  } catch(e) {
+                      console.log("[V2] C8 hook FAILED: " + e);
+                  }
+                  
+                  // ★ Hook cipher16 — 用绝对地址!
+                  try {
+                      Interceptor.attach(C16_ADDR, {
+                          onEnter: function(args) {
+                              this.inp = args[0];
+                              this.len = args[1].toInt32();
+                              this.key = args[2];
+                              
+                              if (this.len > 0 && this.len < 100) {
+                                  var d = "";
+                                  for (var i = 0; i < this.len; i++) {
+                                      d += ("0" + this.inp.add(i).readU8().toString(16)).slice(-2);
+                                  }
+                                  console.log("[C16_IN] len=" + this.len + " data=" + d);
+                              }
+                              if (this.key && !this.key.isNull()) {
+                                  var k = "";
+                                  for (var i = 0; i < 16; i++) {
+                                      try { k += ("0" + this.key.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C16_KEY] " + k);
+                              }
+                          },
+                          onLeave: function(retval) {
+                              var r = retval;
+                              if (r && !r.isNull()) {
+                                  var o = "";
+                                  for (var i = 0; i < 20; i++) {
+                                      try { o += ("0" + r.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C16_RET] " + o);
+                              }
+                          }
+                      });
+                      console.log("[V2] C16 hooked!");
+                  } catch(e) {
+                      console.log("[V2] C16 hook FAILED: " + e);
+                  }
+                  
+                  // ★ Hook MD4 compress — 看state!
+                  try {
+                      Interceptor.attach(MD4C_ADDR, {
+                          onEnter: function(args) {
+                              this.ctx = args[0];
+                              var s = [];
+                              for (var i = 0; i < 4; i++) {
+                                  s.push(args[0].add(8 + i*4).readU32().toString(16));
+                              }
+                              console.log("[MD4C_IN] " + s.join(","));
+                          },
+                          onLeave: function(retval) {
+                              var s = [];
+                              for (var i = 0; i < 4; i++) {
+                                  s.push(this.ctx.add(8 + i*4).readU32().toString(16));
+                              }
+                              console.log("[MD4C_OUT] " + s.join(","));
+                          }
+                      });
+                      console.log("[V2] MD4C hooked!");
+                  } catch(e) {
+                      console.log("[V2] MD4C hook FAILED: " + e);
+                  }
+                  
+                  // ★ 测试!
+                  var NW = Java.use("com.yuewen.nib.NativeWrapper");
+                  var tests = ["AB", "AA", "test"];
+                  for (var ti = 0; ti < tests.length; ti++) {
+                      console.log("\n===== lk('" + tests[ti] + "') =====");
+                      try {
+                          var result = NW.a(tests[ti]);
+                          console.log("[RESULT] " + result);
+                      } catch(e) {
+                          console.log("[ERR] " + e);
+                      }
+                  }
+                  console.log("[V2_DONE]");
+                  
+              }, 8000);
+          });
+          JSEOF
           
-          timeout 60 frida -H 127.0.0.1:27042 -p $PID -l trace_v3.js 2>&1 | tee /tmp/decrypt_output.log
+          timeout 60 frida -H 127.0.0.1:27042 -p $PID -l trace_v2.js 2>&1 | tee /tmp/decrypt_output.log
           echo "=== Done ==="
 
       - name: Upload
