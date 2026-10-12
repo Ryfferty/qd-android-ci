@@ -1,0 +1,398 @@
+name: qd-borgus-det
+on:
+  workflow_dispatch:
+
+jobs:
+  det:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup redroid + frida
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
+            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
+
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          echo "BOOT_OK"
+
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+
+      - name: Determinism test (frozen clock)
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+
+          wait_pid() {
+            for i in $(seq 1 15); do
+              sleep 3
+              P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ -n "$P" ]; then
+                sleep 5
+                P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+                if [ "$P" = "$P2" ] && [ -n "$P2" ]; then echo "$P"; return 0; fi
+              fi
+            done
+            echo ""
+          }
+          PID=$(wait_pid)
+          [ -z "$PID" ] && { echo "NO_APP"; exit 0; }
+          echo "PID1=$PID"
+
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+
+          cat > borgus_det.js << 'JSEOF'
+          // ═══ borgus determinism test — freeze the clock, call getH ═══
+          var FROZEN = {active: false, ms: 0};
+          function freeze(ms) { FROZEN.active = true; FROZEN.ms = ms; }
+          function unfreeze() { FROZEN.active = false; }
+
+          // ── native time hooks (CLOCK_REALTIME only; monotonic untouched) ──
+          try {
+              var pClock = Module.findExportByName(null, "clock_gettime");
+              if (pClock) {
+                  Interceptor.attach(pClock, {
+                      onEnter: function(args) {
+                          this.pTs = null;
+                          if (FROZEN.active && args[0].toInt32() === 0) this.pTs = args[1];
+                      },
+                      onLeave: function(ret) {
+                          if (this.pTs !== null && !this.pTs.isNull()) {
+                              var sec = Math.floor(FROZEN.ms / 1000);
+                              var nsec = (FROZEN.ms % 1000) * 1000000;
+                              if (Process.pointerSize === 8) {
+                                  this.pTs.writeS64(sec); this.pTs.add(8).writeS64(nsec);
+                              } else {
+                                  this.pTs.writeU32(sec); this.pTs.add(4).writeU32(nsec);
+                              }
+                          }
+                      }
+                  });
+                  console.log("[HOOK] clock_gettime OK");
+              }
+          } catch(e) { console.log("[HOOK_ERR] clock " + e); }
+          try {
+              var pGtod = Module.findExportByName(null, "gettimeofday");
+              if (pGtod) {
+                  Interceptor.attach(pGtod, {
+                      onEnter: function(args) {
+                          this.pTv = (FROZEN.active && !args[0].isNull()) ? args[0] : null;
+                      },
+                      onLeave: function(ret) {
+                          if (this.pTv) {
+                              var sec = Math.floor(FROZEN.ms / 1000);
+                              var usec = (FROZEN.ms % 1000) * 1000;
+                              if (Process.pointerSize === 8) {
+                                  this.pTv.writeS64(sec); this.pTv.add(8).writeS64(usec);
+                              } else {
+                                  this.pTv.writeU32(sec); this.pTv.add(4).writeU32(usec);
+                              }
+                          }
+                      }
+                  });
+                  console.log("[HOOK] gettimeofday OK");
+              }
+          } catch(e) { console.log("[HOOK_ERR] gtod " + e); }
+          try {
+              var pTime = Module.findExportByName(null, "time");
+              if (pTime) {
+                  Interceptor.attach(pTime, {
+                      onEnter: function(args) { this.pT = FROZEN.active ? args[0] : null; },
+                      onLeave: function(ret) {
+                          if (FROZEN.active) {
+                              var sec = Math.floor(FROZEN.ms / 1000);
+                              try {
+                                  if (this.pT && !this.pT.isNull()) {
+                                      if (Process.pointerSize === 8) this.pT.writeS64(sec); else this.pT.writeU32(sec);
+                                  }
+                              } catch(e2) {}
+                              ret.replace(sec);
+                          }
+                      }
+                  });
+                  console.log("[HOOK] time OK");
+              }
+          } catch(e) { console.log("[HOOK_ERR] time " + e); }
+
+          Java.perform(function() {
+              // ── Java time freeze ──
+              try {
+                  var Sys = Java.use("java.lang.System");
+                  Sys.currentTimeMillis.implementation = function() {
+                      return FROZEN.active ? FROZEN.ms : this.currentTimeMillis();
+                  };
+                  console.log("[HOOK] System.currentTimeMillis OK");
+              } catch(e) { console.log("[HOOK_ERR] sctm " + e); }
+              try {
+                  var SC = Java.use("android.os.SystemClock");
+                  if (SC.elapsedRealtime) {
+                      SC.elapsedRealtime.implementation = function() {
+                          return FROZEN.active ? 123456789 : this.elapsedRealtime();
+                      };
+                  }
+                  if (SC.uptimeMillis) {
+                      SC.uptimeMillis.implementation = function() {
+                          return FROZEN.active ? 123456789 : this.uptimeMillis();
+                      };
+                  }
+                  console.log("[HOOK] SystemClock OK");
+              } catch(e) { console.log("[HOOK_ERR] sysclk " + e); }
+
+              setTimeout(function() {
+                  try {
+                      var FU = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var inst = FU.INSTANCE.value;
+                      var RB = Java.use("okhttp3.RequestBody");
+                      var MT = Java.use("okhttp3.MediaType");
+                      var mt = MT.parse("application/x-www-form-urlencoded");
+                      var Map = Java.use("java.util.Map");
+                      var MapEntry = Java.use("java.util.Map$Entry");
+
+                      var urlA = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      var urlB = "https://bravev6.if.qidian.com/argus/api/v1/client/getconG";
+                      var urlC = "https://test.example.com/same";
+                      var F1 = 1790000000000;
+                      var F2 = 1790003600000;
+
+                      function callGetH(tag, url, method, bodyStr) {
+                          var body = RB.create(mt, bodyStr);
+                          var res = inst.getH(url, method, body);
+                          var h = {};
+                          var it = Java.cast(res, Map).entrySet().iterator();
+                          while (it.hasNext()) {
+                              var en = Java.cast(it.next(), MapEntry);
+                              h[String(en.getKey())] = String(en.getValue());
+                          }
+                          var o = {tag: tag, url: url, method: method, body: bodyStr,
+                                   ts: h["tstamp"] || "", borgus: h["borgus"] || "",
+                                   qdinfo: h["QDInfo"] || "",
+                                   qdsign: (h["QDSign"] || "").replace(/\s+/g, ""),
+                                   ua: h["User-Agent"] || "",
+                                   cecelia: h["cecelia"] || "", gorgon: h["gorgon"] || ""};
+                          console.log("[JSON]" + JSON.stringify(o));
+                          return o;
+                      }
+
+                      function dumpAll(url, method, bodyStr) {
+                          var body = RB.create(mt, bodyStr);
+                          var res = inst.getH(url, method, body);
+                          var it = Java.cast(res, Map).entrySet().iterator();
+                          while (it.hasNext()) {
+                              var en = Java.cast(it.next(), MapEntry);
+                              console.log("[FULL] " + en.getKey() + " = " + String(en.getValue()));
+                          }
+                      }
+
+                      var R = [];
+                      console.log("=== T1: freeze@F1 same input x3 ===");
+                      freeze(F1);
+                      for (var i = 0; i < 3; i++) R.push(callGetH("T1_" + i, urlA, "POST", "localLabels=&gender=0"));
+                      dumpAll(urlA, "POST", "localLabels=&gender=0");
+
+                      console.log("=== T2: body 1-char change ===");
+                      R.push(callGetH("T2", urlA, "POST", "localLabels=&gender=1"));
+                      console.log("=== T3: method change ===");
+                      R.push(callGetH("T3", urlA, "GET", "localLabels=&gender=0"));
+                      console.log("=== T4: url 1-char change ===");
+                      R.push(callGetH("T4", urlB, "POST", "localLabels=&gender=0"));
+                      console.log("=== T5: empty body ===");
+                      R.push(callGetH("T5", urlA, "POST", ""));
+                      console.log("=== T9: other host ===");
+                      R.push(callGetH("T9", urlC, "GET", ""));
+
+                      console.log("=== T6: freeze@F2 (+1h) same input ===");
+                      freeze(F2);
+                      R.push(callGetH("T6", urlA, "POST", "localLabels=&gender=0"));
+
+                      console.log("=== T7: unfrozen real time ===");
+                      unfreeze();
+                      R.push(callGetH("T7", urlA, "POST", "localLabels=&gender=0"));
+
+                      console.log("=== T8: re-freeze@F1 (hidden state?) ===");
+                      freeze(F1);
+                      R.push(callGetH("T8_0", urlA, "POST", "localLabels=&gender=0"));
+                      R.push(callGetH("T8_1", urlA, "POST", "localLabels=&gender=0"));
+                      unfreeze();
+
+                      // summary
+                      var det1 = (R[0].borgus === R[1].borgus && R[1].borgus === R[2].borgus);
+                      console.log("[DET] T1_0=" + R[0].borgus);
+                      console.log("[DET] T1_1=" + R[1].borgus);
+                      console.log("[DET] T1_2=" + R[2].borgus);
+                      console.log("[DET] T1_frozen_same=" + det1);
+                      console.log("[DET] ts_frozen=" + (R[0].ts === String(F1) && R[1].ts === String(F1)));
+                      console.log("[DET] T8_equals_T1=" + (R[R.length-2].borgus === R[0].borgus));
+                      console.log("[DET] T6_ts=" + R[8].ts + " expect=" + F2);
+                      console.log("[ALLDONE]");
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 4000);
+          });
+          JSEOF
+
+          timeout 100 frida -H 127.0.0.1:27042 -p $PID -l borgus_det.js 2>&1 | tee /tmp/det_output.log | grep -aE "\[JSON\]|\[DET\]|\[FULL\]|\[HOOK|\[ERROR\]|===|ALLDONE" | head -80
+
+      - name: Restart app + cross-process test
+        run: |
+          set +e
+          B=localhost:5555
+          # ensure frida-server still alive
+          FSUP=$(timeout 10 adb -s $B shell pidof fs-srv | tr -d '\r')
+          if [ -z "$FSUP" ]; then
+            timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+            sleep 8
+          fi
+          adb -s $B forward tcp:27042 tcp:27042
+
+          adb -s $B shell "am force-stop com.qidian.QDReader"
+          sleep 3
+          adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          PID2=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then PID2=$P; break; fi
+            fi
+          done
+          [ -z "$PID2" ] && { echo "NO_APP2"; exit 0; }
+          echo "PID2=$PID2"
+
+          cat > borgus_restart.js << 'JSEOF'
+          var FROZEN = {active: false, ms: 0};
+          function freeze(ms) { FROZEN.active = true; FROZEN.ms = ms; }
+          try {
+              var pClock = Module.findExportByName(null, "clock_gettime");
+              if (pClock) {
+                  Interceptor.attach(pClock, {
+                      onEnter: function(args) {
+                          this.pTs = null;
+                          if (FROZEN.active && args[0].toInt32() === 0) this.pTs = args[1];
+                      },
+                      onLeave: function(ret) {
+                          if (this.pTs !== null && !this.pTs.isNull()) {
+                              var sec = Math.floor(FROZEN.ms / 1000);
+                              var nsec = (FROZEN.ms % 1000) * 1000000;
+                              if (Process.pointerSize === 8) {
+                                  this.pTs.writeS64(sec); this.pTs.add(8).writeS64(nsec);
+                              } else {
+                                  this.pTs.writeU32(sec); this.pTs.add(4).writeU32(nsec);
+                              }
+                          }
+                      }
+                  });
+              }
+          } catch(e) {}
+          try {
+              var pGtod = Module.findExportByName(null, "gettimeofday");
+              if (pGtod) {
+                  Interceptor.attach(pGtod, {
+                      onEnter: function(args) {
+                          this.pTv = (FROZEN.active && !args[0].isNull()) ? args[0] : null;
+                      },
+                      onLeave: function(ret) {
+                          if (this.pTv) {
+                              var sec = Math.floor(FROZEN.ms / 1000);
+                              var usec = (FROZEN.ms % 1000) * 1000;
+                              if (Process.pointerSize === 8) {
+                                  this.pTv.writeS64(sec); this.pTv.add(8).writeS64(usec);
+                              } else {
+                                  this.pTv.writeU32(sec); this.pTv.add(4).writeU32(usec);
+                              }
+                          }
+                      }
+                  });
+              }
+          } catch(e) {}
+          Java.perform(function() {
+              try {
+                  var Sys = Java.use("java.lang.System");
+                  Sys.currentTimeMillis.implementation = function() {
+                      return FROZEN.active ? FROZEN.ms : this.currentTimeMillis();
+                  };
+              } catch(e) {}
+              setTimeout(function() {
+                  try {
+                      var FU = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var inst = FU.INSTANCE.value;
+                      var RB = Java.use("okhttp3.RequestBody");
+                      var MT = Java.use("okhttp3.MediaType");
+                      var mt = MT.parse("application/x-www-form-urlencoded");
+                      var Map = Java.use("java.util.Map");
+                      var MapEntry = Java.use("java.util.Map$Entry");
+                      var urlA = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      var F1 = 1790000000000;
+                      function callGetH(tag, url, method, bodyStr) {
+                          var body = RB.create(mt, bodyStr);
+                          var res = inst.getH(url, method, body);
+                          var h = {};
+                          var it = Java.cast(res, Map).entrySet().iterator();
+                          while (it.hasNext()) {
+                              var en = Java.cast(it.next(), MapEntry);
+                              h[String(en.getKey())] = String(en.getValue());
+                          }
+                          var o = {tag: tag, url: url, method: method, body: bodyStr,
+                                   ts: h["tstamp"] || "", borgus: h["borgus"] || "",
+                                   qdinfo: h["QDInfo"] || "",
+                                   qdsign: (h["QDSign"] || "").replace(/\s+/g, ""),
+                                   ua: h["User-Agent"] || ""};
+                          console.log("[JSON]" + JSON.stringify(o));
+                          return o;
+                      }
+                      freeze(F1);
+                      var a = callGetH("R1_0", urlA, "POST", "localLabels=&gender=0");
+                      var b = callGetH("R1_1", urlA, "POST", "localLabels=&gender=0");
+                      console.log("[DET] R1_same=" + (a.borgus === b.borgus) + " ts=" + a.ts);
+                      console.log("[ALLDONE2]");
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 4000);
+          });
+          JSEOF
+
+          timeout 100 frida -H 127.0.0.1:27042 -p $PID2 -l borgus_restart.js 2>&1 | tee /tmp/restart_output.log | grep -aE "\[JSON\]|\[DET\]|\[ERROR\]|ALLDONE" | head -20
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: borgus-det
+          path: |
+            /tmp/det_output.log
+            /tmp/restart_output.log
+          if-no-files-found: warn
