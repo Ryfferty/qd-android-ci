@@ -37,7 +37,7 @@ jobs:
           echo "BOOT_OK"
           
           # ★ 启动mitmproxy!
-          mitmproxy --mode regular --listen-port 8080 --set flow_detail=0 -w /tmp/flows.mitm &
+          mitmdump --mode regular --listen-port 8080 --set flow_detail=0 -w /tmp/flows.mitm &
           MITM_PID=$!
           echo "mitmproxy PID: $MITM_PID"
           sleep 3
@@ -55,7 +55,7 @@ jobs:
           CA_CERT=$(ls ~/.mitmproxy/mitmproxy-ca-cert.cer 2>/dev/null || echo "")
           if [ -z "$CA_CERT" ]; then
               # 生成CA!
-              mitmdump --listen-port 8081 &
+              mitmdump --listen-port 8081 --set flow_detail=0 &
               sleep 2
               kill %1 2>/dev/null
               CA_CERT=~/.mitmproxy/mitmproxy-ca-cert.cer
