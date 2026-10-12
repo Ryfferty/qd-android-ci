@@ -216,6 +216,42 @@ Java.perform(function() {
             console.log("[NF_ERR] " + e);
         }
         
+        // ★ 用System.load(完整路径)正确加载libostar!
+        try {
+            var System = Java.use("java.lang.System");
+            var appInfo = Java.use("android.app.ActivityThread").currentApplication().getApplicationInfo();
+            var nativeLibDir = appInfo.nativeLibraryDir.value;
+            console.log("[LOAD] nativeLibDir: " + nativeLibDir);
+            
+            // 检查libostar是否已由Java加载!
+            var alreadyLoaded = false;
+            try {
+                var U = Java.use("com.ola.star.uin.U");
+                var field = U.class.getDeclaredField("a");
+                field.setAccessible(true);
+                alreadyLoaded = field.getBoolean(null);
+                console.log("[LOAD] U.a flag: " + alreadyLoaded);
+            } catch(e) {}
+            
+            if (!alreadyLoaded) {
+                // 用System.load(完整路径)!
+                System.load(nativeLibDir + "/libostar.so");
+                console.log("[LOAD] System.load(libostar.so) OK!");
+                
+                // 再检查!
+                try {
+                    var U2 = Java.use("com.ola.star.uin.U");
+                    var field2 = U2.class.getDeclaredField("a");
+                    field2.setAccessible(true);
+                    console.log("[LOAD] U.a after load: " + field2.getBoolean(null));
+                } catch(e) {
+                    console.log("[LOAD] U.a check err: " + e);
+                }
+            }
+        } catch(le) {
+            console.log("[LOAD_ERR] " + le);
+        }
+        
         // ═══ ③-B Hook Beacon OkHttpAdapter捕获ostar请求! ═══
         try {
             var OkHttpAdapter = Java.use("com.tencent.beacon.base.net.adapter.OkHttpAdapter");
