@@ -38,9 +38,13 @@ def make_qdinfo():
     if pad_n == 0: pad_n = 8
     padded = plain_s.encode() + bytes([pad_n]) * pad_n
     key3 = bytes.fromhex('0821CAAD409B8402')
-    key24 = key3 + key3[:8]
     iv3 = b'\x00' * 8
-    encrypted = DES3.new(key24, DES3.MODE_CBC, iv3).encrypt(padded)
+    from Crypto.Cipher import DES
+    try:
+        encrypted = DES3.new(key3 * 3, DES3.MODE_CBC, iv3).encrypt(padded)
+    except ValueError:
+        # 退化key → 用单DES!
+        encrypted = DES.new(key3, DES.MODE_CBC, iv3).encrypt(padded)
     return base64.b64encode(encrypted).decode()
 
 qdinfo = make_qdinfo()
