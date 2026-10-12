@@ -312,6 +312,26 @@ jobs:
                                           from: details.from,
                                           addr: details.address
                                       });
+                                      // ★ 捕获调用栈!
+                                      console.log("[ACC] " + details.operation + " from " + details.from);
+                                      try {
+                                          var bt = Thread.backtrace(details.context, Backtracer.ACCURATE);
+                                          for (var bi = 0; bi < bt.length; bi++) {
+                                              var sym = null;
+                                              var mod = null;
+                                              try { 
+                                                  mod = Process.getModuleByAddress(bt[bi]);
+                                              } catch(e) {}
+                                              if (mod) {
+                                                  var offset = bt[bi].sub(mod.base);
+                                                  console.log("[BT] " + bi + ": " + mod.name + "+" + offset.toString(16));
+                                              } else {
+                                                  console.log("[BT] " + bi + ": " + bt[bi] + " (anon)");
+                                              }
+                                          }
+                                      } catch(e) {
+                                          console.log("[BT_ERR] " + e);
+                                      }
                                   }
                               });
                               console.log("[WATCH] enabled");
