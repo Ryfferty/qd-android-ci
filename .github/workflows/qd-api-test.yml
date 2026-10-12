@@ -131,23 +131,12 @@ jobs:
           print(f"QDINFO: {qdinfo[:50]}...")
           print(f"UA: {ua[:50]}...")
           
-          # 计算QDSign(已知算法)!
-          body = 'localLabels=&gender=0'
-          # ★ QDSign用排序后的query的md5!
-          query_canon = 'gender=0&localLabels='  # sorted!
-          md5_body = hashlib.md5(query_canon.encode()).hexdigest()
-          # ★ 用新鲜tstamp!
-          fresh_ts = str(int(time.time() * 1000))
-          plain = f'Rv1rPTnczce|{fresh_ts}|0||1|7.9.480|1|{md5_body}|f189adc92b816b3e9da29ea304d4a7e4'
-          print(f"Using fresh tstamp: {fresh_ts} (getH was: {tstamp})")
-          key = b'sewxf03hhz3ew9qcCXMHiDMk'
-          iv = b'sh331nt1'
-          pad = 8 - len(plain) % 8
-          if pad == 0: pad = 8
-          plain_padded = plain.encode() + bytes([pad]) * pad
-          enc = DES3.new(key, DES3.MODE_CBC, iv).encrypt(plain_padded)
-          qdsign = base64.b64encode(enc).decode()
-          print(f"QDSign(computed): {qdsign[:30]}...")
+          # ★ 直接用getH的QDSign(去掉空格)!
+          qdsign = data.get('QDSign', '').replace(' ', '').replace('\n', '').replace('\r', '')
+          fresh_ts = tstamp  # 用getH的原始tstamp!
+          print(f"Using getH QDSign: {qdsign[:40]}...")
+          print(f"Using getH tstamp: {tstamp}")
+          # QDSign from getH!
           
           # 发请求!
           headers = {
