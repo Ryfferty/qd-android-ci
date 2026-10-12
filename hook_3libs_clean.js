@@ -249,7 +249,7 @@ Java.perform(function() {
             var regBodyStr = "data=" + encodeURIComponent(JSON.stringify(regData));
             console.log("[REG_BODY] " + regBodyStr.substring(0, 150));
             
-            // 2. 调getH(带这个body)! → QDSign会匹配!
+            // 2. 用addRetrofitH(带完整Request)! → 会加cecelia/ibex等全部头!
             var FU2 = Java.use("com.qidian.QDReader.component.util.FockUtil");
             var inst2 = FU2.INSTANCE.value;
             var RB2 = Java.use("okhttp3.RequestBody");
@@ -257,15 +257,41 @@ Java.perform(function() {
             var mt2 = MT2.parse("application/x-www-form-urlencoded");
             var ostarUrl = "https://druidv6.if.qidian.com/argus/api/v1/client/ostar";
             var body2 = RB2.create(mt2, regBodyStr);
-            var result2 = inst2.getH(ostarUrl, "POST", body2);
             
-            // 3. 提取headers!
-            var rm2 = Java.cast(result2, Java.use("java.util.Map"));
-            var it2 = rm2.entrySet().iterator();
+            // 构造OkHttp Request!
+            var RequestBuilder = Java.use("okhttp3.Request$Builder");
+            var rb = RequestBuilder.$new();
+            rb.url(ostarUrl);
+            rb.post(body2);
+            var originalRequest = rb.build();
+            
+            // ★ 调addRetrofitH — 加全部头(包括cecelia/ibex)!
+            console.log("[REG] Calling addRetrofitH...");
+            var modifiedRequest = inst2.addRetrofitH(originalRequest);
+            console.log("[REG] addRetrofitH done!");
+            
+            // 3. 从modifiedRequest提取headers!
             var regHeaders = {};
-            while (it2.hasNext()) {
-                var en2 = Java.cast(it2.next(), Java.use("java.util.Map$Entry"));
-                regHeaders[String(en2.getKey())] = String(en2.getValue());
+            try {
+                var modHeaders = modifiedRequest.headers();
+                var hSize = modHeaders.size();
+                console.log("[REG] header count: " + hSize);
+                for (var hi = 0; hi < hSize; hi++) {
+                    var hName = String(modHeaders.name(hi));
+                    var hValue = String(modHeaders.value(hi));
+                    regHeaders[hName] = hValue;
+                    console.log("[REG_HDR] " + hName + " = " + hValue.substring(0, 80));
+                }
+            } catch(he) {
+                console.log("[REG_HDR_ERR] " + he);
+                // fallback: 也调getH!
+                var result2 = inst2.getH(ostarUrl, "POST", body2);
+                var rm2 = Java.cast(result2, Java.use("java.util.Map"));
+                var it2 = rm2.entrySet().iterator();
+                while (it2.hasNext()) {
+                    var en2 = Java.cast(it2.next(), Java.use("java.util.Map$Entry"));
+                    regHeaders[String(en2.getKey())] = String(en2.getValue());
+                }
             }
             console.log("[REG_QDSign] " + (regHeaders["QDSign"] || "none").substring(0, 40));
             console.log("[REG_borgus] " + (regHeaders["borgus"] || "none"));
