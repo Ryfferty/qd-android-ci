@@ -344,45 +344,76 @@ jobs:
                               console.log("[OSTAR_FLAG] " + fe);
                           }
                           
-                          // ★ 5. NativeFunction直接调用!
-                          var ostarBase = Module.findBaseAddress("libostar.so");
-                          console.log("[OSTAR_ADDR] base: " + ostarBase);
-                          if (ostarBase) {
-                              var offsets = {z: 0x4ccb8, z2: 0x4cd50, o: 0x4cc1c, u: 0x4c774, p: 0x4c980, r: 0x4cdfc, x: 0x4c884};
-                              var env = Java.vm.getEnv();
-                              var envPtr = env.handle; // NOT readPointer!
-                              var ctx = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
-                              var ctxPtr = ctx.$handle;
-                              try {
-                                  var zFunc = new NativeFunction(ostarBase.add(offsets.z), 'pointer', ['pointer', 'pointer', 'pointer']);
-                                  // 修复: (env, thiz jclass, context)!
-                                  var zResult = zFunc(envPtr, ptr(0), ctxPtr);
-                                  if (!zResult.isNull()) {
+                          // ★ 5. 正确初始化Beacon SDK → 然后调z()!
+                          // BeaconReport.start() 会初始化libostar!
+                          try {
+                              var BeaconReport = Java.use("com.tencent.beacon.event.open.BeaconReport");
+                              console.log("[BEACON] BeaconReport found");
+                              
+                              // 获取单例!
+                              var report = BeaconReport.getInstance();
+                              console.log("[BEACON] instance: " + report);
+                              
+                              if (report) {
+                                  // 获取Context!
+                                  var ctx = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
+                                  console.log("[BEACON] ctx: " + ctx);
+                                  
+                                  // 先查是否已初始化!
+                                  try {
+                                      var isStarted = report.isStarted();
+                                      console.log("[BEACON] isStarted: " + isStarted);
+                                  } catch(se) {
+                                      console.log("[BEACON] isStarted err: " + se);
+                                  }
+                                  
+                                  // 如果没启动, 启动它!
+                                  if (!isStarted) {
                                       try {
-                                          var zStr = env.getStringUtfChars(zResult, null).readCString();
-                                          console.log("[OSTAR_Z] " + zStr);
-                                      } catch(e) { console.log("[OSTAR_Z] ptr=" + zResult); }
-                                  } else { console.log("[OSTAR_Z] null"); }
-                              } catch(e) { console.log("[OSTAR_Z_ERR] " + e); }
-                              try {
-                                  var oFunc = new NativeFunction(ostarBase.add(offsets.o), 'pointer', ['pointer', 'pointer']);
-                                  var oResult = oFunc(envPtr, ptr(0));
-                                  if (!oResult.isNull()) {
-                                      var oStr = env.getStringUtfChars(oResult, null).readCString();
-                                      console.log("[OSTAR_O] " + oStr);
+                                          report.start(ctx, "qidian");
+                                          console.log("[BEACON] started!");
+                                      } catch(stE) {
+                                          console.log("[BEACON] start err: " + stE);
+                                      }
                                   }
-                              } catch(e) { console.log("[OSTAR_O_ERR] " + e); }
-                              try {
-                                  var uFunc = new NativeFunction(ostarBase.add(offsets.u), 'pointer', ['pointer', 'pointer']);
-                                  var uResult = uFunc(envPtr, ptr(0));
-                                  if (!uResult.isNull()) {
-                                      var uStr = env.getStringUtfChars(uResult, null).readCString();
-                                      console.log("[OSTAR_U] " + uStr);
+                                  
+                                  // 现在试调U.z()!
+                                  var U = Java.use("com.ola.star.uin.U");
+                                  // 设置U.a = true!
+                                  var field = U.class.getDeclaredField("a");
+                                  field.setAccessible(true);
+                                  field.set(null, true);
+                                  console.log("[BEACON] U.a set to true");
+                                  
+                                  // 调z()!
+                                  try {
+                                      var zResult = U.z(ctx);
+                                      console.log("[★BEACON_Z] " + zResult);
+                                  } catch(ze) {
+                                      console.log("[★BEACON_Z_ERR] " + ze);
                                   }
-                              } catch(e) { console.log("[OSTAR_U_ERR] " + e); }
+                                  
+                                  // 调o()!
+                                  try {
+                                      var oResult = U.o();
+                                      console.log("[★BEACON_O] " + oResult);
+                                  } catch(oe) {
+                                      console.log("[★BEACON_O_ERR] " + oe);
+                                  }
+                                  
+                                  // 调u()!
+                                  try {
+                                      var uResult = U.u();
+                                      console.log("[★BEACON_U] " + uResult);
+                                  } catch(ue) {
+                                      console.log("[★BEACON_U_ERR] " + ue);
+                                  }
+                              }
+                          } catch(be) {
+                              console.log("[BEACON_ERR] " + be);
                           }
                           
-                      } catch(e) { console.log("[CAL_OSTAR_ERR] " + e); }
+} catch(e) { console.log("[CAL_OSTAR_ERR] " + e); }
                       
                       console.log("[DONE] All calls completed!");
                   }, 5000);
