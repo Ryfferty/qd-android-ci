@@ -344,27 +344,43 @@ jobs:
                               console.log("[OSTAR_FLAG] " + fe);
                           }
                           
-                          // ★ 5. 调用!
-                          var ctx = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
-                          try {
-                              var zResult = U.z(ctx);
-                              console.log("[CAL_OSTAR_Z] " + zResult);
-                          } catch(e) { console.log("[CAL_OSTAR_Z_ERR] " + e); }
+                          // ★ 5. NativeFunction直接调用!
+                          var ostarBase = Module.findBaseAddress("libostar.so");
+                          console.log("[OSTAR_ADDR] base: " + ostarBase);
+                          if (ostarBase) {
+                              var offsets = {z: 0x4ccb8, z2: 0x4cd50, o: 0x4cc1c, u: 0x4c774, p: 0x4c980, r: 0x4cdfc, x: 0x4c884};
+                              var env = Java.vm.getEnv();
+                              var envPtr = env.handle.readPointer();
+                              var ctx = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
+                              var ctxPtr = ctx.$handle;
+                              try {
+                                  var zFunc = new NativeFunction(ostarBase.add(offsets.z), 'pointer', ['pointer', 'pointer', 'pointer']);
+                                  var zResult = zFunc(envPtr, ctxPtr, ptr(0));
+                                  if (!zResult.isNull()) {
+                                      try {
+                                          var zStr = env.getStringUtfChars(zResult, null).readCString();
+                                          console.log("[OSTAR_Z] " + zStr);
+                                      } catch(e) { console.log("[OSTAR_Z] ptr=" + zResult); }
+                                  } else { console.log("[OSTAR_Z] null"); }
+                              } catch(e) { console.log("[OSTAR_Z_ERR] " + e); }
+                              try {
+                                  var oFunc = new NativeFunction(ostarBase.add(offsets.o), 'pointer', ['pointer', 'pointer']);
+                                  var oResult = oFunc(envPtr, ptr(0));
+                                  if (!oResult.isNull()) {
+                                      var oStr = env.getStringUtfChars(oResult, null).readCString();
+                                      console.log("[OSTAR_O] " + oStr);
+                                  }
+                              } catch(e) { console.log("[OSTAR_O_ERR] " + e); }
+                              try {
+                                  var uFunc = new NativeFunction(ostarBase.add(offsets.u), 'pointer', ['pointer', 'pointer']);
+                                  var uResult = uFunc(envPtr, ptr(0));
+                                  if (!uResult.isNull()) {
+                                      var uStr = env.getStringUtfChars(uResult, null).readCString();
+                                      console.log("[OSTAR_U] " + uStr);
+                                  }
+                              } catch(e) { console.log("[OSTAR_U_ERR] " + e); }
+                          }
                           
-                          try {
-                              var oResult = U.o();
-                              console.log("[CAL_OSTAR_O] " + oResult);
-                          } catch(e) { console.log("[CAL_OSTAR_O_ERR] " + e); }
-                          
-                          try {
-                              var uResult = U.u();
-                              console.log("[CAL_OSTAR_U] " + uResult);
-                          } catch(e) { console.log("[CAL_OSTAR_U_ERR] " + e); }
-                          
-                          try {
-                              var pResult = U.p();
-                              console.log("[CAL_OSTAR_P] " + pResult);
-                          } catch(e) { console.log("[CAL_OSTAR_P_ERR] " + e); }
                       } catch(e) { console.log("[CAL_OSTAR_ERR] " + e); }
                       
                       console.log("[DONE] All calls completed!");
