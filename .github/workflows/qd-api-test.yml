@@ -134,7 +134,7 @@ jobs:
           # 计算QDSign(已知算法)!
           body = 'localLabels=&gender=0'
           md5_body = hashlib.md5(body.encode()).hexdigest()
-          plain = f'Rv1rPTnczce|{tstamp}|0|||1|7.9.464|1|{md5_body}|f189adc92b816b3e9da29ea304d4a7e4'
+          plain = f'Rv1rPTnczce|{tstamp}|0||1|7.9.480|1|{md5_body}|f189adc92b816b3e9da29ea304d4a7e4'
           key = b'sewxf03hhz3ew9qcCXMHiDMk'
           iv = b'sh331nt1'
           pad = 8 - len(plain) % 8
