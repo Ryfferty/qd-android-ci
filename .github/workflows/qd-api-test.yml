@@ -1,0 +1,200 @@
+name: qd-api-test
+on:
+  workflow_dispatch:
+
+jobs:
+  api:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        run: |
+          set +e
+          sudo -S -p '' -S -p '' apt-get update -qq || true
+          sudo -S -p '' -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
+          
+          sudo -S -p '' -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
+            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
+          
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          echo "BOOT_OK"
+          
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+
+      - name: App + Borgus + API Call
+        run: |
+          set +e
+          B=localhost:5555
+          
+          curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          
+          STABLE_PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
+                STABLE_PID=$P
+                echo "PID=$STABLE_PID"
+                break
+              fi
+            fi
+          done
+          [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
+          
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 10 adb -s $B forward tcp:27042 tcp:27042
+          
+          # ★ 生成borgus!
+          cat > gen_borgus.js << 'JSEOF'
+          Java.perform(function() {
+              setTimeout(function() {
+                  try {
+                      var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var instance = FockUtil.INSTANCE.value;
+                      var RequestBody = Java.use("okhttp3.RequestBody");
+                      var MediaType = Java.use("okhttp3.MediaType");
+                      var mediaType = MediaType.parse("application/x-www-form-urlencoded");
+                      
+                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0";
+                      var body = RequestBody.create(mediaType, "localLabels=&gender=0");
+                      var result = instance.getH(url, "POST", body);
+                      
+                      var rm = Java.cast(result, Java.use("java.util.Map"));
+                      var iter = rm.entrySet().iterator();
+                      var output = {};
+                      while (iter.hasNext()) {
+                          var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                          output[String(en.getKey())] = String(en.getValue());
+                      }
+                      console.log("[BORGUS_DATA] " + JSON.stringify(output));
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 3000);
+          });
+          JSEOF
+          
+          timeout 30 frida -H 127.0.0.1:27042 -p $STABLE_PID -l gen_borgus.js 2>&1 | tee /tmp/borgus_output.log
+          
+          # ★ 提取borgus数据并立刻调API!
+          echo "=== Extracting borgus data ==="
+          python3 << 'PYEOF'
+          import json, re, hashlib, base64, urllib.request, urllib.parse, urllib.error, gzip, time
+          from Crypto.Cipher import DES3
+          
+          log = open('/tmp/borgus_output.log').read()
+          m = re.search(r'\[BORGUS_DATA\] (\{.*\})', log)
+          if not m:
+              print("NO_BORGUS_DATA")
+              exit()
+          
+          data = json.loads(m.group(1))
+          borgus = data.get('borgus', '')
+          qdinfo = data.get('QDInfo', '')
+          tstamp = data.get('tstamp', '')
+          ua = data.get('User-Agent', '')
+          cookie = data.get('Cookie', '')
+          
+          print(f"BORGUS: {borgus}")
+          print(f"TSTAMP: {tstamp}")
+          print(f"QDINFO: {qdinfo[:50]}...")
+          print(f"UA: {ua[:50]}...")
+          
+          # 计算QDSign(已知算法)!
+          body = 'localLabels=&gender=0'
+          md5_body = hashlib.md5(body.encode()).hexdigest()
+          plain = f'Rv1rPTnczce|{tstamp}|0|||1|7.9.464|1|{md5_body}|f189adc92b816b3e9da29ea304d4a7e4'
+          key = b'sewxf03hhz3ew9qcCXMHiDMk'
+          iv = b'sh331nt1'
+          pad = 8 - len(plain) % 8
+          if pad == 0: pad = 8
+          plain_padded = plain.encode() + bytes([pad]) * pad
+          enc = DES3.new(key, DES3.MODE_CBC, iv).encrypt(plain_padded)
+          qdsign = base64.b64encode(enc).decode()
+          print(f"QDSign(computed): {qdsign[:30]}...")
+          
+          # 发请求!
+          headers = {
+              'User-Agent': ua,
+              'Cookie': cookie,
+              'QDInfo': qdinfo,
+              'tstamp': tstamp,
+              'cecelia': '',
+              'borgus': borgus,
+              'QDSign': qdsign,
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Referer': 'http://android.qidian.com',
+              'Accept-Encoding': 'gzip',
+          }
+          
+          url = 'https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0'
+          
+          print(f"\n--- Calling getconf ---")
+          print(f"Time since borgus: {int(time.time()*1000) - int(tstamp)}ms")
+          try:
+              req = urllib.request.Request(url, data=body.encode(), headers=headers, method='POST')
+              r = urllib.request.urlopen(req, timeout=30)
+              raw = r.read()
+              try: raw = gzip.decompress(raw)
+              except: pass
+              resp = raw.decode('utf-8', errors='replace')
+              print(f"HTTP: {r.status}")
+              print(f"★★★RESPONSE: {resp[:800]}")
+              
+              j = json.loads(resp)
+              print(f"\nResult: {j.get('Result')}")
+              d = j.get('Data', {})
+              fm = d.get('Freshman', {})
+              if fm:
+                  print(f"\n★ FreshmanBean:")
+                  print(f"  IsFreshman = {fm.get('IsFreshman')}")
+                  print(f"  IsNewDevice = {fm.get('IsNewDevice')}")
+                  print(f"  ShowLimitFreePopup = {fm.get('ShowLimitFreePopup')}")
+                  print(f"  Source = {fm.get('Source')}")
+              print(f"\nIsFreshmanLimitFree: {d.get('IsFreshmanLimitFree')}")
+          except urllib.error.HTTPError as e:
+              body2 = e.read()
+              try: body2 = gzip.decompress(body2)
+              except: pass
+              print(f"HTTP Error {e.code}: {body2.decode('utf-8', errors='replace')[:300]}")
+          except Exception as e:
+              print(f"Error: {e}")
+          PYEOF
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-test-result
+          path: |
+            /tmp/borgus_output.log
+          if-no-files-found: warn
