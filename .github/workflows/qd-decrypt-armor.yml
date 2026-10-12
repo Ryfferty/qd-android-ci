@@ -214,46 +214,53 @@ jobs:
                           console.log("[HOOK_ERR] " + e);
                       }
                       
-                      // ★ 用Stalker trace lk()的调用链!
-                      console.log("\n[STALKER] Trace lk()调用链...");
-                      var NW_trace = Java.use("com.yuewen.nib.NativeWrapper");
+                      // ★ Hook所有libnib导出函数!
+                      console.log("\n[HOOKALL] Hook所有nib_函数...");
+                      var BASE = Module.findBaseAddress("libnib.so");
+                      console.log("[HOOKALL] base: " + BASE);
                       
-                      // 获取当前线程!
-                      var tid = Process.getCurrentThreadId();
-                      var base = Module.findBaseAddress("libnib.so");
-                      console.log("[STALKER] libnib base: " + base);
+                      // 列出所有导出!
+                      var exports = Module.enumerateExports("libnib.so");
+                      console.log("[HOOKALL] " + exports.length + "个导出");
                       
-                      // 开启Stalker!
-                      Stalker.follow(tid, {
-                          events: {
-                              call: true,  // 跟踪调用!
-                              ret: false,
-                              exec: false
-                          },
-                          onReceive: function(events) {
-                              // 处理调用事件!
-                              for (var i = 0; i < events.length; i++) {
-                                  var ev = events[i];
-                                  if (ev[0] === "call") {
-                                      var from = ev[1];
-                                      var to = ev[2];
-                                      // 只记录libnib内的调用!
-                                      if (to >= base && to < base.add(0x30000)) {
-                                          console.log("[CALL] " + from.sub(base) + " → " + to.sub(base));
-                                      }
-                                  }
-                              }
-                          }
+                      var nib_exports = exports.filter(function(e) {
+                          return e.name.indexOf("nib_") !== -1;
                       });
+                      console.log("[HOOKALL] " + nib_exports.length + "个nib_函数");
                       
-                      // 调用lk()!
-                      console.log("[STALKER] 调用lk('test')...");
-                      var trace_result = NW_trace.a("test");
-                      console.log("[STALKER] lk()结果: " + trace_result);
+                      // Hook每一个!
+                      var hooked = 0;
+                      for (var ei = 0; ei < nib_exports.length; ei++) {
+                          try {
+                              var exp = nib_exports[ei];
+                              Interceptor.attach(exp.address, {
+                                  onEnter: function(args) {
+                                      console.log("[NIB_CALL] " + exp.name + " @ " + exp.address.sub(BASE));
+                                  }
+                              });
+                              hooked++;
+                          } catch(e) {}
+                      }
+                      console.log("[HOOKALL] " + hooked + "个hooked!");
                       
-                      // 停止Stalker!
-                      Stalker.unfollow(tid);
-                      console.log("[STALKER] Trace完成!");
+                      // 也hook所有 JNI入口(0x177xx-0x17axx)!
+                      var jni_addrs = [0x17765, 0x178a1, 0x17949, 0x17ae1, 0x17ae0];
+                      for (var ji = 0; ji < jni_addrs.length; ji++) {
+                          try {
+                              var jaddr = BASE.add(jni_addrs[ji] & ~1);
+                              Interceptor.attach(jaddr, {
+                                  onEnter: function(args) {
+                                      console.log("[JNI_CALL] 0x" + (jni_addrs[ji]).toString(16));
+                                  }
+                              });
+                          } catch(e) {}
+                      }
+                      
+                      // 调lk()!
+                      var NW2 = Java.use("com.yuewen.nib.NativeWrapper");
+                      console.log("[HOOKALL] 调lk('test')...");
+                      var result = NW2.a("test");
+                      console.log("[HOOKALL] 结果: " + result);
                       
                       // 简化lk()测试!
                       var NW = Java.use("com.yuewen.nib.NativeWrapper");
