@@ -235,7 +235,7 @@ Java.perform(function() {
             
             if (!alreadyLoaded) {
                 // 用System.load(完整路径)!
-                var Runtime = Java.use("java.lang.Runtime");
+                // Use class loader approach instead!
                 var runtime = Runtime.getRuntime();
                 runtime.load(nativeLibDir + "/libostar.so");
                 console.log("[LOAD] System.load(libostar.so) OK!");
