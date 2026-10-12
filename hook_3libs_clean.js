@@ -216,68 +216,68 @@ Java.perform(function() {
             console.log("[NF_ERR] " + e);
         }
         
-        // ═══ ④ OSTAR REGISTER (纯协议!) ═══
+        // ═══ ④ OSTAR REGISTER — 先构body再getH! ═══
         try {
-            console.log("[REG] === Starting REGISTER ===");
+            console.log("[REG] === REGISTER ===");
             
-            // 获取所有需要的头!
-            var FU = Java.use("com.qidian.QDReader.component.util.FockUtil");
-            var inst = FU.INSTANCE.value;
-            var RB = Java.use("okhttp3.RequestBody");
-            var MT = Java.use("okhttp3.MediaType");
-            var mt = MT.parse("application/x-www-form-urlencoded");
-            
-            // 调getH获取borgus/cecelia/ibex(对ostar端点)!
-            var ostarUrl = "https://druidv6.if.qidian.com/argus/api/v1/client/ostar";
-            var regBody = RB.create(mt, "data=%7B%22cpt%22%3A%222%22%7D");
-            var regResult = inst.getH(ostarUrl, "POST", regBody);
-            var regMap = Java.cast(regResult, Java.use("java.util.Map"));
-            var regIter = regMap.entrySet().iterator();
-            var regHeaders = {};
-            while (regIter.hasNext()) {
-                var regEn = Java.cast(regIter.next(), Java.use("java.util.Map$Entry"));
-                regHeaders[String(regEn.getKey())] = String(regEn.getValue());
-                console.log("[REG_HDR] " + regEn.getKey() + " = " + String(regEn.getValue()).substring(0, 80));
-            }
-            
-            // 检查是否有ibex!
-            if (!regHeaders["ibex"]) {
-                console.log("[REG] No ibex from getH, generating via lk...");
-                var NW = Java.use("com.yuewen.nib.NativeWrapper");
-                // 用设备信息生成ibex!
-                var ibexInput = "register_device_test";
-                var ibexVal = NW.a(ibexInput);
-                regHeaders["ibex"] = ibexVal;
-                console.log("[REG_IBEX] " + ibexVal.substring(0, 60));
-            }
-            
-            // 构造REGISTER body!
-            var regTs = regHeaders["tstamp"] || String(Date.now());
-            var regNn = ""; 
+            // 1. 构造body(先)!
+            var regTs = String(Date.now());
+            var regNn = "";
             for (var i = 0; i < 16; i++) {
                 regNn += "0123456789abcdef"[Math.floor(Math.random() * 16)];
             }
-            // 简化pms(用设备信息)!
+            // pms: 用设备信息Base64!
             var Base64 = Java.use("android.util.Base64");
-            var regPms = Base64.encodeToString(Java.use("java.lang.String").$new("test_device_" + Date.now()).getBytes("UTF-8"), 2).substring(0, 300);
+            var deviceStr = "redroid_arm64_" + regTs;
+            var regPms = Base64.encodeToString(
+                Java.use("java.lang.String").$new(deviceStr).getBytes("UTF-8"), 2
+            ).substring(0, 300);
+            
+            // sn: 固定格式!
+            var regSn = "4c438510" + "51e1" + "0785" + 
+                String(Math.floor(Date.now() / 1000) % 0xFFFFFF).toString(16).padStart(6, '0') + 
+                "000000000000000000000000000000000000";
             
             var regData = {
                 "cpt": "2",
                 "ext": "",
                 "nn": regNn,
                 "pms": regPms,
-                "sn": "4c43851051e10785000000000000000000000000000000000000000000000000000000",
+                "sn": regSn,
                 "tm": regTs
             };
             var regBodyStr = "data=" + encodeURIComponent(JSON.stringify(regData));
+            console.log("[REG_BODY] " + regBodyStr.substring(0, 150));
             
-            // 输出头供Python使用!
+            // 2. 调getH(带这个body)! → QDSign会匹配!
+            var FU2 = Java.use("com.qidian.QDReader.component.util.FockUtil");
+            var inst2 = FU2.INSTANCE.value;
+            var RB2 = Java.use("okhttp3.RequestBody");
+            var MT2 = Java.use("okhttp3.MediaType");
+            var mt2 = MT2.parse("application/x-www-form-urlencoded");
+            var ostarUrl = "https://druidv6.if.qidian.com/argus/api/v1/client/ostar";
+            var body2 = RB2.create(mt2, regBodyStr);
+            var result2 = inst2.getH(ostarUrl, "POST", body2);
+            
+            // 3. 提取headers!
+            var rm2 = Java.cast(result2, Java.use("java.util.Map"));
+            var it2 = rm2.entrySet().iterator();
+            var regHeaders = {};
+            while (it2.hasNext()) {
+                var en2 = Java.cast(it2.next(), Java.use("java.util.Map$Entry"));
+                regHeaders[String(en2.getKey())] = String(en2.getValue());
+            }
+            console.log("[REG_QDSign] " + (regHeaders["QDSign"] || "none").substring(0, 40));
+            console.log("[REG_borgus] " + (regHeaders["borgus"] || "none"));
+            
+            // 4. 输出完整数据!
             console.log("[REGISTER_DATA] " + JSON.stringify({
                 url: ostarUrl,
                 headers: regHeaders,
-                body: regBodyStr.substring(0, 200),
+                body: regBodyStr,
                 nn: regNn,
                 tm: regTs,
+                sn: regSn,
                 pms: regPms
             }));
             
