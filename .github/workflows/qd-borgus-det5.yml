@@ -1,0 +1,232 @@
+name: qd-borgus-det5
+on:
+  workflow_dispatch:
+
+jobs:
+  det5:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup redroid + frida
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
+            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          echo "BOOT_OK"
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+
+      - name: Tamper-flag hunt + cross-process borgus
+        run: |
+          set +e
+          B=localhost:5555
+          APP=com.qidian.QDReader
+          curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B shell "am start -n $APP/.ui.activity.SplashActivity" >/dev/null 2>&1
+          PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r')
+            if [ -n "$P" ]; then sleep 6; P2=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r'); [ "$P" = "$P2" ] && PID=$P && break; fi
+          done
+          [ -z "$PID" ] && { echo "NO_APP"; exit 0; }
+          echo "PID1=$PID"
+
+          # marker BEFORE frida session
+          adb -s $B shell "touch /data/local/tmp/marker"
+          sleep 2
+
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+
+          cat > session.js << 'JSEOF'
+          var FROZEN = {active: false, ms: 0};
+          var EL = {v: 123456789};
+          var XT = 1792840000000;
+          try {
+              var pClock = Module.findExportByName(null, "clock_gettime");
+              if (pClock) {
+                  Interceptor.attach(pClock, {
+                      onEnter: function(args) {
+                          this.pTs = null;
+                          if (FROZEN.active && args[0].toInt32() === 0) this.pTs = args[1];
+                      },
+                      onLeave: function(ret) {
+                          if (this.pTs !== null && !this.pTs.isNull()) {
+                              var sec = Math.floor(FROZEN.ms / 1000);
+                              var nsec = (FROZEN.ms % 1000) * 1000000;
+                              if (Process.pointerSize === 8) {
+                                  this.pTs.writeS64(sec); this.pTs.add(8).writeS64(nsec);
+                              } else {
+                                  this.pTs.writeU32(sec); this.pTs.add(4).writeU32(nsec);
+                              }
+                          }
+                      }
+                  });
+              }
+          } catch(e) {}
+          Java.perform(function() {
+              try {
+                  var Sys = Java.use("java.lang.System");
+                  Sys.currentTimeMillis.implementation = function() {
+                      return FROZEN.active ? FROZEN.ms : this.currentTimeMillis();
+                  };
+              } catch(e) {}
+              try {
+                  var SC = Java.use("android.os.SystemClock");
+                  SC.elapsedRealtime.implementation = function() {
+                      return FROZEN.active ? EL.v : this.elapsedRealtime();
+                  };
+                  SC.uptimeMillis.implementation = function() {
+                      return FROZEN.active ? EL.v : this.uptimeMillis();
+                  };
+              } catch(e) {}
+              setTimeout(function() {
+                  try {
+                      var FU = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var inst = FU.INSTANCE.value;
+                      var RB = Java.use("okhttp3.RequestBody");
+                      var MT = Java.use("okhttp3.MediaType");
+                      var mt = MT.parse("application/x-www-form-urlencoded");
+                      var Map = Java.use("java.util.Map");
+                      var MapEntry = Java.use("java.util.Map$Entry");
+                      var urlA = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      function callGetH(tag) {
+                          var body = RB.create(mt, "localLabels=&gender=0");
+                          var res = inst.getH(urlA, "POST", body);
+                          var h = {};
+                          var it = Java.cast(res, Map).entrySet().iterator();
+                          while (it.hasNext()) {
+                              var en = Java.cast(it.next(), MapEntry);
+                              h[String(en.getKey())] = String(en.getValue());
+                          }
+                          var o = {tag: tag, ts: h["tstamp"] || "", borgus: h["borgus"] || "",
+                                   qdinfo: h["QDInfo"] || ""};
+                          console.log("[JSON]" + JSON.stringify(o));
+                          return o;
+                      }
+                      var X0 = 1000000000;
+                      FROZEN.active = true;
+                      EL.v = X0;
+                      FROZEN.ms = 1790000000000;
+                      var c0 = callGetH("CAL0");
+                      var C = parseInt(c0.ts) - X0;
+                      console.log("[CAL] C=" + C);
+                      EL.v = XT - C;
+                      FROZEN.ms = XT;
+                      var f0 = callGetH("FIX0");
+                      var f1 = callGetH("FIX1");
+                      console.log("[FIX] ts=" + f0.ts + " borgus=" + f0.borgus + " same=" + (f0.borgus === f1.borgus));
+                      FROZEN.active = false;
+                      console.log("[ALLDONE]");
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 4000);
+          });
+          JSEOF
+
+          echo "=== SESSION A ==="
+          timeout 150 frida -H 127.0.0.1:27042 -p $PID -l session.js 2>&1 | tee /tmp/sessionA.log | grep -aE "\[JSON\]|\[CAL\]|\[FIX\]|\[ERROR\]|ALLDONE" | head -8
+
+          echo "=== files modified during session A ==="
+          adb -s $B shell "find /data/data/$APP -type f -newer /data/local/tmp/marker 2>/dev/null" | tr -d '\r' | tee /tmp/modfiles.txt | head -30
+
+          # delete candidate tamper files: skip shared_prefs / MMKV / databases / cache (device identity)
+          echo "=== deleting non-identity modified files ==="
+          while read -r fp; do
+            case "$fp" in
+              *shared_prefs*|*MMKV*|*databases*|*cache*|*code_cache*|*.jiagu*|*app_webview*) echo "KEEP $fp" ;;
+              "") ;;
+              *) echo "DEL  $fp"; adb -s $B shell "rm -f '$fp'" 2>/dev/null ;;
+            esac
+          done < /tmp/modfiles.txt
+
+          # ALSO check hidden jiagu-ish dirs at app root
+          adb -s $B shell "ls -la /data/data/$APP/ 2>/dev/null" | tr -d '\r' | head -25
+
+          # kill frida-server + app, relaunch
+          FSPID=$(timeout 10 adb -s $B shell pidof fs-srv | tr -d '\r')
+          [ -n "$FSPID" ] && adb -s $B shell "kill -9 $FSPID" 2>/dev/null
+          sleep 3
+          MPID=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r')
+          [ -n "$MPID" ] && adb -s $B shell "kill -9 $MPID"
+          sleep 8
+          timeout 20 adb -s $B shell "am start -n $APP/.ui.activity.SplashActivity" 2>&1 | tail -1
+          PID2=""
+          for i in $(seq 1 20); do
+            sleep 4
+            P=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r')
+            if [ -n "$P" ]; then sleep 6; P2=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r'); [ "$P" = "$P2" ] && [ -n "$P2" ] && PID2=$P && break; fi
+          done
+          if [ -z "$PID2" ]; then
+            echo "RELAPSE_STILL_DEAD — logcat:"
+            adb -s $B logcat -d 2>/dev/null | grep -aE "ActivityManager.*died|FATAL|AndroidRuntime" | tail -8
+            exit 0
+          fi
+          echo "SESSION_B_PID=$PID2"
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+
+          echo "=== SESSION B ==="
+          timeout 150 frida -H 127.0.0.1:27042 -p $PID2 -l session.js 2>&1 | tee /tmp/sessionB.log | grep -aE "\[JSON\]|\[CAL\]|\[FIX\]|\[ERROR\]|ALLDONE" | head -8
+
+          echo "=== A vs B ==="
+          echo "A: $(grep -a '\[FIX\]' /tmp/sessionA.log | head -1)"
+          echo "B: $(grep -a '\[FIX\]' /tmp/sessionB.log | head -1)"
+          python3 - << 'PYX'
+          import json, re
+          def qd_imei(path):
+              try:
+                  s = open(path, encoding='utf-8', errors='replace').read()
+                  m = re.search(r'\[JSON\]\{"tag":"FIX0".*?"qdinfo":"([^"]+)"', s)
+                  if m:
+                      import base64
+                      from Crypto.Cipher import DES3
+                      d = DES3.new(b'0821CAAD409B8402'+b'0821CAAD409B8402'[:8], DES3.MODE_CBC, b'\x00'*8).decrypt(base64.b64decode(m.group(1)))
+                      return d.decode('utf-8','replace').split('|')[0]
+              except Exception as e:
+                  pass
+              return None
+          a, b = qd_imei('/tmp/sessionA.log'), qd_imei('/tmp/sessionB.log')
+          print('A imei:', a, '| B imei:', b, '| same device:', a == b and a is not None)
+          PYX
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: borgus-det5
+          path: |
+            /tmp/sessionA.log
+            /tmp/sessionB.log
+            /tmp/modfiles.txt
+          if-no-files-found: warn
