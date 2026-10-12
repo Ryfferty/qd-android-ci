@@ -216,6 +216,42 @@ Java.perform(function() {
             console.log("[NF_ERR] " + e);
         }
         
+        // ═══ ③-B Hook OkHttp捕获真实ostar请求! ═══
+        try {
+            var RealCall = Java.use("okhttp3.internal.connection.RealCall");
+            console.log("[OKHTTP] RealCall found");
+            
+            RealCall.getResponseWithInterceptorChain.implementation = function() {
+                var request = this.originalRequest();
+                var url = request.url().toString();
+                
+                if (url.indexOf("ostar") !== -1) {
+                    console.log("[★OSTAR_REQ] " + url);
+                    // Dump ALL headers!
+                    var headers = request.headers();
+                    var hSize = headers.size();
+                    for (var i = 0; i < hSize; i++) {
+                        console.log("[★OSTAR_HDR] " + headers.name(i) + " = " + headers.value(i).substring(0, 100));
+                    }
+                    // Dump body!
+                    var body = request.body();
+                    if (body) {
+                        try {
+                            var Buffer = Java.use("okio.Buffer");
+                            var buf = Buffer.$new();
+                            body.writeTo(buf);
+                            var bodyStr = buf.readUtf8();
+                            console.log("[★OSTAR_BODY] " + bodyStr.substring(0, 200));
+                        } catch(e) {}
+                    }
+                }
+                return this.getResponseWithInterceptorChain();
+            };
+            console.log("[OKHTTP] RealCall hooked!");
+        } catch(e) {
+            console.log("[OKHTTP_ERR] " + e);
+        }
+        
         // ═══ ④ OSTAR REGISTER — 先构body再getH! ═══
         try {
             console.log("[REG] === REGISTER ===");
