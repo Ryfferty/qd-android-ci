@@ -284,12 +284,29 @@ jobs:
                               console.log("[OSTAR_MOD] libostar.so loaded at " + ostarModule.base);
                           } else {
                               console.log("[OSTAR_MOD] libostar.so NOT loaded!");
-                              // 尝试加载!
+                              // ★ 直接用Module.load加载!
                               try {
-                                  Java.use("java.lang.System").loadLibrary("ostar");
-                                  console.log("[OSTAR_MOD] loadLibrary called");
+                                  // 尝试App的lib目录!
+                                  var appInfo = Java.use("android.app.ActivityThread").currentApplication().getApplicationInfo();
+                                  var nativeLibDir = appInfo.nativeLibraryDir.value;
+                                  console.log("[OSTAR_MOD] nativeLibDir: " + nativeLibDir);
+                                  
+                                  // 先试nativeLibDir!
+                                  try {
+                                      var mod = Module.load(nativeLibDir + "/libostar.so");
+                                      console.log("[OSTAR_MOD] Loaded from nativeLibDir: " + mod.base);
+                                  } catch(e1) {
+                                      console.log("[OSTAR_MOD] nativeLibDir failed: " + e1);
+                                      // 再试直接dlopen!
+                                      try {
+                                          var mod2 = Module.load("libostar.so");
+                                          console.log("[OSTAR_MOD] Loaded by name: " + mod2.base);
+                                      } catch(e2) {
+                                          console.log("[OSTAR_MOD] dlopen failed: " + e2);
+                                      }
+                                  }
                               } catch(le) {
-                                  console.log("[OSTAR_MOD] loadLibrary err: " + le);
+                                  console.log("[OSTAR_MOD] err: " + le);
                               }
                           }
                           
