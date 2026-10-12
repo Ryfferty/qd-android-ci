@@ -265,7 +265,7 @@ Java.perform(function() {
                     if (url && url.indexOf("ostar") !== -1) {
                         console.log("[★OSTAR_REQ] " + url);
                         
-                        // Dump headers!
+                        // Dump ALL headers!
                         var headers = entity.headers();
                         if (headers) {
                             var keySet = headers.keySet();
@@ -273,15 +273,33 @@ Java.perform(function() {
                             while (iter.hasNext()) {
                                 var key = String(iter.next());
                                 var value = String(headers.get(key));
-                                console.log("[★OSTAR_HDR] " + key + " = " + value.substring(0, 120));
+                                console.log("[★OSTAR_HDR] " + key + " = " + value);
                             }
                         }
                         
-                        // Dump body!
+                        // Dump FULL body — 提取pms/sn!
                         var body = entity.body();
                         if (body) {
                             var bodyStr = String(body);
-                            console.log("[★OSTAR_BODY] " + bodyStr.substring(0, 300));
+                            console.log("[★OSTAR_BODY_FULL] " + bodyStr);
+                            
+                            // 解析JSON提取pms/sn!
+                            try {
+                                var dataIdx = bodyStr.indexOf("data=");
+                                if (dataIdx >= 0) {
+                                    var jsonStr = decodeURIComponent(bodyStr.substring(dataIdx + 5));
+                                    var regJson = JSON.parse(jsonStr);
+                                    console.log("[★PMS] " + regJson.pms);
+                                    console.log("[★SN] " + regJson.sn);
+                                    console.log("[★TM] " + regJson.tm);
+                                    console.log("[★NN] " + regJson.nn);
+                                    if (regJson.ky) {
+                                        console.log("[★KY] " + regJson.ky);
+                                    }
+                                }
+                            } catch(pe) {
+                                console.log("[OSTAR_PARSE_ERR] " + pe);
+                            }
                         }
                     }
                 } catch(e) {
