@@ -256,11 +256,49 @@ jobs:
                           } catch(e) {}
                       }
                       
-                      // 调lk()!
-                      var NW2 = Java.use("com.yuewen.nib.NativeWrapper");
-                      console.log("[HOOKALL] 调lk('test')...");
-                      var result = NW2.a("test");
-                      console.log("[HOOKALL] 结果: " + result);
+                      // Hook nib_21765894的输入输出!
+                      console.log("\n[IO] Hook nib_21765894 I/O...");
+                      var nib_fn = null;
+                      for (var ei = 0; ei < nib_exports.length; ei++) {
+                          if (nib_exports[ei].name === "nib_21765894") {
+                              nib_fn = nib_exports[ei];
+                              break;
+                          }
+                      }
+                      if (nib_fn) {
+                          console.log("[IO] nib_21765894 @ " + nib_fn.address);
+                          var io_log = [];
+                          Interceptor.detachAll();  // 清除之前的hooks!
+                          Interceptor.attach(nib_fn.address, {
+                              onEnter: function(args) {
+                                  this.arg0 = args[0].toInt32();
+                                  this.arg1 = args[1].toInt32();
+                                  this.arg2 = args[2].toInt32();
+                                  this.arg3 = args[3].toInt32();
+                              },
+                              onLeave: function(retval) {
+                                  var ret = retval.toInt32();
+                                  io_log.push({
+                                      a0: this.arg0, a1: this.arg1, 
+                                      a2: this.arg2, a3: this.arg3,
+                                      ret: ret
+                                  });
+                                  if (io_log.length <= 30) {
+                                      console.log("[IO] in(" + this.arg0 + "," + this.arg1 + "," + this.arg2 + "," + this.arg3 + ") → " + ret);
+                                  }
+                              }
+                          });
+                          
+                          // 调lk()!
+                          var NW3 = Java.use("com.yuewen.nib.NativeWrapper");
+                          console.log("[IO] 调lk('test')...");
+                          var result = NW3.a("test");
+                          console.log("[IO] 结果: " + result);
+                          console.log("[IO] 总调用: " + io_log.length + "次");
+                          
+                          // 输出完整log!
+                          console.log("[IO_ALL] " + JSON.stringify(io_log));
+                      }
                       
                       // 简化lk()测试!
                       var NW = Java.use("com.yuewen.nib.NativeWrapper");
