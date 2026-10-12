@@ -278,7 +278,19 @@ jobs:
                       
                       // 调libostar!
                       try {
+                          // ★ 先加载libostar.so!
+                          var System = Java.use("java.lang.System");
+                          try {
+                              System.loadLibrary("ostar");
+                              console.log("[OSTAR] libostar.so loaded");
+                          } catch(le) {
+                              console.log("[OSTAR] loadLibrary: " + le);
+                          }
+                          
+                          // ★ 设置U.a = true(启用native调用)!
                           var U = Java.use("com.ola.star.uin.U");
+                          U.a.value = true;
+                          console.log("[OSTAR] U.a set to true");
                           // 设备指纹!
                           var ctx = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
                           try {
