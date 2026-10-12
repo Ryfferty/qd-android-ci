@@ -1,0 +1,187 @@
+name: qd-register-device
+on:
+  workflow_dispatch:
+
+jobs:
+  register:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
+          
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
+            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
+          
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          echo "BOOT_OK"
+          
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+
+      - name: Register and Capture
+        run: |
+          set +e
+          which adb || sudo -S -p '' apt-get install -y -qq android-tools-adb
+          B=localhost:5555
+          
+          # 安装App(全新设备, 从未注册过!)
+          curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          
+          # ★ 先启动frida-server(在App之前)!
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 3
+          adb -s $B forward tcp:27042 tcp:27042
+          
+          # ★ 启动App — 用frida attach模式!
+          cat > capture_register.js << 'JSEOF'
+          // 捕获设备REGISTER + 新qimei!
+          Java.perform(function() {
+              console.log("[*] Waiting for App...");
+              
+              // Hook Cookie设置 — 捕获qimei回填!
+              try {
+                  var CookieManager = Java.use("android.webkit.CookieManager");
+                  CookieManager.setCookie.overload('java.lang.String', 'java.lang.String').implementation = function(url, value) {
+                      if (value && (value.indexOf("qid=") !== -1 || value.indexOf("qidth=") !== -1)) {
+                          console.log("[★COOKIE] " + value);
+                      }
+                      return this.setCookie(url, value);
+                  };
+              } catch(e) {}
+              
+              // Hook qv1.xml 写入 — REGISTER成功标志!
+              try {
+                  var File = Java.use("java.io.File");
+                  File.$init.overload('java.lang.String', 'java.lang.String').implementation = function(dir, name) {
+                      if (name && name.indexOf("qv1") !== -1) {
+                          console.log("[★QV1] " + dir + "/" + name);
+                      }
+                      return this.$init(dir, name);
+                  };
+              } catch(e) {}
+              
+              // Hook SharedPreferences — qimei存储!
+              try {
+                  var SPEditor = Java.use("android.app.SharedPreferencesImpl$EditorImpl");
+                  SPEditor.putString.implementation = function(key, value) {
+                      if (key && (key.indexOf("qimei") !== -1 || key.indexOf("qid") !== -1 || 
+                          key.indexOf("sn") !== -1 || key.indexOf("beacon") !== -1)) {
+                          console.log("[★SP] " + key + " = " + value);
+                      }
+                      return this.putString(key, value);
+                  };
+              } catch(e) {}
+              
+              // Hook ostar REGISTER请求!
+              try {
+                  var URL = Java.use("java.net.URL");
+                  URL.$init.overload('java.lang.String').implementation = function(spec) {
+                      if (spec && spec.indexOf("ostar") !== -1) {
+                          console.log("[★OSTAR_URL] " + spec);
+                      }
+                      return this.$init(spec);
+                  };
+              } catch(e) {}
+              
+              // Hook HTTP请求(通用)!
+              try {
+                  var HttpURLConnection = Java.use("java.net.HttpURLConnection");
+                  HttpURLConnection.setRequestProperty.implementation = function(key, value) {
+                      if (key && (key.indexOf("borgus") !== -1 || key.indexOf("ibex") !== -1 ||
+                          key.indexOf("QDSign") !== -1 || key.indexOf("QDInfo") !== -1 ||
+                          key.indexOf("tstamp") !== -1)) {
+                          console.log("[★HTTP] " + key + " = " + String(value).substring(0, 100));
+                      }
+                      return this.setRequestProperty(key, value);
+                  };
+              } catch(e) {}
+              
+              // 等待30秒让App完成REGISTER!
+              setTimeout(function() {
+                  console.log("[*] Waiting for register...");
+              }, 10000);
+              
+              setTimeout(function() {
+                  console.log("[*] 20s checkpoint");
+              }, 20000);
+              
+              setTimeout(function() {
+                  console.log("[*] 30s checkpoint");
+                  // 30秒后检查qv1.xml!
+                  try {
+                      var ctx = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
+                      var filesDir = ctx.getFilesDir().getAbsolutePath();
+                      console.log("[*] filesDir: " + filesDir);
+                      
+                      // 读取qv1.xml!
+                      var FileReader = Java.use("java.io.FileReader");
+                      var BufferedReader = Java.use("java.io.BufferedReader");
+                      var fr = FileReader.$new(filesDir + "/qv1.xml");
+                      var br = BufferedReader.$new(fr);
+                      var line = br.readLine();
+                      var content = "";
+                      while (line !== null) {
+                          content += line + "\n";
+                          line = br.readLine();
+                      }
+                      br.close();
+                      console.log("[★QV1_CONTENT] " + content.substring(0, 500));
+                  } catch(e) {
+                      console.log("[QV1_ERR] " + e);
+                  }
+                  
+                  console.log("[DONE] Capture complete!");
+              }, 30000);
+          });
+          JSEOF
+          
+          # 启动App + frida!
+          timeout 60 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          sleep 5
+          
+          # 获取PID!
+          PID=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+          echo "PID=$PID"
+          
+          if [ -n "$PID" ]; then
+              timeout 45 frida -H 127.0.0.1:27042 -p $PID -l capture_register.js 2>&1 | tee /tmp/register_output.log
+          else
+              echo "NO_PID"
+          fi
+          
+          echo "=== Done ==="
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: register-result
+          path: /tmp/register_output.log
+          if-no-files-found: warn
