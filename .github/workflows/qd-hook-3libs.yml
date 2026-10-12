@@ -81,6 +81,94 @@ jobs:
           timeout 30 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_3libs.js 2>&1 | tee /tmp/hook_3libs_output.log
           echo "=== Hook done ==="
 
+      - name: Python REGISTER
+        run: |
+          set +e
+          echo "=== Python REGISTER ==="
+          python3 << 'PYEOF'
+          import json, re, urllib.request, urllib.parse, urllib.error, gzip, time, hashlib, base64
+          from Crypto.Cipher import DES3, DES
+          import sys
+          sys.path.insert(0, '.')
+          
+          # 读取Frida输出!
+          log = open('/tmp/hook_3libs_output.log').read()
+          
+          # 提取REGISTER_DATA!
+          m = re.search(r'\[REGISTER_DATA\] (\{.*\})', log)
+          if not m:
+              print("NO_REGISTER_DATA")
+              sys.exit(1)
+          
+          data = json.loads(m.group(1))
+          headers = data['headers']
+          print(f"borgus: {headers.get('borgus', 'NONE')}")
+          print(f"cecelia: {headers.get('cecelia', 'NONE')[:50]}")
+          print(f"QDSign: {headers.get('QDSign', 'NONE')[:40]}...")
+          
+          # 构造REGISTER body!
+          nn = data['nn']
+          tm = data['tm']
+          pms = data['pms']
+          
+          # 用样本的sn格式!
+          sn = "4c43851051e10785" + format(int(time.time() * 1000) % 0xFFFFFF, '06x') + "0000000000000000000000000000000000"
+          
+          reg_data = {
+              "cpt": "2",
+              "ext": "",
+              "nn": nn,
+              "pms": pms,
+              "sn": sn,
+              "tm": tm
+          }
+          body = "data=" + urllib.parse.quote(json.dumps(reg_data))
+          
+          # 构造完整headers!
+          req_headers = {
+              'User-Agent': headers.get('User-Agent', 'Mozilla/mobile QDReaderAndroid/7.9.480/1996/1002138/redroid'),
+              'Cookie': headers.get('Cookie', ''),
+              'QDInfo': headers.get('QDInfo', ''),
+              'tstamp': headers.get('tstamp', str(int(time.time() * 1000))),
+              'QDSign': headers.get('QDSign', ''),
+              'borgus': headers.get('borgus', ''),
+              'cecelia': headers.get('cecelia', ''),
+              'ibex': data.get('ibex', ''),
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'Referer': 'http://android.qidian.com',
+              'Accept-Encoding': 'gzip',
+          }
+          
+          url = data['url']
+          print(f"\n--- Sending REGISTER ---")
+          print(f"URL: {url}")
+          print(f"body: {body[:100]}...")
+          
+          try:
+              req = urllib.request.Request(url, data=body.encode(), headers=req_headers, method='POST')
+              r = urllib.request.urlopen(req, timeout=30)
+              raw = r.read()
+              try: raw = gzip.decompress(raw)
+              except: pass
+              resp = raw.decode('utf-8', errors='replace')
+              print(f"HTTP: {r.status}")
+              print(f"★★★REGISTER RESPONSE: {resp[:500]}")
+              
+              # 解析!
+              jr = json.loads(resp)
+              print(f"Result: {jr.get('Result')}")
+              inner = json.loads(jr.get('Data', '{}'))
+              print(f"code: {inner.get('code')}")
+              print(f"data(qimei): {inner.get('data', '')[:50]}")
+          except urllib.error.HTTPError as e:
+              b = e.read()
+              try: b = gzip.decompress(b)
+              except: pass
+              print(f"HTTP {e.code}: {b.decode('utf-8', errors='replace')[:300]}")
+          except Exception as e:
+              print(f"Error: {e}")
+          PYEOF
+
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v4

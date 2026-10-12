@@ -271,48 +271,15 @@ Java.perform(function() {
             };
             var regBodyStr = "data=" + encodeURIComponent(JSON.stringify(regData));
             
-            // 用Java发HTTP请求!
-            console.log("[REG] Sending REGISTER...");
-            console.log("[REG] body: " + regBodyStr.substring(0, 100));
-            
-            var URL2 = Java.use("java.net.URL");
-            var urlObj = URL2.$new(ostarUrl);
-            var conn = urlObj.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(15000);
-            
-            // 设置所有头!
-            for (var hk in regHeaders) {
-                if (hk !== "Cookie") {
-                    conn.setRequestProperty(hk, regHeaders[hk]);
-                }
-            }
-            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
-            
-            // 发body!
-            var os = conn.getOutputStream();
-            var bytes = regBodyStr.getBytes("UTF-8");
-            os.write(bytes);
-            os.flush();
-            os.close();
-            
-            // 读响应!
-            var code = conn.getResponseCode();
-            console.log("[REG] HTTP Status: " + code);
-            
-            var BufferedReader = Java.use("java.io.BufferedReader");
-            var InputStreamReader = Java.use("java.io.InputStreamReader");
-            var reader = BufferedReader.$new(InputStreamReader.$new(conn.getInputStream()));
-            var line = reader.readLine();
-            var response = "";
-            while (line !== null) {
-                response += String(line);
-                line = reader.readLine();
-            }
-            reader.close();
-            console.log("[REG] ★★★RESPONSE: " + response.substring(0, 300));
+            // 输出头供Python使用!
+            console.log("[REGISTER_DATA] " + JSON.stringify({
+                url: ostarUrl,
+                headers: regHeaders,
+                body: regBodyStr.substring(0, 200),
+                nn: regNn,
+                tm: regTs,
+                pms: regPms
+            }));
             
         } catch(e) {
             console.log("[REG_ERR] " + e);
