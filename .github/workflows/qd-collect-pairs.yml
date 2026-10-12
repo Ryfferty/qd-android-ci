@@ -299,50 +299,25 @@ jobs:
                           console.log("[LOC] " + foundAddrs[fi].addr + " in " + foundAddrs[fi].module + " (" + foundAddrs[fi].pattern + ")");
                       }
                       
-                                                                  // ★ Java层hook: String创建时捕获调用栈!
-                      var String = Java.use("java.lang.String");
-                      
-                      // Hook String(byte[]) 构造函数!
-                      String.$init.overload('[B').implementation = function(bytes) {
-                          var str = this.$init(bytes);
-                          if (str.length() === 32) {
-                              var s = str.toString();
-                              if (s.match(/^[0-9a-f]{32}$/)) {
-                                  console.log("[★★★STR] " + s);
-                                  try {
-                                      var stack = Java.use("java.lang.Thread").currentThread().getStackTrace();
-                                      for (var si = 0; si < Math.min(stack.length, 25); si++) {
-                                          console.log("[★JS] " + stack[si].toString());
-                                      }
-                                  } catch(e) {
-                                      console.log("[JS_ERR] " + e);
+                                                                                        // ★ Hook HashMap.put — 抓borgus入Map的调用栈!
+                      var HashMap = Java.use("java.util.HashMap");
+                      HashMap.put.implementation = function(key, value) {
+                          var k = key ? key.toString() : "";
+                          if (k === "borgus") {
+                              console.log("[★★★PUT] borgus = " + value);
+                              try {
+                                  var stack = Java.use("java.lang.Thread").currentThread().getStackTrace();
+                                  console.log("[★STACK] length=" + stack.length);
+                                  for (var si = 0; si < Math.min(stack.length, 30); si++) {
+                                      console.log("[★S] " + stack[si].toString());
                                   }
+                              } catch(e) {
+                                  console.log("[STK_ERR] " + e);
                               }
                           }
-                          return str;
+                          return this.put(key, value);
                       };
-                      console.log("[+] String(byte[]) hooked!");
-                      
-                      // Hook String.format也试试!
-                      try {
-                          String.format.overload('java.lang.String', '[Ljava.lang.Object;').implementation = function(fmt, args) {
-                              var result = this.format(fmt, args);
-                              if (result.length() === 32) {
-                                  var s = result.toString();
-                                  if (s.match(/^[0-9a-f]{32}$/)) {
-                                      console.log("[★★★FMT] " + s);
-                                      var stack = Java.use("java.lang.Thread").currentThread().getStackTrace();
-                                      for (var si = 0; si < Math.min(stack.length, 25); si++) {
-                                          console.log("[★FS] " + stack[si].toString());
-                                      }
-                                  }
-                              }
-                              return result;
-                          };
-                          console.log("[+] String.format hooked!");
-                      } catch(e) {
-                          console.log("[!] format: " + e);
-                      }
+                      console.log("[+] HashMap.put hooked!");
                       
                       // 调用getH!
                       var body2 = RequestBody.create(mediaType, "localLabels=&gender=0");
