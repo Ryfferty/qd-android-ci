@@ -143,6 +143,50 @@ jobs:
                       console.log("\n[SUMMARY] " + success + " success, " + fail + " fail");
                       console.log("[ALL_RESULTS] " + JSON.stringify(results));
                       
+                      // ★ lk()多组输入输出测试!
+                      console.log("\n[LK] === lk() input-output pairs ===");
+                      var NW = Java.use("com.yuewen.nib.NativeWrapper");
+                      var testInputs = [
+                          "A",                    // 1字节
+                          "AA",                   // 重复字节
+                          "AB",                   // 2不同
+                          "ABC",                  // 3
+                          "AAAA",                 // 4重复
+                          "ABCD",                 // 4递增
+                          "ABCDEFGH",             // 8字节
+                          "AAAAAAAAAAAAAAAA",     // 16重复
+                          "ABCDEFGHIJKLMNOP",     // 16递增
+                          "test",                 // 常用词
+                          "12345678",             // 数字
+                          "",                     // 空
+                          "\x00",                // null字节
+                          "test_device_id_12345", // 之前的
+                      ];
+                      for (var ti = 0; ti < testInputs.length; ti++) {
+                          try {
+                              var result = NW.a(testInputs[ti]);
+                              console.log("[LK_PAIR] input='" + testInputs[ti].replace(/\x00/g, "NULL") + "' output='" + result + "'");
+                          } catch(e) {
+                              console.log("[LK_ERR] '" + testInputs[ti] + "': " + e);
+                          }
+                      }
+                      
+                      // ★ 也调hav()和mmr()!
+                      try {
+                          var hav = NW.hav();
+                          console.log("[HAV] " + hav);
+                      } catch(e) {}
+                      
+                      // ★ StringArmor加密方向? 检查有没有encrypt!
+                      try {
+                          var SA = Java.use("com.yuewen.nib.StringArmor");
+                          // 列出所有方法!
+                          var methods = SA.class.getDeclaredMethods();
+                          methods.forEach(function(m) {
+                              console.log("[SA_METHOD] " + m.getName() + " " + m.getParameterTypes());
+                          });
+                      } catch(e) {}
+                      
                   } catch(e) {
                       console.log("[ERR] " + e);
                   }
