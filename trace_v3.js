@@ -158,7 +158,7 @@ Java.perform(function() {
     // 测试 — 包含更多输入!
     setTimeout(function() {
         var NW = Java.use("com.yuewen.nib.NativeWrapper");
-        var tests = ["A", "AB", "AA", "ABC", "test", "hello", "abcdefgh"];
+        var tests = ["test_device_id_12345", "abcdefghijklmnopqrst", "0123456789012345678901234567890123456789"];
         for (var ti = 0; ti < tests.length; ti++) {
             console.log("\n===== lk('" + tests[ti] + "') =====");
             try {
