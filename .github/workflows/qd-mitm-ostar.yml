@@ -87,18 +87,29 @@ jobs:
           timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
           timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
           
+          # ★ 在容器内启动tcpdump!
+          docker exec redroid sh -c "which tcpdump || echo NO_TCPDUMP" 2>/dev/null
+          # 尝试安装tcpdump到redroid!
+          docker exec redroid sh -c "tcpdump -i any -w /tmp/capture.pcap host druidv6.if.qidian.com or port 443 2>/dev/null &" 2>/dev/null
+          echo "tcpdump started (if available)"
+          
           # 启动App!
           timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
           
           # 等App运行2分钟(让Beacon发ostar请求)!
           echo "Waiting 120s for ostar requests..."
-          sleep 120
+          sleep 180
           
           # 停止App!
           adb -s $B shell "am force-stop com.qidian.QDReader" 2>/dev/null
           
           # 分析捕获的流量!
           echo "=== Analyzing captured flows ==="
+          # 查tcpdump文件!
+          docker exec redroid sh -c "ls -la /tmp/capture.pcap 2>/dev/null" || echo "no tcpdump"
+          # 复制出来!
+          docker cp redroid:/tmp/capture.pcap /tmp/capture.pcap 2>/dev/null || echo "copy failed"
+          ls -la /tmp/capture.pcap 2>/dev/null
           python3 << 'PYEOF'
           try:
               from mitmproxy import io as mio
@@ -123,5 +134,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mitm-ostar-flows
-          path: /tmp/flows.mitm
+          path: |
+            /tmp/flows.mitm
+            /tmp/capture.pcap
           if-no-files-found: warn
