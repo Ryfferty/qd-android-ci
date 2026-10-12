@@ -1,0 +1,400 @@
+name: qd-borgus-det3
+on:
+  workflow_dispatch:
+
+jobs:
+  det3:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup redroid + frida
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
+            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          echo "BOOT_OK"
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+
+      - name: Sweep + future bank
+        run: |
+          set +e
+          B=localhost:5555
+          curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then sleep 5; P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); [ "$P" = "$P2" ] && PID=$P && break; fi
+          done
+          [ -z "$PID" ] && { echo "NO_APP"; exit 0; }
+          echo "PID1=$PID"
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+
+          cat > sweep.js << 'JSEOF'
+          // v3: elapsed-driven ts sweep + future bank for server replay
+          var FROZEN = {active: false, ms: 0};
+          var EL = {v: 123456789};
+          try {
+              var pClock = Module.findExportByName(null, "clock_gettime");
+              if (pClock) {
+                  Interceptor.attach(pClock, {
+                      onEnter: function(args) {
+                          this.pTs = null;
+                          if (FROZEN.active && args[0].toInt32() === 0) this.pTs = args[1];
+                      },
+                      onLeave: function(ret) {
+                          if (this.pTs !== null && !this.pTs.isNull()) {
+                              var sec = Math.floor(FROZEN.ms / 1000);
+                              var nsec = (FROZEN.ms % 1000) * 1000000;
+                              if (Process.pointerSize === 8) {
+                                  this.pTs.writeS64(sec); this.pTs.add(8).writeS64(nsec);
+                              } else {
+                                  this.pTs.writeU32(sec); this.pTs.add(4).writeU32(nsec);
+                              }
+                          }
+                      }
+                  });
+              }
+          } catch(e) { console.log("[HOOK_ERR] clock " + e); }
+
+          Java.perform(function() {
+              try {
+                  var Sys = Java.use("java.lang.System");
+                  Sys.currentTimeMillis.implementation = function() {
+                      return FROZEN.active ? FROZEN.ms : this.currentTimeMillis();
+                  };
+              } catch(e) { console.log("[HOOK_ERR] sctm " + e); }
+              try {
+                  var SC = Java.use("android.os.SystemClock");
+                  SC.elapsedRealtime.implementation = function() {
+                      return FROZEN.active ? EL.v : this.elapsedRealtime();
+                  };
+                  SC.uptimeMillis.implementation = function() {
+                      return FROZEN.active ? EL.v : this.uptimeMillis();
+                  };
+              } catch(e) { console.log("[HOOK_ERR] sysclk " + e); }
+
+              setTimeout(function() {
+                  try {
+                      var FU = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var inst = FU.INSTANCE.value;
+                      var RB = Java.use("okhttp3.RequestBody");
+                      var MT = Java.use("okhttp3.MediaType");
+                      var mt = MT.parse("application/x-www-form-urlencoded");
+                      var Map = Java.use("java.util.Map");
+                      var MapEntry = Java.use("java.util.Map$Entry");
+                      var urlA = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+
+                      function callGetH(tag) {
+                          var body = RB.create(mt, "localLabels=&gender=0");
+                          var res = inst.getH(urlA, "POST", body);
+                          var h = {};
+                          var it = Java.cast(res, Map).entrySet().iterator();
+                          while (it.hasNext()) {
+                              var en = Java.cast(it.next(), MapEntry);
+                              h[String(en.getKey())] = String(en.getValue());
+                          }
+                          var o = {tag: tag, ts: h["tstamp"] || "", borgus: h["borgus"] || "",
+                                   qdinfo: h["QDInfo"] || "",
+                                   qdsign: (h["QDSign"] || "").replace(/\s+/g, ""),
+                                   ua: h["User-Agent"] || "", cookie: h["Cookie"] || ""};
+                          console.log("[JSON]" + JSON.stringify(o));
+                          return o;
+                      }
+
+                      var X0 = 1000000000;
+                      FROZEN.active = true;
+                      FROZEN.ms = 1790000000000;
+                      EL.v = X0;
+                      var c0 = callGetH("CAL0");
+                      var c1 = callGetH("CAL1");
+                      var C = parseInt(c0.ts) - X0;
+                      console.log("[CAL] C=" + C + " ts0=" + c0.ts + " jsRealNow=" + Date.now());
+                      FROZEN.ms = parseInt(c0.ts);
+
+                      for (var j = 0; j <= 2; j++) {
+                          EL.v = X0 + j;
+                          FROZEN.ms = C + X0 + j;
+                          callGetH("MS" + j);
+                      }
+                      for (var k = 1; k <= 3; k++) {
+                          EL.v = X0 + k * 1000;
+                          FROZEN.ms = C + X0 + k * 1000;
+                          callGetH("S" + k);
+                      }
+                      // future bank computed at END of sweep (fresh)
+                      var now = Date.now();
+                      var offs = [150000, 210000, 270000];
+                      for (var m = 0; m < offs.length; m++) {
+                          var target = now + offs[m];
+                          EL.v = target - C;
+                          FROZEN.ms = target;
+                          var r = callGetH("FUT" + (m+1));
+                          console.log("[FUTCHECK] target=" + target + " got_ts=" + r.ts + " delta=" + (parseInt(r.ts) - target));
+                      }
+                      FROZEN.active = false;
+                      console.log("[ALLDONE]");
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 4000);
+          });
+          JSEOF
+
+          timeout 220 frida -H 127.0.0.1:27042 -p $PID -l sweep.js 2>&1 | tee /tmp/sweep_output.log | grep -aE "\[JSON\]|\[CAL\]|\[FUTCHECK\]|\[ERROR\]|ALLDONE" | head -30
+
+      - name: Server replay variants (fresh timing)
+        run: |
+          set +e
+          cat > /tmp/replay_test.py << 'PYEOF'
+          import re, json, time, subprocess, sys, base64
+          from Crypto.Cipher import DES3
+          pairs = []
+          for line in open('/tmp/sweep_output.log', encoding='utf-8', errors='replace'):
+              m = re.search(r'\[JSON\](\{.*\})', line)
+              if m:
+                  try: pairs.append(json.loads(m.group(1)))
+                  except Exception: pass
+          futs = [p for p in pairs if p['tag'].startswith('FUT')]
+          if not futs:
+              print('NO_FUT_PAIRS'); sys.exit(0)
+          d = futs[0]
+          ts = int(d['ts'])
+          print('FUT1 ts=%s borgus=%s (delta to now: %.1fs)' % (ts, d['borgus'], ts/1000.0 - time.time()))
+          wait = ts/1000.0 - time.time()
+          if 0 < wait < 200:
+              print('waiting %.1fs for ts freshness' % wait)
+              time.sleep(wait)
+          K3 = b'0821CAAD409B8402'
+          KS = bytes.fromhex('7B3164596771452968392C5229684B71456376345D6B5B68')
+          # device fields from captured QDInfo
+          qd_raw = DES3.new(K3+K3[:8], DES3.MODE_CBC, b'\x00'*8).decrypt(base64.b64decode(d['qdinfo']))
+          pad = qd_raw[-1]; fields = qd_raw[:-pad].decode().split('|')
+          imei = fields[0]
+          def qdinfo_b64(tsstr):
+              plain = '|'.join(fields[:12] + [tsstr] + fields[13:])
+              p = 8 - len(plain) % 8 or 8
+              data = plain.encode() + bytes([p])*p
+              return base64.b64encode(DES3.new(K3+K3[:8], DES3.MODE_CBC, b'\x00'*8).encrypt(data)).decode()
+          def qdsign_b64(tsstr):
+              plain = 'Rv1rPTnczce|%s|0|%s|1|7.9.464|1|d41d8cd98f00b204e9800998ecf8427e|f189adc92b816b3e9da29ea304d4a7e4' % (tsstr, imei)
+              p = 8 - len(plain) % 8 or 8
+              data = plain.encode() + bytes([p])*p
+              return base64.b64encode(DES3.new(KS, DES3.MODE_CBC, b'01234567').encrypt(data)).decode()
+          url = 'https://bravev6.if.qidian.com/argus/api/v1/client/getconf'
+          cookie_tpl = 'QDInfo=%s; ywkey=; ywguid=; appId=12; areaId=30; lang=cn; mode=normal; bar=36; qid=; qidth=; '
+          def send(label, qd, qsig, tstamp, borgus, cookie=None):
+              hdrs = ['-H', 'User-Agent: ' + d['ua'],
+                      '-H', 'QDInfo: ' + qd,
+                      '-H', 'QDSign: ' + qsig,
+                      '-H', 'tstamp: ' + str(tstamp),
+                      '-H', 'Referer: http://android.qidian.com',
+                      '-H', 'Accept-Encoding: gzip',
+                      '-H', 'Content-Type: application/x-www-form-urlencoded',
+                      '-H', 'Cookie: ' + (cookie if cookie is not None else cookie_tpl % qd),
+                      '--compressed', '--max-time', '30']
+              if borgus:
+                  hdrs += ['-H', 'borgus: ' + borgus]
+              cmd = ['curl', '-s', '-X', 'POST', url] + hdrs + ['--data', 'localLabels=&gender=0']
+              try:
+                  r = subprocess.run(cmd, capture_output=True, timeout=40)
+                  out = r.stdout[:400]
+                  print('[%s] %s' % (label, out))
+                  return out
+              except Exception as e:
+                  print('[%s] EXC %s' % (label, e)); return b''
+          # A: pure replay of captured headers at fresh time
+          send('A:captured-hdrs', d['qdinfo'], d['qdsign'], ts, d['borgus'], cookie=d.get('cookie'))
+          # B: python-built QDInfo/QDSign with oracle ts + oracle borgus
+          send('B:py-hdrs-oracle-ts', qdinfo_b64(str(ts)), qdsign_b64(str(ts)), ts, d['borgus'])
+          # D: python headers with FRESH now ts + oracle borgus (binding probe)
+          now_ms = str(int(time.time() * 1000))
+          send('D:py-hdrs-now-ts+old-borgus', qdinfo_b64(now_ms), qdsign_b64(now_ms), now_ms, d['borgus'])
+          # C: control without borgus, fresh ts
+          now_ms2 = str(int(time.time() * 1000))
+          send('C:no-borgus-ctrl', qdinfo_b64(now_ms2), qdsign_b64(now_ms2), now_ms2, None)
+          # E: fresh ts, fresh python headers, NO borgus but ALSO no tstamp staleness — double-check
+          print('done')
+          PYEOF
+          pip install -q pycryptodome 2>&1 | tail -1
+          python3 /tmp/replay_test.py
+
+      - name: Restart app + cross-process check
+        run: |
+          set +e
+          B=localhost:5555
+          # KILL frida-server FIRST so 360 anti-debug won't kill the relaunched app
+          adb -s $B shell "kill $(adb -s $B shell pidof fs-srv | tr -d '\r')" 2>/dev/null
+          FSPID=$(timeout 10 adb -s $B shell pidof fs-srv | tr -d '\r')
+          if [ -n "$FSPID" ]; then adb -s $B shell "kill -9 $FSPID" 2>/dev/null; fi
+          sleep 3
+          adb -s $B shell "am force-stop com.qidian.QDReader"
+          sleep 5
+          timeout 20 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" 2>&1 | tail -1
+          PID2=""
+          for i in $(seq 1 20); do
+            sleep 4
+            P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then sleep 6; P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); [ "$P" = "$P2" ] && [ -n "$P2" ] && PID2=$P && break; fi
+          done
+          if [ -z "$PID2" ]; then
+            timeout 30 adb -s $B shell "monkey -p com.qidian.QDReader -c android.intent.category.LAUNCHER 1" 2>&1 | tail -2
+            for i in $(seq 1 10); do
+              sleep 4
+              P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ -n "$P" ]; then sleep 6; P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r'); [ "$P" = "$P2" ] && [ -n "$P2" ] && PID2=$P && break; fi
+            done
+          fi
+          [ -z "$PID2" ] && { echo "NO_APP2"; exit 0; }
+          echo "PID2=$PID2"
+          # restart frida-server AFTER app is stable
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+
+          cat > restart.js << 'JSEOF'
+          var FROZEN = {active: false, ms: 0};
+          var EL = {v: 123456789};
+          try {
+              var pClock = Module.findExportByName(null, "clock_gettime");
+              if (pClock) {
+                  Interceptor.attach(pClock, {
+                      onEnter: function(args) {
+                          this.pTs = null;
+                          if (FROZEN.active && args[0].toInt32() === 0) this.pTs = args[1];
+                      },
+                      onLeave: function(ret) {
+                          if (this.pTs !== null && !this.pTs.isNull()) {
+                              var sec = Math.floor(FROZEN.ms / 1000);
+                              var nsec = (FROZEN.ms % 1000) * 1000000;
+                              if (Process.pointerSize === 8) {
+                                  this.pTs.writeS64(sec); this.pTs.add(8).writeS64(nsec);
+                              } else {
+                                  this.pTs.writeU32(sec); this.pTs.add(4).writeU32(nsec);
+                              }
+                          }
+                      }
+                  });
+              }
+          } catch(e) {}
+          Java.perform(function() {
+              try {
+                  var Sys = Java.use("java.lang.System");
+                  Sys.currentTimeMillis.implementation = function() {
+                      return FROZEN.active ? FROZEN.ms : this.currentTimeMillis();
+                  };
+              } catch(e) {}
+              try {
+                  var SC = Java.use("android.os.SystemClock");
+                  SC.elapsedRealtime.implementation = function() {
+                      return FROZEN.active ? EL.v : this.elapsedRealtime();
+                  };
+                  SC.uptimeMillis.implementation = function() {
+                      return FROZEN.active ? EL.v : this.uptimeMillis();
+                  };
+              } catch(e) {}
+              setTimeout(function() {
+                  try {
+                      var FU = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var inst = FU.INSTANCE.value;
+                      var RB = Java.use("okhttp3.RequestBody");
+                      var MT = Java.use("okhttp3.MediaType");
+                      var mt = MT.parse("application/x-www-form-urlencoded");
+                      var Map = Java.use("java.util.Map");
+                      var MapEntry = Java.use("java.util.Map$Entry");
+                      var urlA = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      function callGetH(tag) {
+                          var body = RB.create(mt, "localLabels=&gender=0");
+                          var res = inst.getH(urlA, "POST", body);
+                          var h = {};
+                          var it = Java.cast(res, Map).entrySet().iterator();
+                          while (it.hasNext()) {
+                              var en = Java.cast(it.next(), MapEntry);
+                              h[String(en.getKey())] = String(en.getValue());
+                          }
+                          var o = {tag: tag, ts: h["tstamp"] || "", borgus: h["borgus"] || "",
+                                   qdinfo: h["QDInfo"] || "",
+                                   qdsign: (h["QDSign"] || "").replace(/\s+/g, ""),
+                                   ua: h["User-Agent"] || "", cookie: h["Cookie"] || ""};
+                          console.log("[JSON]" + JSON.stringify(o));
+                          return o;
+                      }
+                      var X0 = 1000000000;
+                      FROZEN.active = true;
+                      FROZEN.ms = 1790000000000;
+                      EL.v = X0;
+                      var c0 = callGetH("RCAL0");
+                      var c1 = callGetH("RCAL1");
+                      var C2 = parseInt(c0.ts) - X0;
+                      console.log("[RCAL] C2=" + C2 + " ts0=" + c0.ts);
+                      var targets = [];
+                      try { targets = JSON.parse("__PREVFUTS__"); } catch(pe) { targets = []; }
+                      for (var t = 0; t < targets.length; t++) {
+                          EL.v = targets[t] - C2;
+                          FROZEN.ms = targets[t];
+                          callGetH("RFUT" + t);
+                      }
+                      FROZEN.active = false;
+                      console.log("[ALLDONE2]");
+                  } catch(e) {
+                      console.log("[ERROR] " + e);
+                  }
+              }, 4000);
+          });
+          JSEOF
+
+          cat > /tmp/extract_futs.py << 'PYX'
+          import sys, json
+          ts = []
+          for line in open('/tmp/sweep_output.log', encoding='utf-8', errors='replace'):
+              m = line.find('{')
+              if m >= 0 and '"FUT' in line:
+                  try: ts.append(int(json.loads(line[m:])['ts']))
+                  except Exception: pass
+          print(json.dumps(ts))
+          PYX
+          PREVFUTS=$(python3 /tmp/extract_futs.py)
+          echo "PREVFUTS=$PREVFUTS"
+          sed -i "s|__PREVFUTS__|${PREVFUTS:-[]}|g" restart.js
+
+          timeout 220 frida -H 127.0.0.1:27042 -p $PID2 -l restart.js 2>&1 | tee /tmp/restart_output.log | grep -aE "\[JSON\]|\[RCAL\]|\[ERROR\]|ALLDONE" | head -15
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: borgus-det3
+          path: |
+            /tmp/sweep_output.log
+            /tmp/restart_output.log
+          if-no-files-found: warn
