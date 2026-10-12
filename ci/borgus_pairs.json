@@ -326,5 +326,21 @@
    "device": "b18c7a7f5d584fe",
    "src": "det2-38307499479"
   }
+ ],
+ "j2a_run": [
+  {
+   "tag": "MAP1",
+   "ts": "1791843905583",
+   "borgus": "7d93dac854078adae25fe0ece32e4040",
+   "device": "1ed61e25ae6642e",
+   "src": "j2a-38316369988"
+  },
+  {
+   "tag": "MAP2",
+   "ts": "1791843905603",
+   "borgus": "d7a65cdf764e618aea0ea093bcd1c860",
+   "device": "1ed61e25ae6642e",
+   "src": "j2a-38316369988"
+  }
  ]
 }
