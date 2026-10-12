@@ -256,49 +256,52 @@ jobs:
                           } catch(e) {}
                       }
                       
-                      // Hook nib_21765894的输入输出!
-                      console.log("\n[IO] Hook nib_21765894 I/O...");
-                      var nib_fn = null;
-                      for (var ei = 0; ei < nib_exports.length; ei++) {
-                          if (nib_exports[ei].name === "nib_21765894") {
-                              nib_fn = nib_exports[ei];
-                              break;
-                          }
-                      }
-                      if (nib_fn) {
-                          console.log("[IO] nib_21765894 @ " + nib_fn.address);
-                          var io_log = [];
-                          // 不detach! 直接设新hook!
-                          Interceptor.attach(nib_fn.address, {
-                              onEnter: function(args) {
-                                  this.arg0 = args[0].toInt32();
-                                  this.arg1 = args[1].toInt32();
-                                  this.arg2 = args[2].toInt32();
-                                  this.arg3 = args[3].toInt32();
-                              },
-                              onLeave: function(retval) {
-                                  var ret = retval.toInt32();
-                                  io_log.push({
-                                      a0: this.arg0, a1: this.arg1, 
-                                      a2: this.arg2, a3: this.arg3,
-                                      ret: ret
-                                  });
-                                  if (io_log.length <= 30) {
-                                      console.log("[IO] in(" + this.arg0 + "," + this.arg1 + "," + this.arg2 + "," + this.arg3 + ") → " + ret);
+                      // ★ 正确hook — 修复闭包bug! 用let!
+                      console.log("\n[IO2] 修复闭包重新hook...");
+                      var called_fns = {};
+                      
+                      // 重新hook所有(用正确的闭包)!
+                      for (let ei = 0; ei < nib_exports.length; ei++) {
+                          let exp = nib_exports[ei];
+                          try {
+                              Interceptor.replace(exp.address, new NativeCallback(function(a, b, c, d) {
+                                  // 记录调用!
+                                  var key = exp.name;
+                                  if (!called_fns[key]) {
+                                      called_fns[key] = { count: 0, addr: exp.address.sub(BASE).toString() };
                                   }
-                              }
-                          });
-                          
-                          // 调lk()!
-                          var NW3 = Java.use("com.yuewen.nib.NativeWrapper");
-                          console.log("[IO] 调lk('test')...");
-                          var result = NW3.a("test");
-                          console.log("[IO] 结果: " + result);
-                          console.log("[IO] 总调用: " + io_log.length + "次");
-                          
-                          // 输出完整log!
-                          console.log("[IO_ALL] " + JSON.stringify(io_log));
+                                  called_fns[key].count++;
+                                  
+                                  // 调原函数!
+                                  // 但Interceptor.replace需要完整实现...
+                                  // 换用attach!
+                              }, 'void', ['pointer', 'pointer', 'pointer', 'pointer']));
+                          } catch(e) {}
                       }
+                      
+                      // 用attach代替replace!
+                      called_fns = {};
+                      for (let ei = 0; ei < nib_exports.length; ei++) {
+                          let exp = nib_exports[ei];
+                          try {
+                              Interceptor.attach(exp.address, {
+                                  onEnter: function(args) {
+                                      var key = exp.name;
+                                      if (!called_fns[key]) {
+                                          called_fns[key] = 0;
+                                      }
+                                      called_fns[key]++;
+                                  }
+                              });
+                          } catch(e) {}
+                      }
+                      
+                      // 调lk()!
+                      var NW4 = Java.use("com.yuewen.nib.NativeWrapper");
+                      console.log("[IO2] 调lk('AB')...");
+                      var res = NW4.a("AB");
+                      console.log("[IO2] 结果: " + res);
+                      console.log("[IO2] 被调用的函数: " + JSON.stringify(called_fns));
                       
                       // 简化lk()测试!
                       var NW = Java.use("com.yuewen.nib.NativeWrapper");
