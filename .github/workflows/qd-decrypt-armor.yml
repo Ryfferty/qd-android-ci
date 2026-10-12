@@ -268,7 +268,7 @@ jobs:
                       if (nib_fn) {
                           console.log("[IO] nib_21765894 @ " + nib_fn.address);
                           var io_log = [];
-                          Interceptor.detachAll();  // 清除之前的hooks!
+                          // 不detach! 直接设新hook!
                           Interceptor.attach(nib_fn.address, {
                               onEnter: function(args) {
                                   this.arg0 = args[0].toInt32();
