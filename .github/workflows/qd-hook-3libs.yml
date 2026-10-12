@@ -52,7 +52,13 @@ jobs:
           curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
           timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
           timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
-          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity"
+          
+          # ★ 删除qv1.xml强制重新REGISTER!
+          echo "=== Deleting qv1.xml to force re-register ==="
+          timeout 10 adb -s $B shell "find /data/data/com.qidian.QDReader -name 'qv1*' -o -name '*ostar*' -o -name '*beacon*' 2>/dev/null" | head -10
+          timeout 10 adb -s $B shell "rm -f /data/data/com.qidian.QDReader/files/qv1.xml 2>/dev/null"
+          echo "qv1.xml deleted (if existed)" >/dev/null 2>&1
           
           STABLE_PID=""
           for i in $(seq 1 15); do
