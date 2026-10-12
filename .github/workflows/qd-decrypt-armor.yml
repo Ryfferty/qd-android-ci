@@ -74,315 +74,204 @@ jobs:
           adb -s $B forward tcp:27042 tcp:27042
           
           cat > decrypt_armor.js << 'JSEOF'
-          Java.perform(function() {
-              setTimeout(function() {
-                  console.log("[START] Decrypting StringArmor strings...");
-                  
-                  // 37个加密字符串!
-                  var encrypted = [
-                      'Y=]l"pHLk!nakZc>cW,CS9P,]NfyX$@8"d+JVl$D',
-                      'ew>K&:jM@rNXx{P[9XigRb7(>ZnXmn95a8r{gx9B',
-                      'lg!0q^<n]G()U2!cN)=z@+ToL*AUmPm3tnoUTL2E',
-                      'Dm6wy]q|O+j;XC2i>9JwG6#Md42,%#=7hDB@iukB',
-                      'yt,mY^BH|$(xtiC[PvJ~2aR]F|i%N~%%UBEex]%E',
-                      'ekI:B{w_(}#^f,TpY@`}(:YYLNMmetJht%!mo1HI>.UvX*6C:SxuiT:ozcYB',
-                      'n!x`byK.A!7YfKil!:E$`qZSWSF_96Rnhp/,FpC1Ulh:mZznulEbo^2:934',
-                      '^J[0,JVqqZXwqKBwTUQIC1$5f_]u@zxfH~[%^.e{2UOukR9xS)ldMt$aHSt',
-                      '$yZA);DX<@Yi/}/4F+U4OP{RT4r.h]vbyH3jHJeC',
-                      '`|N7zh_qHmz;b54f`o5G5`{vh+#*,X?zIWMl8kNE',
-                      'x%Vh04f35HBXZs/j!EM3RKUQ24sZX&Y;~`CIhC||fucr,a1yLkhf$$8`o{L',
-                      'oGs/oK(G^FqCW)7uewl@:k,Qs>VYno_7/LFqANrlDw3i8_3OowAiU[6n<7d',
-                      'Bsyv41}{cQ.kRmYS?ZPz8c2~cnye[q^+U4vlo09&9wEoQ6em<!hE6Fl7>;SB',
-                      '}VF~8HXip^}UGx#4Cpy:S6pu:NY6Kx|U?IS4w,3y~iuPIqJI@mt8t:QJy.*',
-                      ')%71|6byM>F<_6Q<xgH|ANh7?@kNj;{k%%)Tg^OADtE/&c<w;Uy7UtgYin3',
-                      'd83_Y?V7t/lo+)ZF>Cthu8yMq7VpCDfD`+Nfk[EOrqtRl&#{DQbq5r@fwQe',
-                      ';U?mCW8~GaZmBFgrMSx$CMKi~s@Cj48DOOa$uH)D',
-                      'WH#Z^{GJ5nxU]m|Nq<)d_Udxr*sjf(Nb!7JiKLW1*FT^2rB(E@U3vN^#Qa',
-                      'D=%/QIoq[BUK16b!Rjy!{>b0<Cg_$ecLO(A#[nET1NJ2)jF2xMl+KTz_X(m',
-                      'ZYgUAb^/p@N$<5X7oi9]TsJnh=A7k,mWQ[N,+5vI<8G`,}7@q[zYu2>_)wXB',
-                      '8?sS+{J>X@xP;Q*<UStrm1cU=*xadM%5GUi8Rf(_5JPD:($ekE{DX[t;%,UB',
-                      'f)EK7J&J[`M4FkYt?dyk|wAW!0%)WTO[GQhx1dAJ(biSIf/0kIPKB,~E~}p',
-                      '#!${%Czf[{vxcHS|Nlo{!eLIbKAs:e,Ps=9D{::Mb;sdzH)v&K45L=EnOLk',
-                      'z?|b/!*;xqUb&^<B6.l`>Zz@l>v{L>(uc)_pwk0axaqJz6gqHknlRTmi5K',
-                      'vP]4Lbm?bc%(w#sG[>1Pbz~pHY~9%th1?WVMwsQa=LW,zhY#l>LtecKW8qq',
-                      ']5`^Px*\\\"751u:i4qzZ7pefx~xA2{3QZ,PQO@X@I97?3cfc0M@iiXjw!r$Nmh',
-                      'D43E\\\"vrcwbaY9*y8Q2Z;<cI~EA_l:#lOa}=5hhSC',
-                      'j8w?J.$<9z++T>j&&}F!35)q0e:RDA7#S8~P~2AxNbb(Jt|i#{v`]^4{WX4',
-                      '&e&xq*zUi1SD|8Q:(Iz|N7zh_qHmz;b54f`o5G5`{vh+#*,X?zIWMl8kNE',
-                      'x)c5n7j/%V6HK{A~zx<noc!>X_7gg*+7w*^IwH$zL~jd45OOpwC;X`dvjM',
-                      '\\\"&v$^gbQrp*:OV0dIPGOZ0PkDf{x<u*ydDvSV6<E',
-                      '{>O,/\\\"xhE=X2:=T(@#z5xNi%bSl*+G^EO*hXo{DB',
-                      'c3#T>e3}oOO5i.|G5,k9;5W[7._du0PZ[;(+iO@E',
-                      '5`Cr_Nk2~ZuzBhQUbP.4g:UcFr1;N!xe<nO[~ejD',
-                      '8`}.u~%VHZ*.QK$}&t$s*v}@5T[JE?=up<y!AY1:zTj/4UtZnpi>e[L7y`',
-                      '2g@(~_wU;Su792zougrr.4kYm2i>:o7k1UMDnk@:Zi(2TlF6K8kY3vM@9',
-                      '9Q#$mg!i3q<DI8Wr+v,!1FZ9KpJ2OsoW?ZSWSF_96Rnhp/,FpC1Ulh:mZ',
-                  ];
-                  
-                  try {
-                      var StringArmor = Java.use("com.yuewen.nib.StringArmor");
-                      console.log("[+] StringArmor loaded");
-                      
-                      var results = {};
-                      var success = 0;
-                      var fail = 0;
-                      
-                      for (var i = 0; i < encrypted.length; i++) {
-                          try {
-                              var decrypted = StringArmor.d(encrypted[i]);
-                              results[i] = decrypted;
-                              console.log("[DECRYPT] [" + i + "] '" + encrypted[i].substring(0, 20) + "...' → '" + decrypted + "'");
-                              success++;
-                          } catch(e) {
-                              results[i] = "ERROR: " + e;
-                              console.log("[FAIL] [" + i + "] " + e);
-                              fail++;
-                          }
-                      }
-                      
-                      console.log("\n[SUMMARY] " + success + " success, " + fail + " fail");
-                      console.log("[ALL_RESULTS] " + JSON.stringify(results));
-                      
-                      // ★ Hook三个hash函数 — trace lk()调用链!
-                      console.log("\n[HOOK] 设置hash函数hooks...");
-                      
-                      // 1. Hook SHA-1 update (nib_85942710 wrapper)!
-                      try {
-                          var SHA1_ADDR = Module.findBaseAddress("libnib.so");
-                          if (SHA1_ADDR) {
-                              console.log("[HOOK] libnib.so base: " + SHA1_ADDR);
-                              
-                              // Hook SHA-1 compress (nib_73529486 @ 0x239a0)!
-                              var sha1_compress = SHA1_ADDR.add(0x239a0);
-                              Interceptor.attach(sha1_compress, {
-                                  onEnter: function(args) {
-                                      this.ctx = args[0];
-                                      this.block = args[1];
-                                      // 读取状态(5 words at offset 8)!
-                                      var state = [];
-                                      for (var i = 0; i < 5; i++) {
-                                          state.push(this.ctx.add(8 + i*4).readU32());
-                                      }
-                                      console.log("[SHA1_COMPRESS] state=" + state.map(s=>s.toString(16)).join(","));
-                                      // 读block前16字节!
-                                      var blockHex = "";
-                                      for (var i = 0; i < 16; i++) {
-                                          blockHex += ("0" + this.block.add(i).readU8().toString(16)).slice(-2);
-                                      }
-                                      console.log("[SHA1_COMPRESS] block[0:16]=" + blockHex);
-                                  }
-                              });
-                              console.log("[HOOK] SHA-1 compress hooked!");
-                              
-                              // Hook MD4 compress (nib_65464522 @ 0x20f40)!
-                              var md4_compress = SHA1_ADDR.add(0x20f40);
-                              Interceptor.attach(md4_compress, {
-                                  onEnter: function(args) {
-                                      this.ctx = args[0];
-                                      this.block = args[1];
-                                      var state = [];
-                                      for (var i = 0; i < 4; i++) {
-                                          state.push(this.ctx.add(8 + i*4).readU32());
-                                      }
-                                      console.log("[MD4_COMPRESS] state=" + state.map(s=>s.toString(16)).join(","));
-                                      var blockHex = "";
-                                      for (var i = 0; i < 16; i++) {
-                                          blockHex += ("0" + this.block.add(i).readU8().toString(16)).slice(-2);
-                                      }
-                                      console.log("[MD4_COMPRESS] block[0:16]=" + blockHex);
-                                  }
-                              });
-                              console.log("[HOOK] MD4 compress hooked!");
-                              
-                              // Hook RIPEMD compress (nib_51792064 @ 0x22490)!
-                              var ripemd_compress = SHA1_ADDR.add(0x22490);
-                              Interceptor.attach(ripemd_compress, {
-                                  onEnter: function(args) {
-                                      this.ctx = args[0];
-                                      this.block = args[1];
-                                      // RIPEMD有5-word状态(左+右各5)但可能不同偏移!
-                                      var blockHex = "";
-                                      for (var i = 0; i < 16; i++) {
-                                          blockHex += ("0" + this.block.add(i).readU8().toString(16)).slice(-2);
-                                      }
-                                      console.log("[RIPEMD_COMPRESS] block[0:16]=" + blockHex);
-                                  }
-                              });
-                              console.log("[HOOK] RIPEMD compress hooked!");
-                          }
-                      } catch(e) {
-                          console.log("[HOOK_ERR] " + e);
-                      }
-                      
-                      // ★ Hook所有libnib导出函数!
-                      console.log("\n[HOOKALL] Hook所有nib_函数...");
-                      var BASE = Module.findBaseAddress("libnib.so");
-                      console.log("[HOOKALL] base: " + BASE);
-                      
-                      // 列出所有导出!
-                      var exports = Module.enumerateExports("libnib.so");
-                      console.log("[HOOKALL] " + exports.length + "个导出");
-                      
-                      var nib_exports = exports.filter(function(e) {
-                          return e.name.indexOf("nib_") !== -1;
-                      });
-                      console.log("[HOOKALL] " + nib_exports.length + "个nib_函数");
-                      
-                      // Hook每一个!
-                      var hooked = 0;
-                      for (var ei = 0; ei < nib_exports.length; ei++) {
-                          try {
-                              var exp = nib_exports[ei];
-                              Interceptor.attach(exp.address, {
-                                  onEnter: function(args) {
-                                      console.log("[NIB_CALL] " + exp.name + " @ " + exp.address.sub(BASE));
-                                  }
-                              });
-                              hooked++;
-                          } catch(e) {}
-                      }
-                      console.log("[HOOKALL] " + hooked + "个hooked!");
-                      
-                      // 也hook所有 JNI入口(0x177xx-0x17axx)!
-                      var jni_addrs = [0x17765, 0x178a1, 0x17949, 0x17ae1, 0x17ae0];
-                      for (var ji = 0; ji < jni_addrs.length; ji++) {
-                          try {
-                              var jaddr = BASE.add(jni_addrs[ji] & ~1);
-                              Interceptor.attach(jaddr, {
-                                  onEnter: function(args) {
-                                      console.log("[JNI_CALL] 0x" + (jni_addrs[ji]).toString(16));
-                                  }
-                              });
-                          } catch(e) {}
-                      }
-                      
-                      // ★ Hook所有lk()调用链函数的I/O!
-                      console.log("\n[FULL] 全函数I/O trace...");
-                      
-                      var lk_functions = [
-                          'nib_lk', 'nib_53453412', 'nib_13453412', 'nib_01459728',
-                          'nib_72831465', 'nib_63971254', 'nib_89165370', 'nib_98632074',
-                          'nib_27835016', 'nib_35455435', 'nib_45432531', 'nib_98765431',
-                          'nib_67453634', 'nib_89604579', 'nib_65464522', 'nib_63425242',
-                          'nib_58940238', 'nib_08937624', 'nib_29765408', 'nib_39805412',
-                          'nib_38916702', 'nib_24389157', 'nib_27084169', 'nib_58940235'
-                      ];
-                      
-                      var fn_io = {};
-                      
-                      for (let fi = 0; fi < lk_functions.length; fi++) {
-                          let fname = lk_functions[fi];
-                          let fn = null;
-                          for (let ei = 0; ei < nib_exports.length; ei++) {
-                              if (nib_exports[ei].name === fname) {
-                                  fn = nib_exports[ei];
-                                  break;
-                              }
-                          }
-                          if (fn) {
-                              try {
-                                  Interceptor.attach(fn.address, {
-                                      onEnter: function(args) {
-                                          this.a0 = args[0].toInt32();
-                                          this.a1 = args[1].toInt32();
-                                          this.a2 = args[2].toInt32();
-                                          this.a3 = args[3].toInt32();
-                                          this.fname = fname;
-                                      },
-                                      onLeave: function(retval) {
-                                          var ret = retval.toInt32();
-                                          if (!fn_io[this.fname]) {
-                                              fn_io[this.fname] = [];
-                                          }
-                                          if (fn_io[this.fname].length < 5) {
-                                              fn_io[this.fname].push({
-                                                  a0: this.a0, a1: this.a1, 
-                                                  a2: this.a2, a3: this.a3, ret: ret
-                                              });
-                                          }
-                                      }
-                                  });
-                              } catch(e) {}
-                          }
-                      }
-                      
-                      // MD5带block数据!
-                      var md5_fn = null;
-                      for (let ei = 0; ei < nib_exports.length; ei++) {
-                          if (nib_exports[ei].name === "nib_98632074") {
-                              md5_fn = nib_exports[ei];
-                              break;
-                          }
-                      }
-                      if (md5_fn) {
-                          var md5_state = null;
-                          Interceptor.attach(md5_fn.address, {
-                              onEnter: function(args) {
-                                  this.ctx = args[0];
-                                  var state = [];
-                                  for (var i = 0; i < 4; i++) {
-                                      state.push(args[0].add(8 + i*4).readU32().toString(16));
-                                  }
-                                  var block = "";
-                                  for (var i = 0; i < 32; i++) {
-                                      block += ("0" + args[1].add(i).readU8().toString(16)).slice(-2);
-                                  }
-                                  console.log("[MD5] state=" + state.join(",") + " block=" + block);
-                              },
-                              onLeave: function(retval) {
-                                  if (this.ctx) {
-                                      var outState = [];
-                                      for (var i = 0; i < 4; i++) {
-                                          outState.push(this.ctx.add(8 + i*4).readU32().toString(16));
-                                      }
-                                      console.log("[MD5_OUT] state=" + outState.join(","));
-                                  }
-                              }
-                          });
-                      }
-                      
-                      // 调lk()!
-                      var NW7 = Java.use("com.yuewen.nib.NativeWrapper");
-                      console.log("[FULL] 调lk('AB')...");
-                      var res = NW7.a("AB");
-                      console.log("[FULL] 结果: " + res);
-                      console.log("[FULL_IO] " + JSON.stringify(fn_io));
-                      
-                      // 简化lk()测试!
-                      var NW = Java.use("com.yuewen.nib.NativeWrapper");
-                      var simple_tests = ["A", "AB", "test", "test_device_id_12345"];
-                      for (var ti = 0; ti < simple_tests.length; ti++) {
-                          try {
-                              var result = NW.a(simple_tests[ti]);
-                              console.log("[LK_PAIR] input='" + simple_tests[ti] + "' output='" + result + "'");
-                          } catch(e) {
-                              console.log("[LK_ERR] " + e);
-                          }
-                      }
-                      
-                      // ★ 也调hav()和mmr()!
-                      try {
-                          var hav = NW.hav();
-                          console.log("[HAV] " + hav);
-                      } catch(e) {}
-                      
-                      // ★ StringArmor加密方向? 检查有没有encrypt!
-                      try {
-                          var SA = Java.use("com.yuewen.nib.StringArmor");
-                          // 列出所有方法!
-                          var methods = SA.class.getDeclaredMethods();
-                          methods.forEach(function(m) {
-                              console.log("[SA_METHOD] " + m.getName() + " " + m.getParameterTypes());
-                          });
-                      } catch(e) {}
-                      
-                  } catch(e) {
-                      console.log("[ERR] " + e);
-                  }
-                  
-              }, 5000);
-          });
-          JSEOF
+Java.perform(function() {
+    setTimeout(function() {
+        console.log("[START] Final buffer trace...");
+        
+        var BASE = Module.findBaseAddress("libnib.so");
+        console.log("[BASE] " + BASE);
+        
+        var nib_exports = Module.enumerateExports("libnib.so");
+        
+        // ★ Hook MD4 update — 读取实际传入的数据!
+        var md4u = null;
+        for (let i = 0; i < nib_exports.length; i++) {
+            if (nib_exports[i].name === "nib_67453634") {
+                md4u = nib_exports[i];
+                break;
+            }
+        }
+        
+        if (md4u) {
+            console.log("[+] MD4 update hooked");
+            Interceptor.attach(md4u.address, {
+                onEnter: function(args) {
+                    var len = args[2].toInt32();
+                    if (len > 0 && len < 200) {
+                        var data = "";
+                        for (var i = 0; i < Math.min(len, 32); i++) {
+                            data += ("0" + args[1].add(i).readU8().toString(16)).slice(-2);
+                        }
+                        console.log("[MD4U] len=" + len + " data=" + data);
+                    }
+                }
+            });
+        }
+        
+        // ★ Hook MD4 compress — 读取state(输入和输出)!
+        var md4c = null;
+        for (let i = 0; i < nib_exports.length; i++) {
+            if (nib_exports[i].name === "nib_65464522") {
+                md4c = nib_exports[i];
+                break;
+            }
+        }
+        
+        if (md4c) {
+            Interceptor.attach(md4c.address, {
+                onEnter: function(args) {
+                    this.ctx = args[0];
+                    var state = [];
+                    for (var i = 0; i < 4; i++) {
+                        state.push(args[0].add(8 + i*4).readU32().toString(16));
+                    }
+                    console.log("[MD4C_IN] state=" + state.join(","));
+                },
+                onLeave: function(retval) {
+                    var outState = [];
+                    for (var i = 0; i < 4; i++) {
+                        outState.push(this.ctx.add(8 + i*4).readU32().toString(16));
+                    }
+                    console.log("[MD4C_OUT] state=" + outState.join(","));
+                }
+            });
+        }
+        
+        // ★ Hook cipher8 (nib_58940238) — 输入输出!
+        var cipher8 = null;
+        for (let i = 0; i < nib_exports.length; i++) {
+            if (nib_exports[i].name === "nib_58940238") {
+                cipher8 = nib_exports[i];
+                break;
+            }
+        }
+        
+        if (cipher8) {
+            console.log("[+] cipher8 hooked");
+            Interceptor.attach(cipher8.address, {
+                onEnter: function(args) {
+                    this.input_ptr = args[0];
+                    this.input_len = args[1].toInt32();
+                    this.key_ptr = args[2];
+                    this.outbuf = args[3];
+                    this.outlen_ptr = args[4];
+                    
+                    // 读取输入!
+                    if (this.input_len > 0 && this.input_len < 100) {
+                        var data = "";
+                        for (var i = 0; i < this.input_len; i++) {
+                            data += ("0" + this.input_ptr.add(i).readU8().toString(16)).slice(-2);
+                        }
+                        console.log("[C8_IN] len=" + this.input_len + " data=" + data);
+                    }
+                    
+                    // 读取key!
+                    if (this.key_ptr && !this.key_ptr.isNull()) {
+                        var key = "";
+                        for (var i = 0; i < 16; i++) {
+                            try {
+                                key += ("0" + this.key_ptr.add(i).readU8().toString(16)).slice(-2);
+                            } catch(e) { break; }
+                        }
+                        console.log("[C8_KEY] " + key);
+                    }
+                },
+                onLeave: function(retval) {
+                    // 读输出!
+                    var out_ptr = retval;
+                    if (out_ptr && !out_ptr.isNull()) {
+                        var out = "";
+                        for (var i = 0; i < 16; i++) {
+                            try {
+                                out += ("0" + out_ptr.add(i).readU8().toString(16)).slice(-2);
+                            } catch(e) { break; }
+                        }
+                        console.log("[C8_OUT] " + out);
+                    }
+                    
+                    // 也读outbuf!
+                    if (this.outbuf && !this.outbuf.isNull()) {
+                        var buf = "";
+                        for (var i = 0; i < 16; i++) {
+                            try {
+                                buf += ("0" + this.outbuf.add(i).readU8().toString(16)).slice(-2);
+                            } catch(e) { break; }
+                        }
+                        console.log("[C8_BUF] " + buf);
+                    }
+                }
+            });
+        }
+        
+        // ★ Hook cipher16 (nib_58940235)!
+        var cipher16 = null;
+        for (let i = 0; i < nib_exports.length; i++) {
+            if (nib_exports[i].name === "nib_58940235") {
+                cipher16 = nib_exports[i];
+                break;
+            }
+        }
+        
+        if (cipher16) {
+            console.log("[+] cipher16 hooked");
+            Interceptor.attach(cipher16.address, {
+                onEnter: function(args) {
+                    this.input_ptr = args[0];
+                    this.input_len = args[1].toInt32();
+                    this.key_ptr = args[2];
+                    
+                    if (this.input_len > 0 && this.input_len < 100) {
+                        var data = "";
+                        for (var i = 0; i < this.input_len; i++) {
+                            data += ("0" + this.input_ptr.add(i).readU8().toString(16)).slice(-2);
+                        }
+                        console.log("[C16_IN] len=" + this.input_len + " data=" + data);
+                    }
+                    
+                    if (this.key_ptr && !this.key_ptr.isNull()) {
+                        var key = "";
+                        for (var i = 0; i < 16; i++) {
+                            try {
+                                key += ("0" + this.key_ptr.add(i).readU8().toString(16)).slice(-2);
+                            } catch(e) { break; }
+                        }
+                        console.log("[C16_KEY] " + key);
+                    }
+                },
+                onLeave: function(retval) {
+                    var out_ptr = retval;
+                    if (out_ptr && !out_ptr.isNull()) {
+                        var out = "";
+                        for (var i = 0; i < 20; i++) {
+                            try {
+                                out += ("0" + out_ptr.add(i).readU8().toString(16)).slice(-2);
+                            } catch(e) { break; }
+                        }
+                        console.log("[C16_OUT] " + out);
+                    }
+                }
+            });
+        }
+        
+        // ★ 测试多个输入!
+        var NW = Java.use("com.yuewen.nib.NativeWrapper");
+        
+        var test_inputs = ["A", "AB", "AA", "test", "ABC", "hello"];
+        for (var ti = 0; ti < test_inputs.length; ti++) {
+            console.log("\n===== lk('" + test_inputs[ti] + "') =====");
+            try {
+                var result = NW.a(test_inputs[ti]);
+                console.log("[RESULT] " + result);
+            } catch(e) {
+                console.log("[ERR] " + e);
+            }
+        }
+        
+        console.log("[DONE]");
+        
+    }, 5000);
+});
+JSEOF
           
           timeout 30 frida -H 127.0.0.1:27042 -p $PID -l decrypt_armor.js 2>&1 | tee /tmp/decrypt_output.log
           echo "=== Decrypt done ==="
