@@ -143,6 +143,77 @@ jobs:
                       console.log("\n[SUMMARY] " + success + " success, " + fail + " fail");
                       console.log("[ALL_RESULTS] " + JSON.stringify(results));
                       
+                      // ★ Hook三个hash函数 — trace lk()调用链!
+                      console.log("\n[HOOK] 设置hash函数hooks...");
+                      
+                      // 1. Hook SHA-1 update (nib_85942710 wrapper)!
+                      try {
+                          var SHA1_ADDR = Module.findBaseAddress("libnib.so");
+                          if (SHA1_ADDR) {
+                              console.log("[HOOK] libnib.so base: " + SHA1_ADDR);
+                              
+                              // Hook SHA-1 compress (nib_73529486 @ 0x239a0)!
+                              var sha1_compress = SHA1_ADDR.add(0x239a0);
+                              Interceptor.attach(sha1_compress, {
+                                  onEnter: function(args) {
+                                      this.ctx = args[0];
+                                      this.block = args[1];
+                                      // 读取状态(5 words at offset 8)!
+                                      var state = [];
+                                      for (var i = 0; i < 5; i++) {
+                                          state.push(this.ctx.add(8 + i*4).readU32());
+                                      }
+                                      console.log("[SHA1_COMPRESS] state=" + state.map(s=>s.toString(16)).join(","));
+                                      // 读block前16字节!
+                                      var blockHex = "";
+                                      for (var i = 0; i < 16; i++) {
+                                          blockHex += ("0" + this.block.add(i).readU8().toString(16)).slice(-2);
+                                      }
+                                      console.log("[SHA1_COMPRESS] block[0:16]=" + blockHex);
+                                  }
+                              });
+                              console.log("[HOOK] SHA-1 compress hooked!");
+                              
+                              // Hook MD4 compress (nib_65464522 @ 0x20f40)!
+                              var md4_compress = SHA1_ADDR.add(0x20f40);
+                              Interceptor.attach(md4_compress, {
+                                  onEnter: function(args) {
+                                      this.ctx = args[0];
+                                      this.block = args[1];
+                                      var state = [];
+                                      for (var i = 0; i < 4; i++) {
+                                          state.push(this.ctx.add(8 + i*4).readU32());
+                                      }
+                                      console.log("[MD4_COMPRESS] state=" + state.map(s=>s.toString(16)).join(","));
+                                      var blockHex = "";
+                                      for (var i = 0; i < 16; i++) {
+                                          blockHex += ("0" + this.block.add(i).readU8().toString(16)).slice(-2);
+                                      }
+                                      console.log("[MD4_COMPRESS] block[0:16]=" + blockHex);
+                                  }
+                              });
+                              console.log("[HOOK] MD4 compress hooked!");
+                              
+                              // Hook RIPEMD compress (nib_51792064 @ 0x22490)!
+                              var ripemd_compress = SHA1_ADDR.add(0x22490);
+                              Interceptor.attach(ripemd_compress, {
+                                  onEnter: function(args) {
+                                      this.ctx = args[0];
+                                      this.block = args[1];
+                                      // RIPEMD有5-word状态(左+右各5)但可能不同偏移!
+                                      var blockHex = "";
+                                      for (var i = 0; i < 16; i++) {
+                                          blockHex += ("0" + this.block.add(i).readU8().toString(16)).slice(-2);
+                                      }
+                                      console.log("[RIPEMD_COMPRESS] block[0:16]=" + blockHex);
+                                  }
+                              });
+                              console.log("[HOOK] RIPEMD compress hooked!");
+                          }
+                      } catch(e) {
+                          console.log("[HOOK_ERR] " + e);
+                      }
+                      
                       // ★ lk()多组输入输出测试!
                       console.log("\n[LK] === lk() input-output pairs ===");
                       var NW = Java.use("com.yuewen.nib.NativeWrapper");
