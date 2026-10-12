@@ -84,7 +84,7 @@ jobs:
           cp hook_3libs_clean.js hook_3libs.js
           
           
-          timeout 30 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_3libs.js 2>&1 | tee /tmp/hook_3libs_output.log
+          timeout 120 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_3libs.js 2>&1 | tee /tmp/hook_3libs_output.log
           echo "=== Hook done ==="
 
       - name: Python REGISTER

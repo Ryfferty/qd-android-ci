@@ -390,5 +390,5 @@ Java.perform(function() {
         }
         
         console.log("[DONE] All 3 libraries tested!");
-    }, 5000);
+    }, 3000);
 });
