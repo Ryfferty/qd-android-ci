@@ -256,74 +256,97 @@ jobs:
                           } catch(e) {}
                       }
                       
-                      // ★ MD4详细trace — 看处理什么数据!
-                      console.log("\n[MD4T] MD4详细trace...");
-                      var md4_calls = [];
+                      // ★ Hook所有lk()调用链函数的I/O!
+                      console.log("\n[FULL] 全函数I/O trace...");
                       
-                      // Hook MD4 compress (nib_65464522)!
-                      var md4_fn = null;
+                      var lk_functions = [
+                          'nib_lk', 'nib_53453412', 'nib_13453412', 'nib_01459728',
+                          'nib_72831465', 'nib_63971254', 'nib_89165370', 'nib_98632074',
+                          'nib_27835016', 'nib_35455435', 'nib_45432531', 'nib_98765431',
+                          'nib_67453634', 'nib_89604579', 'nib_65464522', 'nib_63425242',
+                          'nib_58940238', 'nib_08937624', 'nib_29765408', 'nib_39805412',
+                          'nib_38916702', 'nib_24389157', 'nib_27084169', 'nib_58940235'
+                      ];
+                      
+                      var fn_io = {};
+                      
+                      for (let fi = 0; fi < lk_functions.length; fi++) {
+                          let fname = lk_functions[fi];
+                          let fn = null;
+                          for (let ei = 0; ei < nib_exports.length; ei++) {
+                              if (nib_exports[ei].name === fname) {
+                                  fn = nib_exports[ei];
+                                  break;
+                              }
+                          }
+                          if (fn) {
+                              try {
+                                  Interceptor.attach(fn.address, {
+                                      onEnter: function(args) {
+                                          this.a0 = args[0].toInt32();
+                                          this.a1 = args[1].toInt32();
+                                          this.a2 = args[2].toInt32();
+                                          this.a3 = args[3].toInt32();
+                                          this.fname = fname;
+                                      },
+                                      onLeave: function(retval) {
+                                          var ret = retval.toInt32();
+                                          if (!fn_io[this.fname]) {
+                                              fn_io[this.fname] = [];
+                                          }
+                                          if (fn_io[this.fname].length < 5) {
+                                              fn_io[this.fname].push({
+                                                  a0: this.a0, a1: this.a1, 
+                                                  a2: this.a2, a3: this.a3, ret: ret
+                                              });
+                                          }
+                                      }
+                                  });
+                              } catch(e) {}
+                          }
+                      }
+                      
+                      // MD5带block数据!
+                      var md5_fn = null;
                       for (let ei = 0; ei < nib_exports.length; ei++) {
-                          if (nib_exports[ei].name === "nib_65464522") {
-                              md4_fn = nib_exports[ei];
+                          if (nib_exports[ei].name === "nib_98632074") {
+                              md5_fn = nib_exports[ei];
                               break;
                           }
                       }
-                      if (md4_fn) {
-                          console.log("[MD4T] MD4 compress @ " + md4_fn.address);
-                          Interceptor.attach(md4_fn.address, {
+                      if (md5_fn) {
+                          var md5_state = null;
+                          Interceptor.attach(md5_fn.address, {
                               onEnter: function(args) {
-                                  // args[0] = state pointer, args[1] = block pointer!
+                                  this.ctx = args[0];
                                   var state = [];
                                   for (var i = 0; i < 4; i++) {
                                       state.push(args[0].add(8 + i*4).readU32().toString(16));
                                   }
-                                  
-                                  // 读取64字节block!
                                   var block = "";
-                                  for (var i = 0; i < 64; i++) {
+                                  for (var i = 0; i < 32; i++) {
                                       block += ("0" + args[1].add(i).readU8().toString(16)).slice(-2);
                                   }
-                                  
-                                  md4_calls.push({
-                                      state: state,
-                                      block: block
-                                  });
-                                  console.log("[MD4T] state=" + state.join(","));
-                                  console.log("[MD4T] block=" + block.substring(0, 64) + "...");
-                              }
-                          });
-                      }
-                      
-                      // 也hook MD4 update!
-                      var md4u_fn = null;
-                      for (let ei = 0; ei < nib_exports.length; ei++) {
-                          if (nib_exports[ei].name === "nib_67453634") {
-                              md4u_fn = nib_exports[ei];
-                              break;
-                          }
-                      }
-                      if (md4u_fn) {
-                          Interceptor.attach(md4u_fn.address, {
-                              onEnter: function(args) {
-                                  // args[0]=ctx, args[1]=data, args[2]=len!
-                                  var len = args[2].toInt32();
-                                  var data = "";
-                                  if (len > 0 && len < 200) {
-                                      for (var i = 0; i < len; i++) {
-                                          data += ("0" + args[1].add(i).readU8().toString(16)).slice(-2);
+                                  console.log("[MD5] state=" + state.join(",") + " block=" + block);
+                              },
+                              onLeave: function(retval) {
+                                  if (this.ctx) {
+                                      var outState = [];
+                                      for (var i = 0; i < 4; i++) {
+                                          outState.push(this.ctx.add(8 + i*4).readU32().toString(16));
                                       }
+                                      console.log("[MD5_OUT] state=" + outState.join(","));
                                   }
-                                  console.log("[MD4U] update(" + len + "B): " + data);
                               }
                           });
                       }
                       
                       // 调lk()!
-                      var NW6 = Java.use("com.yuewen.nib.NativeWrapper");
-                      console.log("[MD4T] 调lk('AB')...");
-                      var res = NW6.a("AB");
-                      console.log("[MD4T] 结果: " + res);
-                      console.log("[MD4T] MD4 compress调用: " + md4_calls.length + "次");
+                      var NW7 = Java.use("com.yuewen.nib.NativeWrapper");
+                      console.log("[FULL] 调lk('AB')...");
+                      var res = NW7.a("AB");
+                      console.log("[FULL] 结果: " + res);
+                      console.log("[FULL_IO] " + JSON.stringify(fn_io));
                       
                       // 简化lk()测试!
                       var NW = Java.use("com.yuewen.nib.NativeWrapper");
