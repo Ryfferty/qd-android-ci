@@ -63,21 +63,35 @@ jobs:
           timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
           sleep 8
           adb -s $B forward tcp:27042 tcp:27042
-          cat > trace_final.js << 'JSEOF'
+          
+          cat > trace_v2.js << 'JSEOF'
           Java.perform(function() {
               setTimeout(function() {
-                  console.log("[START] Final trace...");
+                  console.log("[V2] Starting...");
+                  
+                  // ★ 等libnib加载!
                   var BASE = Module.findBaseAddress("libnib.so");
-                  var nib_exports = Module.enumerateExports("libnib.so");
-                  function findExport(name) {
-                      for (var i = 0; i < nib_exports.length; i++) {
-                          if (nib_exports[i].name === name) return nib_exports[i];
-                      }
-                      return null;
+                  console.log("[V2] libnib base: " + BASE);
+                  
+                  if (!BASE) {
+                      console.log("[V2] ERROR: libnib.so NOT loaded!");
+                      return;
                   }
-                  var md4u = findExport("nib_67453634");
-                  if (md4u) {
-                      Interceptor.attach(md4u.address, {
+                  
+                  // ★ 用地址直接hook(不用findExport)!
+                  // 从readelf已知的地址!
+                  var MD4U_ADDR = BASE.add(0x21454);   // nib_67453634
+                  var C8_ADDR = BASE.add(0x7c30);      // nib_58940238
+                  var C16_ADDR = BASE.add(0x7b84);     // nib_58940235
+                  var MD4C_ADDR = BASE.add(0x20f40);   // nib_65464522
+                  
+                  console.log("[V2] MD4U addr: " + MD4U_ADDR);
+                  console.log("[V2] C8 addr: " + C8_ADDR);
+                  console.log("[V2] C16 addr: " + C16_ADDR);
+                  
+                  // ★ Hook MD4 update — 用绝对地址!
+                  try {
+                      Interceptor.attach(MD4U_ADDR, {
                           onEnter: function(args) {
                               var len = args[2].toInt32();
                               if (len > 0 && len < 200) {
@@ -89,13 +103,22 @@ jobs:
                               }
                           }
                       });
+                      console.log("[V2] MD4U hooked!");
+                  } catch(e) {
+                      console.log("[V2] MD4U hook FAILED: " + e);
                   }
-                  var c8 = findExport("nib_58940238");
-                  if (c8) {
-                      Interceptor.attach(c8.address, {
+                  
+                  // ★ Hook cipher8 — 用绝对地址!
+                  try {
+                      Interceptor.attach(C8_ADDR, {
                           onEnter: function(args) {
-                              this.inp = args[0]; this.len = args[1].toInt32();
-                              this.key = args[2]; this.outp = args[3];
+                              this.inp = args[0]; 
+                              this.len = args[1].toInt32();
+                              this.key = args[2];
+                              this.outp = args[3];
+                              this.outlen = args[4];
+                              
+                              // 输入!
                               if (this.len > 0 && this.len < 100) {
                                   var d = "";
                                   for (var i = 0; i < this.len; i++) {
@@ -103,6 +126,8 @@ jobs:
                                   }
                                   console.log("[C8_IN] len=" + this.len + " data=" + d);
                               }
+                              
+                              // Key!
                               if (this.key && !this.key.isNull()) {
                                   var k = "";
                                   for (var i = 0; i < 16; i++) {
@@ -115,11 +140,12 @@ jobs:
                               var r = retval;
                               if (r && !r.isNull()) {
                                   var o = "";
-                                  for (var i = 0; i < 16; i++) {
+                                  for (var i = 0; i < 20; i++) {
                                       try { o += ("0" + r.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
                                   }
                                   console.log("[C8_RET] " + o);
                               }
+                              // 输出buffer!
                               if (this.outp && !this.outp.isNull()) {
                                   var b = "";
                                   for (var i = 0; i < 16; i++) {
@@ -127,15 +153,27 @@ jobs:
                                   }
                                   console.log("[C8_BUF] " + b);
                               }
+                              // 输出长度!
+                              if (this.outlen && !this.outlen.isNull()) {
+                                  try {
+                                      console.log("[C8_LEN] " + this.outlen.readU32());
+                                  } catch(e) {}
+                              }
                           }
                       });
+                      console.log("[V2] C8 hooked!");
+                  } catch(e) {
+                      console.log("[V2] C8 hook FAILED: " + e);
                   }
-                  var c16 = findExport("nib_58940235");
-                  if (c16) {
-                      Interceptor.attach(c16.address, {
+                  
+                  // ★ Hook cipher16 — 用绝对地址!
+                  try {
+                      Interceptor.attach(C16_ADDR, {
                           onEnter: function(args) {
-                              this.inp = args[0]; this.len = args[1].toInt32();
+                              this.inp = args[0];
+                              this.len = args[1].toInt32();
                               this.key = args[2];
+                              
                               if (this.len > 0 && this.len < 100) {
                                   var d = "";
                                   for (var i = 0; i < this.len; i++) {
@@ -162,9 +200,38 @@ jobs:
                               }
                           }
                       });
+                      console.log("[V2] C16 hooked!");
+                  } catch(e) {
+                      console.log("[V2] C16 hook FAILED: " + e);
                   }
+                  
+                  // ★ Hook MD4 compress — 看state!
+                  try {
+                      Interceptor.attach(MD4C_ADDR, {
+                          onEnter: function(args) {
+                              this.ctx = args[0];
+                              var s = [];
+                              for (var i = 0; i < 4; i++) {
+                                  s.push(args[0].add(8 + i*4).readU32().toString(16));
+                              }
+                              console.log("[MD4C_IN] " + s.join(","));
+                          },
+                          onLeave: function(retval) {
+                              var s = [];
+                              for (var i = 0; i < 4; i++) {
+                                  s.push(this.ctx.add(8 + i*4).readU32().toString(16));
+                              }
+                              console.log("[MD4C_OUT] " + s.join(","));
+                          }
+                      });
+                      console.log("[V2] MD4C hooked!");
+                  } catch(e) {
+                      console.log("[V2] MD4C hook FAILED: " + e);
+                  }
+                  
+                  // ★ 测试!
                   var NW = Java.use("com.yuewen.nib.NativeWrapper");
-                  var tests = ["A", "AB", "AA", "test", "ABC", "hello"];
+                  var tests = ["AB", "AA", "test"];
                   for (var ti = 0; ti < tests.length; ti++) {
                       console.log("\n===== lk('" + tests[ti] + "') =====");
                       try {
@@ -174,11 +241,13 @@ jobs:
                           console.log("[ERR] " + e);
                       }
                   }
-                  console.log("[DONE]");
-              }, 5000);
+                  console.log("[V2_DONE]");
+                  
+              }, 8000);
           });
           JSEOF
-          timeout 60 frida -H 127.0.0.1:27042 -p $PID -l trace_final.js 2>&1 | tee /tmp/decrypt_output.log
+          
+          timeout 60 frida -H 127.0.0.1:27042 -p $PID -l trace_v2.js 2>&1 | tee /tmp/decrypt_output.log
           echo "=== Done ==="
 
       - name: Upload
