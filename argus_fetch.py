@@ -124,3 +124,41 @@ print('params keys=%s' % list(out.keys()))
 for k in ('Key', 'key_b', 'blob_b64'):
     if out.get(k):
         print('   %s len=%d head=%s' % (k, len(out[k]), out[k][:40]))
+
+def getcontentbatch(book, cids, save=None):
+    """POST /argus/newapi/v1/bookcontent/getcontentbatch → DownloadUrl+Key+Md5"""
+    body = 'b=%s&c=%s&useImei=1' % (book, cids)
+    params = {'b': str(book), 'c': str(cids), 'useImei': '1'}
+    h = {'User-Agent': 'Mozilla/mobile QDReaderAndroid/%s/%s/%s' % (APPVER, VC, ASRC),
+         'Accept-Encoding': 'gzip', 'Cookie': COOKIE, 'QDInfo': qdinfo(YW),
+         'Content-Type': 'application/x-www-form-urlencoded',
+         'tstamp': str(int(time.time() * 1000)), 'QDSign': qdsign(canon(params), YW),
+         'Referer': 'http://android.qidian.com'}
+    import urllib.request as ur
+    req = ur.Request(HOST + '/argus/newapi/v1/bookcontent/getcontentbatch', data=body.encode(),
+                     headers=h)
+    with ur.urlopen(req, timeout=30) as r:
+        raw = r.read()
+        if r.headers.get('Content-Encoding') == 'gzip':
+            import gzip; raw = gzip.decompress(raw)
+    j = json.loads(raw)
+    if save:
+        open(save, 'wb').write(raw)
+    return j
+
+if __name__ == '__main__':
+    import sys
+    j = getcontentbatch(sys.argv[1], sys.argv[2], '/tmp/batch_resp.json')
+    d = j.get('Data') or {}
+    print('Result=%s' % j.get('Result'))
+    print('DownloadChapters=%s' % json.dumps(d.get('DownloadChapters'))[:200])
+    print('DownloadUrl len=%s' % len(d.get('DownloadUrl') or ''))
+    print('Key=%s' % (d.get('Key') or '')[:80])
+    print('Md5=%s' % (d.get('Md5') or ''))
+    import base64
+    try:
+        rawb = base64.b64decode(d.get('DownloadUrl') or '')
+        print('DownloadUrl b64解码=%dB head=%s' % (len(rawb), rawb[:16].hex()))
+        open('/tmp/durl.bin','wb').write(rawb)
+    except Exception as e:
+        print('b64 err', e)
