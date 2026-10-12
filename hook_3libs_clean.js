@@ -258,7 +258,8 @@ Java.perform(function() {
                 regNn += "0123456789abcdef"[Math.floor(Math.random() * 16)];
             }
             // 简化pms(用设备信息)!
-            var regPms = btoa("test_device_" + Date.now()).substring(0, 300);
+            var Base64 = Java.use("android.util.Base64");
+            var regPms = Base64.encodeToString(Java.use("java.lang.String").$new("test_device_" + Date.now()).getBytes("UTF-8"), 2).substring(0, 300);
             
             var regData = {
                 "cpt": "2",
