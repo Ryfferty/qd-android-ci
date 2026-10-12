@@ -216,40 +216,44 @@ Java.perform(function() {
             console.log("[NF_ERR] " + e);
         }
         
-        // ═══ ③-B Hook OkHttp捕获真实ostar请求! ═══
+        // ═══ ③-B Hook Beacon OkHttpAdapter捕获ostar请求! ═══
         try {
-            var RealCall = Java.use("okhttp3.internal.connection.RealCall");
-            console.log("[OKHTTP] RealCall found");
+            var OkHttpAdapter = Java.use("com.tencent.beacon.base.net.adapter.OkHttpAdapter");
+            console.log("[BEACON_NET] OkHttpAdapter found");
             
-            RealCall.getResponseWithInterceptorChain.implementation = function() {
-                var request = this.originalRequest();
-                var url = request.url().toString();
-                
-                if (url.indexOf("ostar") !== -1) {
-                    console.log("[★OSTAR_REQ] " + url);
-                    // Dump ALL headers!
-                    var headers = request.headers();
-                    var hSize = headers.size();
-                    for (var i = 0; i < hSize; i++) {
-                        console.log("[★OSTAR_HDR] " + headers.name(i) + " = " + headers.value(i).substring(0, 100));
+            OkHttpAdapter.request.overload('com.tencent.beacon.base.net.call.HttpRequestEntity', 'com.tencent.beacon.base.net.call.Callback').implementation = function(entity, callback) {
+                try {
+                    var url = entity.url();
+                    if (url && url.indexOf("ostar") !== -1) {
+                        console.log("[★OSTAR_REQ] " + url);
+                        
+                        // Dump headers!
+                        var headers = entity.headers();
+                        if (headers) {
+                            var keySet = headers.keySet();
+                            var iter = keySet.iterator();
+                            while (iter.hasNext()) {
+                                var key = String(iter.next());
+                                var value = String(headers.get(key));
+                                console.log("[★OSTAR_HDR] " + key + " = " + value.substring(0, 120));
+                            }
+                        }
+                        
+                        // Dump body!
+                        var body = entity.body();
+                        if (body) {
+                            var bodyStr = String(body);
+                            console.log("[★OSTAR_BODY] " + bodyStr.substring(0, 300));
+                        }
                     }
-                    // Dump body!
-                    var body = request.body();
-                    if (body) {
-                        try {
-                            var Buffer = Java.use("okio.Buffer");
-                            var buf = Buffer.$new();
-                            body.writeTo(buf);
-                            var bodyStr = buf.readUtf8();
-                            console.log("[★OSTAR_BODY] " + bodyStr.substring(0, 200));
-                        } catch(e) {}
-                    }
+                } catch(e) {
+                    console.log("[OSTAR_HOOK_ERR] " + e);
                 }
-                return this.getResponseWithInterceptorChain();
+                return this.request(entity, callback);
             };
-            console.log("[OKHTTP] RealCall hooked!");
+            console.log("[BEACON_NET] OkHttpAdapter.request hooked!");
         } catch(e) {
-            console.log("[OKHTTP_ERR] " + e);
+            console.log("[BEACON_NET_ERR] " + e);
         }
         
         // ═══ ④ OSTAR REGISTER — 先构body再getH! ═══
