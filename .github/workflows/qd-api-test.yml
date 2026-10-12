@@ -139,6 +139,8 @@ jobs:
           # QDSign from getH!
           
           # 发请求!
+          body = 'localLabels=&gender=0'
+          
           headers = {
               'User-Agent': ua,
               'Cookie': cookie,
