@@ -12,15 +12,15 @@ jobs:
       - name: Setup
         run: |
           set +e
-          sudo apt-get update -qq || true
-          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
-          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
           pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
           
-          sudo docker rm -f redroid 2>/dev/null || true
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
-          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
             redroid/redroid:11.0.0-latest \
             androidboot.redroid_width=720 androidboot.redroid_height=1184 \
             androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
@@ -43,11 +43,10 @@ jobs:
           adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
           adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
 
-      - name: App + Borgus + API Call
+      - name: App and Borgus and API
         run: |
           set +e
-          which adb || sudo apt-get install -y -qq android-tools-adb
-          which adb || { echo "NO_ADB"; exit 1; }
+          which adb || sudo -S -p '' apt-get install -y -qq android-tools-adb
           B=localhost:5555
           
           curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
@@ -75,7 +74,6 @@ jobs:
           sleep 8
           timeout 10 adb -s $B forward tcp:27042 tcp:27042
           
-          # ★ 生成borgus!
           cat > gen_borgus.js << 'JSEOF'
           Java.perform(function() {
               setTimeout(function() {
@@ -107,17 +105,13 @@ jobs:
           
           timeout 8 frida -H 127.0.0.1:27042 -p $STABLE_PID -l gen_borgus.js 2>&1 | tee /tmp/borgus_output.log
           
-          # ★ 提取borgus数据并立刻调API!
-          echo "=== Extracting borgus data ==="
-                    # ★ 用隔离测试脚本!
-          pip install -q pycryptodome 2>/dev/null || true
+          echo "=== Running isolation test ==="
           python3 api_isolation_test.py /tmp/borgus_output.log 2>&1
-          
-- name: Upload
+
+      - name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: api-test-result
-          path: |
-            /tmp/borgus_output.log
+          path: /tmp/borgus_output.log
           if-no-files-found: warn
