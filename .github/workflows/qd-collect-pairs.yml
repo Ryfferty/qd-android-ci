@@ -234,59 +234,82 @@ jobs:
                           console.log("[*] Calling getH with Stalker active...");
                           var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
                           var body = RequestBody.create(mediaType, "localLabels=&gender=0");
-                                                                                                                  // ★ 在getH hook内部启动Stalker(正确线程)!
-                      var moduleCounts = {};
-                      var totalCount = 0;
-                      var stalkerActive = false;
-                      
-                      // Hook getH — 在hook内部启动Stalker!
-                      FockUtil.getH.implementation = function(url, method, body) {
-                          console.log("[HOOK] getH called, url=" + url);
-                          var tid = Process.getCurrentThreadId();
-                          console.log("[HOOK] thread=" + tid);
-                          
-                          Stalker.follow(tid, {
-                              transform: function(iterator) {
-                                  var inst = iterator.next();
-                                  while (inst !== null) {
-                                      iterator.putCallout(function(context) {
-                                          totalCount++;
-                                          if (totalCount <= 3000) {
-                                              var mn = null;
-                                              try { mn = Process.getModuleByAddress(context.pc); } catch(e) {}
-                                              var name = mn ? mn.name : 'anon';
-                                              if (!moduleCounts[name]) moduleCounts[name] = 0;
-                                              moduleCounts[name]++;
-                                          }
-                                      });
-                                      iterator.keep();
-                                      inst = iterator.next();
-                                  }
-                              }
-                          });
-                          stalkerActive = true;
-                          console.log("[HOOK] Stalker started");
-                          
-                          // 调用原始getH!
-                          var result = this.getH(url, method, body);
-                          
-                          if (stalkerActive) {
-                              Stalker.unfollow(tid);
-                              Stalker.flush();
-                              stalkerActive = false;
-                              console.log("[TOTAL] " + totalCount + " instructions");
-                              var sorted = Object.entries(moduleCounts).sort(function(a, b) { return b[1] - a[1]; });
-                              for (var si = 0; si < Math.min(sorted.length, 15); si++) {
-                                  console.log("[MC] " + sorted[si][0] + ": " + sorted[si][1]);
-                              }
+                                                                                                                                        // ★ 内存扫描找borgus + MemoryAccessMonitor!
+                      // 第一次调用getH获取borgus!
+                      var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                      var body = RequestBody.create(mediaType, "localLabels=&gender=0");
+                      var result1 = instance.getH(url, "POST", body);
+                      var rm1 = Java.cast(result1, Java.use("java.util.Map"));
+                      var iter1 = rm1.entrySet().iterator();
+                      var borgus1 = "";
+                      while (iter1.hasNext()) {
+                          var en1 = Java.cast(iter1.next(), Java.use("java.util.Map$Entry"));
+                          if (String(en1.getKey()) === "borgus") {
+                              borgus1 = String(en1.getValue());
                           }
-                          
-                          return result;
-                      };
+                      }
+                      console.log("[BOROUS1] " + borgus1);
                       
-                      // 触发getH!
-                      var result = instance.getH(url, "POST", body);
-                      console.log("[*] getH completed");
+                      // ★ 在内存中搜索borgus值!
+                      var foundAddrs = [];
+                      var ranges = Process.enumerateRanges('rw-');
+                      console.log("[SCAN] searching " + ranges.length + " writable ranges...");
+                      for (var ri = 0; ri < ranges.length; ri++) {
+                          var r = ranges[ri];
+                          if (r.size > 100 * 1024 * 1024) continue; // 跳过超大区域
+                          try {
+                              var results = Memory.scanSync(r.base, r.size, borgus1);
+                              for (var rj = 0; rj < results.length; rj++) {
+                                  var mod = null;
+                                  try { mod = Process.getModuleByAddress(results[rj].address); } catch(e) {}
+                                  foundAddrs.push({
+                                      addr: results[rj].address,
+                                      module: mod ? mod.name : 'anon',
+                                      size: r.size
+                                  });
+                              }
+                          } catch(e) {}
+                      }
+                      console.log("[FOUND] " + foundAddrs.length + " locations");
+                      for (var fi = 0; fi < Math.min(foundAddrs.length, 20); fi++) {
+                          console.log("[LOC] " + foundAddrs[fi].addr + " in " + foundAddrs[fi].module);
+                      }
+                      
+                      // ★ MemoryAccessMonitor: 监视第一个位置!
+                      if (foundAddrs.length > 0) {
+                          var watchAddr = foundAddrs[0].addr;
+                          console.log("[WATCH] monitoring " + watchAddr);
+                          var accessLog = [];
+                          try {
+                              MemoryAccessMonitor.enable([{base: watchAddr, size: 64}], {
+                                  onAccess: function(details) {
+                                      accessLog.push({
+                                          op: details.operation,
+                                          from: details.from,
+                                          addr: details.address
+                                      });
+                                  }
+                              });
+                              console.log("[WATCH] enabled");
+                              
+                              // 第二次调用getH!
+                              var body2 = RequestBody.create(mediaType, "localLabels=&gender=0");
+                              var result2 = instance.getH(url, "POST", body2);
+                              console.log("[*] second getH done");
+                              
+                              MemoryAccessMonitor.disable();
+                              
+                              console.log("[ACCESS] " + accessLog.length + " accesses");
+                              for (var ai = 0; ai < Math.min(accessLog.length, 20); ai++) {
+                                  var a = accessLog[ai];
+                                  var fromMod = null;
+                                  try { fromMod = Process.getModuleByAddress(a.from); } catch(e) {}
+                                  console.log("[ACC] " + a.op + " from " + a.from + " (" + (fromMod ? fromMod.name : 'anon') + ")");
+                              }
+                          } catch(e) {
+                              console.log("[WATCH_ERR] " + e);
+                          }
+                      }
                       var rm = Java.cast(result, Java.use("java.util.Map"));
                           var iter = rm.entrySet().iterator();
                           while (iter.hasNext()) {
