@@ -252,27 +252,51 @@ jobs:
                       
                       // ★ 在内存中搜索borgus值!
                       var foundAddrs = [];
-                      var ranges = Process.enumerateRanges('rw-');
-                      console.log("[SCAN] searching " + ranges.length + " writable ranges...");
-                      for (var ri = 0; ri < ranges.length; ri++) {
-                          var r = ranges[ri];
-                          if (r.size > 100 * 1024 * 1024) continue; // 跳过超大区域
-                          try {
-                              var results = Memory.scanSync(r.base, r.size, borgus1);
-                              for (var rj = 0; rj < results.length; rj++) {
-                                  var mod = null;
-                                  try { mod = Process.getModuleByAddress(results[rj].address); } catch(e) {}
-                                  foundAddrs.push({
-                                      addr: results[rj].address,
-                                      module: mod ? mod.name : 'anon',
-                                      size: r.size
-                                  });
-                              }
-                          } catch(e) {}
+                      
+                      // 搜索模式1: 二进制字节 (da 01 77 0e...)
+                      var binPattern = borgus1;
+                      
+                      // 搜索模式2: UTF-16LE (Java String)
+                      var utf16 = "";
+                      for (var ci = 0; ci < borgus1.length; ci++) {
+                          utf16 += borgus1.charCodeAt(ci).toString(16).padStart(2, '0') + "00";
+                      }
+                      
+                      // 搜索模式3: 前半段 (只有前16个hex字符)
+                      var halfPattern = borgus1.substring(0, 16);
+                      
+                      var patterns = [
+                          {name: "binary", pattern: binPattern},
+                          {name: "utf16", pattern: utf16},
+                          {name: "half", pattern: halfPattern}
+                      ];
+                      
+                      var ranges = Process.enumerateRanges('r--');
+                      console.log("[SCAN] " + ranges.length + " readable ranges, searching 3 patterns...");
+                      
+                      for (var pi = 0; pi < patterns.length; pi++) {
+                          var pat = patterns[pi];
+                          console.log("[SCAN] pattern: " + pat.name + " = " + pat.pattern.substring(0, 30));
+                          for (var ri = 0; ri < ranges.length; ri++) {
+                              var r = ranges[ri];
+                              if (r.size > 100 * 1024 * 1024) continue;
+                              try {
+                                  var results = Memory.scanSync(r.base, r.size, pat.pattern);
+                                  for (var rj = 0; rj < results.length; rj++) {
+                                      var mod = null;
+                                      try { mod = Process.getModuleByAddress(results[rj].address); } catch(e) {}
+                                      foundAddrs.push({
+                                          addr: results[rj].address,
+                                          module: mod ? mod.name : 'anon',
+                                          pattern: pat.name
+                                      });
+                                  }
+                              } catch(e) {}
+                          }
                       }
                       console.log("[FOUND] " + foundAddrs.length + " locations");
                       for (var fi = 0; fi < Math.min(foundAddrs.length, 20); fi++) {
-                          console.log("[LOC] " + foundAddrs[fi].addr + " in " + foundAddrs[fi].module);
+                          console.log("[LOC] " + foundAddrs[fi].addr + " in " + foundAddrs[fi].module + " (" + foundAddrs[fi].pattern + ")");
                       }
                       
                       // ★ MemoryAccessMonitor: 监视第一个位置!
