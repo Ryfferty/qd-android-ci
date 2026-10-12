@@ -1,37 +1,40 @@
 Java.perform(function() {
-    // ★ 先触发libnib.so加载(调NativeWrapper的static块)!
-    console.log("[V3] Triggering libnib load...");
+    // 1. 触发libnib加载!
+    console.log("[V4] Triggering libnib load...");
     try {
         var NW_pre = Java.use("com.yuewen.nib.NativeWrapper");
-        var dummy = NW_pre.hav();  // 调hav()触发System.loadLibrary!
-        console.log("[V3] hav() = " + dummy + " (libnib loaded!)");
+        var dummy = NW_pre.hav();
+        console.log("[V4] hav() = " + dummy + " → libnib loaded!");
     } catch(e) {
-        console.log("[V3] Trigger failed: " + e);
+        console.log("[V4] Trigger failed: " + e);
+        return;
     }
     
-    function waitForLib(name, cb, maxWait) {
-        var start = Date.now();
-        var check = function() {
-            var base = Module.findBaseAddress(name);
-            if (base) {
-                console.log("[V3] " + name + " loaded at " + base);
-                cb(base);
-            } else if (Date.now() - start < (maxWait || 60000)) {
-                setTimeout(check, 2000);
-            } else {
-                console.log("[V3] TIMEOUT waiting for " + name);
-            }
-        };
-        check();
+    // 2. 用findExportByName找正确的ARM64地址!
+    var targets = {
+        'MD4U': 'nib_67453634',
+        'C8': 'nib_58940238',
+        'C16': 'nib_58940235',
+        'MD4C': 'nib_65464522',
+        'MD5C': 'nib_98632074',
+    };
+    
+    var hooks = {};
+    for (var label in targets) {
+        var fnName = targets[label];
+        var addr = Module.findExportByName("libnib.so", fnName);
+        if (addr) {
+            console.log("[V4] " + label + " (" + fnName + ") @ " + addr);
+            hooks[label] = addr;
+        } else {
+            console.log("[V4] " + label + " NOT FOUND!");
+        }
     }
-    waitForLib("libnib.so", function(BASE) {
-        console.log("[V3] Setting up hooks...");
-        var MD4U_ADDR = BASE.add(0x21454);
-        var C8_ADDR = BASE.add(0x7c30);
-        var C16_ADDR = BASE.add(0x7b84);
-        var MD4C_ADDR = BASE.add(0x20f40);
+    
+    // 3. Hook MD4 update!
+    if (hooks.MD4U) {
         try {
-            Interceptor.attach(MD4U_ADDR, {
+            Interceptor.attach(hooks.MD4U, {
                 onEnter: function(args) {
                     var len = args[2].toInt32();
                     if (len > 0 && len < 200) {
@@ -43,10 +46,14 @@ Java.perform(function() {
                     }
                 }
             });
-            console.log("[V3] MD4U hooked!");
-        } catch(e) { console.log("[V3] MD4U FAIL: " + e); }
+            console.log("[V4] MD4U hooked!");
+        } catch(e) { console.log("[V4] MD4U FAIL: " + e); }
+    }
+    
+    // 4. Hook cipher8!
+    if (hooks.C8) {
         try {
-            Interceptor.attach(C8_ADDR, {
+            Interceptor.attach(hooks.C8, {
                 onEnter: function(args) {
                     this.inp = args[0]; this.len = args[1].toInt32();
                     this.key = args[2]; this.outp = args[3];
@@ -82,10 +89,14 @@ Java.perform(function() {
                     }
                 }
             });
-            console.log("[V3] C8 hooked!");
-        } catch(e) { console.log("[V3] C8 FAIL: " + e); }
+            console.log("[V4] C8 hooked!");
+        } catch(e) { console.log("[V4] C8 FAIL: " + e); }
+    }
+    
+    // 5. Hook cipher16!
+    if (hooks.C16) {
         try {
-            Interceptor.attach(C16_ADDR, {
+            Interceptor.attach(hooks.C16, {
                 onEnter: function(args) {
                     this.inp = args[0]; this.len = args[1].toInt32();
                     this.key = args[2];
@@ -114,10 +125,14 @@ Java.perform(function() {
                     }
                 }
             });
-            console.log("[V3] C16 hooked!");
-        } catch(e) { console.log("[V3] C16 FAIL: " + e); }
+            console.log("[V4] C16 hooked!");
+        } catch(e) { console.log("[V4] C16 FAIL: " + e); }
+    }
+    
+    // 6. Hook MD4 compress!
+    if (hooks.MD4C) {
         try {
-            Interceptor.attach(MD4C_ADDR, {
+            Interceptor.attach(hooks.MD4C, {
                 onEnter: function(args) {
                     this.ctx = args[0];
                     var s = [];
@@ -134,21 +149,40 @@ Java.perform(function() {
                     console.log("[MD4C_OUT] " + s.join(","));
                 }
             });
-            console.log("[V3] MD4C hooked!");
-        } catch(e) { console.log("[V3] MD4C FAIL: " + e); }
-        setTimeout(function() {
-            var NW = Java.use("com.yuewen.nib.NativeWrapper");
-            var tests = ["AB", "AA", "test", "hello"];
-            for (var ti = 0; ti < tests.length; ti++) {
-                console.log("\n===== lk('" + tests[ti] + "') =====");
-                try {
-                    var result = NW.a(tests[ti]);
-                    console.log("[RESULT] " + result);
-                } catch(e) {
-                    console.log("[ERR] " + e);
+            console.log("[V4] MD4C hooked!");
+        } catch(e) { console.log("[V4] MD4C FAIL: " + e); }
+    }
+    
+    // 7. Hook MD5 compress!
+    if (hooks.MD5C) {
+        try {
+            Interceptor.attach(hooks.MD5C, {
+                onEnter: function(args) {
+                    this.ctx = args[0];
+                    var s = [];
+                    for (var i = 0; i < 4; i++) {
+                        s.push(args[0].add(8 + i*4).readU32().toString(16));
+                    }
+                    console.log("[MD5C_IN] " + s.join(","));
                 }
+            });
+            console.log("[V4] MD5C hooked!");
+        } catch(e) { console.log("[V4] MD5C FAIL: " + e); }
+    }
+    
+    // 8. 测试!
+    setTimeout(function() {
+        var NW = Java.use("com.yuewen.nib.NativeWrapper");
+        var tests = ["AB", "AA", "test", "hello"];
+        for (var ti = 0; ti < tests.length; ti++) {
+            console.log("\n===== lk('" + tests[ti] + "') =====");
+            try {
+                var result = NW.a(tests[ti]);
+                console.log("[RESULT] " + result);
+            } catch(e) {
+                console.log("[ERR] " + e);
             }
-            console.log("[V3_DONE]");
-        }, 3000);
-    }, 60000);
+        }
+        console.log("[V4_DONE]");
+    }, 3000);
 });
