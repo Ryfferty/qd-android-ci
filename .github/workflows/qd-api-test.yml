@@ -46,6 +46,8 @@ jobs:
       - name: App + Borgus + API Call
         run: |
           set +e
+          which adb || sudo apt-get install -y -qq android-tools-adb
+          which adb || { echo "NO_ADB"; exit 1; }
           B=localhost:5555
           
           curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
