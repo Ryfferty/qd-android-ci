@@ -109,86 +109,11 @@ jobs:
           
           # ★ 提取borgus数据并立刻调API!
           echo "=== Extracting borgus data ==="
-          python3 << 'PYEOF'
-          import json, re, hashlib, base64, urllib.request, urllib.parse, urllib.error, gzip, time
-          from Crypto.Cipher import DES3
+                    # ★ 用隔离测试脚本!
+          pip install -q pycryptodome 2>/dev/null || true
+          python3 api_isolation_test.py /tmp/borgus_output.log 2>&1
           
-          log = open('/tmp/borgus_output.log').read()
-          m = re.search(r'\[BORGUS_DATA\] (\{.*\})', log)
-          if not m:
-              print("NO_BORGUS_DATA")
-              exit()
-          
-          data = json.loads(m.group(1))
-          borgus = data.get('borgus', '')
-          qdinfo = data.get('QDInfo', '')
-          tstamp = data.get('tstamp', '')
-          ua = data.get('User-Agent', '')
-          cookie = data.get('Cookie', '')
-          
-          print(f"BORGUS: {borgus}")
-          print(f"TSTAMP: {tstamp}")
-          print(f"QDINFO: {qdinfo[:50]}...")
-          print(f"UA: {ua[:50]}...")
-          
-          # ★ 直接用getH的QDSign(去掉空格)!
-          qdsign = data.get('QDSign', '').replace(' ', '').replace('\n', '').replace('\r', '')
-          fresh_ts = tstamp  # 用getH的原始tstamp!
-          print(f"Using getH QDSign: {qdsign[:40]}...")
-          print(f"Using getH tstamp: {tstamp}")
-          # QDSign from getH!
-          
-          # 发请求!
-          body = 'localLabels=&gender=0'
-          
-          headers = {
-              'User-Agent': ua,
-              'Cookie': cookie,
-              'QDInfo': qdinfo,
-              'tstamp': fresh_ts,
-              'cecelia': '',
-              'borgus': borgus,
-              'QDSign': qdsign,
-              'Content-Type': 'application/x-www-form-urlencoded',
-              'Referer': 'http://android.qidian.com',
-              'Accept-Encoding': 'gzip',
-          }
-          
-          url = 'https://bravev6.if.qidian.com/argus/api/v1/client/getconf?localLabels=&gender=0'
-          
-          print(f"\n--- Calling getconf ---")
-          print(f"Time since borgus: {int(time.time()*1000) - int(tstamp)}ms")
-          try:
-              req = urllib.request.Request(url, data=body.encode(), headers=headers, method='POST')
-              r = urllib.request.urlopen(req, timeout=30)
-              raw = r.read()
-              try: raw = gzip.decompress(raw)
-              except: pass
-              resp = raw.decode('utf-8', errors='replace')
-              print(f"HTTP: {r.status}")
-              print(f"★★★RESPONSE: {resp[:800]}")
-              
-              j = json.loads(resp)
-              print(f"\nResult: {j.get('Result')}")
-              d = j.get('Data', {})
-              fm = d.get('Freshman', {})
-              if fm:
-                  print(f"\n★ FreshmanBean:")
-                  print(f"  IsFreshman = {fm.get('IsFreshman')}")
-                  print(f"  IsNewDevice = {fm.get('IsNewDevice')}")
-                  print(f"  ShowLimitFreePopup = {fm.get('ShowLimitFreePopup')}")
-                  print(f"  Source = {fm.get('Source')}")
-              print(f"\nIsFreshmanLimitFree: {d.get('IsFreshmanLimitFree')}")
-          except urllib.error.HTTPError as e:
-              body2 = e.read()
-              try: body2 = gzip.decompress(body2)
-              except: pass
-              print(f"HTTP Error {e.code}: {body2.decode('utf-8', errors='replace')[:300]}")
-          except Exception as e:
-              print(f"Error: {e}")
-          PYEOF
-
-      - name: Upload
+- name: Upload
         if: always()
         uses: actions/upload-artifact@v4
         with:
