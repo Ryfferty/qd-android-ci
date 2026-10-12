@@ -356,8 +356,6 @@ jobs:
                               try {
                                   var zFunc = new NativeFunction(ostarBase.add(offsets.z), 'pointer', ['pointer', 'pointer', 'pointer']);
                                   // 修复: (env, thiz jclass, context)!
-                                  var UClass = Java.use("com.ola.star.uin.U");
-// thizPtr removed (caused issues)
                                   var zResult = zFunc(envPtr, ptr(0), ctxPtr);
                                   if (!zResult.isNull()) {
                                       try {
