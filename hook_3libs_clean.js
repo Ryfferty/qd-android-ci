@@ -120,6 +120,90 @@ Java.perform(function() {
             console.log("[OSTAR_ERR] " + e);
         }
         
+        // ═══ ③-B NativeFunction直接调用(绕过JNI注册) ═══
+        try {
+            var ostarBase = Module.findBaseAddress("libostar.so");
+            console.log("[NF] ostar base: " + ostarBase);
+            if (ostarBase) {
+                var env = Java.vm.getEnv();
+                var envPtr = env.handle; // 直接用handle,不readPointer!
+                
+                // o() — 2参数(env, thiz)
+                try {
+                    var oFunc = new NativeFunction(ostarBase.add(0x4cc1c), 'pointer', ['pointer', 'pointer']);
+                    var oR = oFunc(envPtr, ptr(0));
+                    if (!oR.isNull()) {
+                        try {
+                            var oS = env.getStringUtfChars(oR, null).readCString();
+                            console.log("[NF_O] " + oS);
+                        } catch(e) { console.log("[NF_O] ptr=" + oR); }
+                    } else { console.log("[NF_O] null"); }
+                } catch(e) { console.log("[NF_O_ERR] " + e); }
+                
+                // u() — 2参数(env, thiz)  
+                try {
+                    var uFunc = new NativeFunction(ostarBase.add(0x4c774), 'pointer', ['pointer', 'pointer']);
+                    var uR = uFunc(envPtr, ptr(0));
+                    if (!uR.isNull()) {
+                        try {
+                            var uS = env.getStringUtfChars(uR, null).readCString();
+                            console.log("[NF_U] " + uS);
+                        } catch(e) { console.log("[NF_U] ptr=" + uR); }
+                    } else { console.log("[NF_U] null"); }
+                } catch(e) { console.log("[NF_U_ERR] " + e); }
+                
+                // z() — 3参数(env, thiz, context)
+                // 尝试ctx的多种获取方式!
+                var ctx3 = null;
+                var ctx3Ptr = ptr(0);
+                try {
+                    ctx3 = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
+                    ctx3Ptr = ctx3.$handle;
+                    console.log("[NF_DBG] ctx3Ptr=" + ctx3Ptr);
+                } catch(e) {
+                    console.log("[NF_DBG] ctx err: " + e);
+                }
+                
+                try {
+                    var zFunc = new NativeFunction(ostarBase.add(0x4ccb8), 'pointer', ['pointer', 'pointer', 'pointer']);
+                    // 先试(ctx3Ptr, ctx3Ptr), 再试(ptr(0), ctx3Ptr), 最后(ptr(0), ptr(0))!
+                    var zR = null;
+                    try {
+                        zR = zFunc(envPtr, ctx3Ptr, ctx3Ptr);
+                        console.log("[NF_Z] try1 ok");
+                    } catch(e1) {
+                        try {
+                            zR = zFunc(envPtr, ptr(0), ctx3Ptr);
+                            console.log("[NF_Z] try2 ok");
+                        } catch(e2) {
+                            zR = zFunc(envPtr, ptr(0), ptr(0));
+                            console.log("[NF_Z] try3 (null ctx)");
+                        }
+                    }
+                    if (zR && !zR.isNull()) {
+                        try {
+                            var zS = env.getStringUtfChars(zR, null).readCString();
+                            console.log("[★NF_Z] " + zS);
+                        } catch(e) { console.log("[★NF_Z] ptr=" + zR); }
+                    } else { console.log("[★NF_Z] null"); }
+                } catch(e) { console.log("[★NF_Z_ERR] " + e); }
+                
+                // z2(Context, int) — 4参数
+                try {
+                    var z2Func = new NativeFunction(ostarBase.add(0x4cd50), 'pointer', ['pointer', 'pointer', 'pointer', 'int']);
+                    var z2R = z2Func(envPtr, ptr(0), ctx3Ptr, 0);
+                    if (!z2R.isNull()) {
+                        try {
+                            var z2S = env.getStringUtfChars(z2R, null).readCString();
+                            console.log("[★NF_Z2] " + z2S);
+                        } catch(e) { console.log("[★NF_Z2] ptr=" + z2R); }
+                    }
+                } catch(e) { console.log("[★NF_Z2_ERR] " + e); }
+            }
+        } catch(e) {
+            console.log("[NF_ERR] " + e);
+        }
+        
         console.log("[DONE] All 3 libraries tested!");
     }, 5000);
 });
