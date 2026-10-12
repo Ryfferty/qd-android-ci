@@ -15,7 +15,7 @@ jobs:
           sudo -S -p '' apt-get update -qq || true
           sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
           sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
-          pip install -q "frida==17.23.3" "frida-tools" 2>&1 | tail -1
+          pip install -q "frida==16.7.19" "frida-tools" 2>&1 | tail -1
           
           sudo -S -p '' docker rm -f redroid 2>/dev/null || true
           VOLS=""
@@ -34,7 +34,7 @@ jobs:
           done
           echo "BOOT_OK"
           
-          FR=17.23.3
+          FR=16.7.19
           curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
           unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
           timeout 30 adb -s localhost:5555 root 2>&1 | head -1
@@ -179,6 +179,9 @@ jobs:
               }, 3000);
           });
           JSEOF
+          
+          # ★ Simpleperf trace (VMP挡不住的原生工具)!
+          timeout 10 adb -s localhost:5555 shell "which simpleperf || ls /system/bin/simpleperf" 2>&1
           
           timeout 60 frida -H 127.0.0.1:27042 -p $STABLE_PID -l collect_pairs.js 2>&1 | tee /tmp/pairs_output.log
           
