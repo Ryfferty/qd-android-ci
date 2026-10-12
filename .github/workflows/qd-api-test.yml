@@ -12,15 +12,15 @@ jobs:
       - name: Setup
         run: |
           set +e
-          sudo -S -p '' -S -p '' apt-get update -qq || true
-          sudo -S -p '' -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
-          sudo -S -p '' -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          sudo apt-get update -qq || true
+          sudo apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
           pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
           
-          sudo -S -p '' -S -p '' docker rm -f redroid 2>/dev/null || true
+          sudo docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
-          sudo -S -p '' -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+          sudo docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
             redroid/redroid:11.0.0-latest \
             androidboot.redroid_width=720 androidboot.redroid_height=1184 \
             androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
