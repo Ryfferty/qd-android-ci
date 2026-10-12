@@ -15,16 +15,11 @@ jobs:
           sudo -S -p '' apt-get update -qq || true
           sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
           sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
-          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
-          
+          pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
           sudo -S -p '' docker rm -f redroid 2>/dev/null || true
           VOLS=""
           for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
-          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
-            redroid/redroid:11.0.0-latest \
-            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
-            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
-          
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 redroid/redroid:11.0.0-latest androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
           adb start-server >/dev/null 2>&1; sleep 5
           for i in $(seq 1 30); do
             adb connect localhost:5555 >/dev/null 2>&1
@@ -33,7 +28,6 @@ jobs:
             sleep 6
           done
           echo "BOOT_OK"
-          
           FR=16.7.19
           curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
           unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
@@ -47,12 +41,10 @@ jobs:
         run: |
           set +e
           B=localhost:5555
-          
           curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
           timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
           timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
           timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
-          
           PID=""
           for i in $(seq 1 15); do
             sleep 3
@@ -68,213 +60,126 @@ jobs:
           done
           [ -z "$PID" ] && { echo "NO_APP"; exit 0; }
           echo "PID=$PID"
-          
           timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
           sleep 8
           adb -s $B forward tcp:27042 tcp:27042
-          
-          cat > decrypt_armor.js << 'JSEOF'
-Java.perform(function() {
-    setTimeout(function() {
-        console.log("[START] Final buffer trace...");
-        
-        var BASE = Module.findBaseAddress("libnib.so");
-        console.log("[BASE] " + BASE);
-        
-        var nib_exports = Module.enumerateExports("libnib.so");
-        
-        // ★ Hook MD4 update — 读取实际传入的数据!
-        var md4u = null;
-        for (let i = 0; i < nib_exports.length; i++) {
-            if (nib_exports[i].name === "nib_67453634") {
-                md4u = nib_exports[i];
-                break;
-            }
-        }
-        
-        if (md4u) {
-            console.log("[+] MD4 update hooked");
-            Interceptor.attach(md4u.address, {
-                onEnter: function(args) {
-                    var len = args[2].toInt32();
-                    if (len > 0 && len < 200) {
-                        var data = "";
-                        for (var i = 0; i < Math.min(len, 32); i++) {
-                            data += ("0" + args[1].add(i).readU8().toString(16)).slice(-2);
-                        }
-                        console.log("[MD4U] len=" + len + " data=" + data);
-                    }
-                }
-            });
-        }
-        
-        // ★ Hook MD4 compress — 读取state(输入和输出)!
-        var md4c = null;
-        for (let i = 0; i < nib_exports.length; i++) {
-            if (nib_exports[i].name === "nib_65464522") {
-                md4c = nib_exports[i];
-                break;
-            }
-        }
-        
-        if (md4c) {
-            Interceptor.attach(md4c.address, {
-                onEnter: function(args) {
-                    this.ctx = args[0];
-                    var state = [];
-                    for (var i = 0; i < 4; i++) {
-                        state.push(args[0].add(8 + i*4).readU32().toString(16));
-                    }
-                    console.log("[MD4C_IN] state=" + state.join(","));
-                },
-                onLeave: function(retval) {
-                    var outState = [];
-                    for (var i = 0; i < 4; i++) {
-                        outState.push(this.ctx.add(8 + i*4).readU32().toString(16));
-                    }
-                    console.log("[MD4C_OUT] state=" + outState.join(","));
-                }
-            });
-        }
-        
-        // ★ Hook cipher8 (nib_58940238) — 输入输出!
-        var cipher8 = null;
-        for (let i = 0; i < nib_exports.length; i++) {
-            if (nib_exports[i].name === "nib_58940238") {
-                cipher8 = nib_exports[i];
-                break;
-            }
-        }
-        
-        if (cipher8) {
-            console.log("[+] cipher8 hooked");
-            Interceptor.attach(cipher8.address, {
-                onEnter: function(args) {
-                    this.input_ptr = args[0];
-                    this.input_len = args[1].toInt32();
-                    this.key_ptr = args[2];
-                    this.outbuf = args[3];
-                    this.outlen_ptr = args[4];
-                    
-                    // 读取输入!
-                    if (this.input_len > 0 && this.input_len < 100) {
-                        var data = "";
-                        for (var i = 0; i < this.input_len; i++) {
-                            data += ("0" + this.input_ptr.add(i).readU8().toString(16)).slice(-2);
-                        }
-                        console.log("[C8_IN] len=" + this.input_len + " data=" + data);
-                    }
-                    
-                    // 读取key!
-                    if (this.key_ptr && !this.key_ptr.isNull()) {
-                        var key = "";
-                        for (var i = 0; i < 16; i++) {
-                            try {
-                                key += ("0" + this.key_ptr.add(i).readU8().toString(16)).slice(-2);
-                            } catch(e) { break; }
-                        }
-                        console.log("[C8_KEY] " + key);
-                    }
-                },
-                onLeave: function(retval) {
-                    // 读输出!
-                    var out_ptr = retval;
-                    if (out_ptr && !out_ptr.isNull()) {
-                        var out = "";
-                        for (var i = 0; i < 16; i++) {
-                            try {
-                                out += ("0" + out_ptr.add(i).readU8().toString(16)).slice(-2);
-                            } catch(e) { break; }
-                        }
-                        console.log("[C8_OUT] " + out);
-                    }
-                    
-                    // 也读outbuf!
-                    if (this.outbuf && !this.outbuf.isNull()) {
-                        var buf = "";
-                        for (var i = 0; i < 16; i++) {
-                            try {
-                                buf += ("0" + this.outbuf.add(i).readU8().toString(16)).slice(-2);
-                            } catch(e) { break; }
-                        }
-                        console.log("[C8_BUF] " + buf);
-                    }
-                }
-            });
-        }
-        
-        // ★ Hook cipher16 (nib_58940235)!
-        var cipher16 = null;
-        for (let i = 0; i < nib_exports.length; i++) {
-            if (nib_exports[i].name === "nib_58940235") {
-                cipher16 = nib_exports[i];
-                break;
-            }
-        }
-        
-        if (cipher16) {
-            console.log("[+] cipher16 hooked");
-            Interceptor.attach(cipher16.address, {
-                onEnter: function(args) {
-                    this.input_ptr = args[0];
-                    this.input_len = args[1].toInt32();
-                    this.key_ptr = args[2];
-                    
-                    if (this.input_len > 0 && this.input_len < 100) {
-                        var data = "";
-                        for (var i = 0; i < this.input_len; i++) {
-                            data += ("0" + this.input_ptr.add(i).readU8().toString(16)).slice(-2);
-                        }
-                        console.log("[C16_IN] len=" + this.input_len + " data=" + data);
-                    }
-                    
-                    if (this.key_ptr && !this.key_ptr.isNull()) {
-                        var key = "";
-                        for (var i = 0; i < 16; i++) {
-                            try {
-                                key += ("0" + this.key_ptr.add(i).readU8().toString(16)).slice(-2);
-                            } catch(e) { break; }
-                        }
-                        console.log("[C16_KEY] " + key);
-                    }
-                },
-                onLeave: function(retval) {
-                    var out_ptr = retval;
-                    if (out_ptr && !out_ptr.isNull()) {
-                        var out = "";
-                        for (var i = 0; i < 20; i++) {
-                            try {
-                                out += ("0" + out_ptr.add(i).readU8().toString(16)).slice(-2);
-                            } catch(e) { break; }
-                        }
-                        console.log("[C16_OUT] " + out);
-                    }
-                }
-            });
-        }
-        
-        // ★ 测试多个输入!
-        var NW = Java.use("com.yuewen.nib.NativeWrapper");
-        
-        var test_inputs = ["A", "AB", "AA", "test", "ABC", "hello"];
-        for (var ti = 0; ti < test_inputs.length; ti++) {
-            console.log("\n===== lk('" + test_inputs[ti] + "') =====");
-            try {
-                var result = NW.a(test_inputs[ti]);
-                console.log("[RESULT] " + result);
-            } catch(e) {
-                console.log("[ERR] " + e);
-            }
-        }
-        
-        console.log("[DONE]");
-        
-    }, 5000);
-});
-JSEOF
-          
-          timeout 30 frida -H 127.0.0.1:27042 -p $PID -l decrypt_armor.js 2>&1 | tee /tmp/decrypt_output.log
-          echo "=== Decrypt done ==="
+          cat > trace_final.js << 'JSEOF'
+          Java.perform(function() {
+              setTimeout(function() {
+                  console.log("[START] Final trace...");
+                  var BASE = Module.findBaseAddress("libnib.so");
+                  var nib_exports = Module.enumerateExports("libnib.so");
+                  function findExport(name) {
+                      for (var i = 0; i < nib_exports.length; i++) {
+                          if (nib_exports[i].name === name) return nib_exports[i];
+                      }
+                      return null;
+                  }
+                  var md4u = findExport("nib_67453634");
+                  if (md4u) {
+                      Interceptor.attach(md4u.address, {
+                          onEnter: function(args) {
+                              var len = args[2].toInt32();
+                              if (len > 0 && len < 200) {
+                                  var data = "";
+                                  for (var i = 0; i < Math.min(len, 32); i++) {
+                                      data += ("0" + args[1].add(i).readU8().toString(16)).slice(-2);
+                                  }
+                                  console.log("[MD4U] len=" + len + " data=" + data);
+                              }
+                          }
+                      });
+                  }
+                  var c8 = findExport("nib_58940238");
+                  if (c8) {
+                      Interceptor.attach(c8.address, {
+                          onEnter: function(args) {
+                              this.inp = args[0]; this.len = args[1].toInt32();
+                              this.key = args[2]; this.outp = args[3];
+                              if (this.len > 0 && this.len < 100) {
+                                  var d = "";
+                                  for (var i = 0; i < this.len; i++) {
+                                      d += ("0" + this.inp.add(i).readU8().toString(16)).slice(-2);
+                                  }
+                                  console.log("[C8_IN] len=" + this.len + " data=" + d);
+                              }
+                              if (this.key && !this.key.isNull()) {
+                                  var k = "";
+                                  for (var i = 0; i < 16; i++) {
+                                      try { k += ("0" + this.key.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C8_KEY] " + k);
+                              }
+                          },
+                          onLeave: function(retval) {
+                              var r = retval;
+                              if (r && !r.isNull()) {
+                                  var o = "";
+                                  for (var i = 0; i < 16; i++) {
+                                      try { o += ("0" + r.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C8_RET] " + o);
+                              }
+                              if (this.outp && !this.outp.isNull()) {
+                                  var b = "";
+                                  for (var i = 0; i < 16; i++) {
+                                      try { b += ("0" + this.outp.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C8_BUF] " + b);
+                              }
+                          }
+                      });
+                  }
+                  var c16 = findExport("nib_58940235");
+                  if (c16) {
+                      Interceptor.attach(c16.address, {
+                          onEnter: function(args) {
+                              this.inp = args[0]; this.len = args[1].toInt32();
+                              this.key = args[2];
+                              if (this.len > 0 && this.len < 100) {
+                                  var d = "";
+                                  for (var i = 0; i < this.len; i++) {
+                                      d += ("0" + this.inp.add(i).readU8().toString(16)).slice(-2);
+                                  }
+                                  console.log("[C16_IN] len=" + this.len + " data=" + d);
+                              }
+                              if (this.key && !this.key.isNull()) {
+                                  var k = "";
+                                  for (var i = 0; i < 16; i++) {
+                                      try { k += ("0" + this.key.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C16_KEY] " + k);
+                              }
+                          },
+                          onLeave: function(retval) {
+                              var r = retval;
+                              if (r && !r.isNull()) {
+                                  var o = "";
+                                  for (var i = 0; i < 20; i++) {
+                                      try { o += ("0" + r.add(i).readU8().toString(16)).slice(-2); } catch(e) { break; }
+                                  }
+                                  console.log("[C16_RET] " + o);
+                              }
+                          }
+                      });
+                  }
+                  var NW = Java.use("com.yuewen.nib.NativeWrapper");
+                  var tests = ["A", "AB", "AA", "test", "ABC", "hello"];
+                  for (var ti = 0; ti < tests.length; ti++) {
+                      console.log("\n===== lk('" + tests[ti] + "') =====");
+                      try {
+                          var result = NW.a(tests[ti]);
+                          console.log("[RESULT] " + result);
+                      } catch(e) {
+                          console.log("[ERR] " + e);
+                      }
+                  }
+                  console.log("[DONE]");
+              }, 5000);
+          });
+          JSEOF
+          timeout 60 frida -H 127.0.0.1:27042 -p $PID -l trace_final.js 2>&1 | tee /tmp/decrypt_output.log
+          echo "=== Done ==="
 
       - name: Upload
         if: always()
