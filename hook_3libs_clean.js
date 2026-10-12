@@ -188,10 +188,22 @@ Java.perform(function() {
                     } else { console.log("[★NF_Z] null"); }
                 } catch(e) { console.log("[★NF_Z_ERR] " + e); }
                 
+                // p() — 2参数(env, thiz)
+                try {
+                    var pFunc = new NativeFunction(ostarBase.add(0x4c980), 'pointer', ['pointer', 'pointer']);
+                    var pR = pFunc(envPtr, ptr(0));
+                    if (!pR.isNull()) {
+                        try {
+                            var pS = env.getStringUtfChars(pR, null).readCString();
+                            console.log("[★NF_P] " + pS);
+                        } catch(e) { console.log("[★NF_P] ptr=" + pR); }
+                    }
+                } catch(e) { console.log("[★NF_P_ERR] " + e); }
+                
                 // z2(Context, int) — 4参数
                 try {
                     var z2Func = new NativeFunction(ostarBase.add(0x4cd50), 'pointer', ['pointer', 'pointer', 'pointer', 'int']);
-                    var z2R = z2Func(envPtr, ptr(0), ctx3Ptr, 0);
+                    var z2R = z2Func(envPtr, ptr(0), ptr(0), 0);
                     if (!z2R.isNull()) {
                         try {
                             var z2S = env.getStringUtfChars(z2R, null).readCString();
