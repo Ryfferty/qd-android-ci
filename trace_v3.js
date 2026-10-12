@@ -1,4 +1,14 @@
 Java.perform(function() {
+    // ★ 先触发libnib.so加载(调NativeWrapper的static块)!
+    console.log("[V3] Triggering libnib load...");
+    try {
+        var NW_pre = Java.use("com.yuewen.nib.NativeWrapper");
+        var dummy = NW_pre.hav();  // 调hav()触发System.loadLibrary!
+        console.log("[V3] hav() = " + dummy + " (libnib loaded!)");
+    } catch(e) {
+        console.log("[V3] Trigger failed: " + e);
+    }
+    
     function waitForLib(name, cb, maxWait) {
         var start = Date.now();
         var check = function() {
