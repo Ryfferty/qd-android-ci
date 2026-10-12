@@ -11,8 +11,7 @@ Java.perform(function() {
     
     // ★ jniStringArmorDecrypt @ 0x17ae0 (ARM32偏移!)
     // ARM64上地址不同! 用findExportByName!
-    var saFn = Module.findExportByName("libnib.so", null);
-    // 没有导出名... 用enumerateExports找!
+    
     
     var exports = Module.enumerateExports("libnib.so");
     console.log("[SA] " + exports.length + " exports");
