@@ -216,6 +216,107 @@ Java.perform(function() {
             console.log("[NF_ERR] " + e);
         }
         
+        // ═══ ④ OSTAR REGISTER (纯协议!) ═══
+        try {
+            console.log("[REG] === Starting REGISTER ===");
+            
+            // 获取所有需要的头!
+            var FU = Java.use("com.qidian.QDReader.component.util.FockUtil");
+            var inst = FU.INSTANCE.value;
+            var RB = Java.use("okhttp3.RequestBody");
+            var MT = Java.use("okhttp3.MediaType");
+            var mt = MT.parse("application/x-www-form-urlencoded");
+            
+            // 调getH获取borgus/cecelia/ibex(对ostar端点)!
+            var ostarUrl = "https://druidv6.if.qidian.com/argus/api/v1/client/ostar";
+            var regBody = RB.create(mt, "data=%7B%22cpt%22%3A%222%22%7D");
+            var regResult = inst.getH(ostarUrl, "POST", regBody);
+            var regMap = Java.cast(regResult, Java.use("java.util.Map"));
+            var regIter = regMap.entrySet().iterator();
+            var regHeaders = {};
+            while (regIter.hasNext()) {
+                var regEn = Java.cast(regIter.next(), Java.use("java.util.Map$Entry"));
+                regHeaders[String(regEn.getKey())] = String(regEn.getValue());
+                console.log("[REG_HDR] " + regEn.getKey() + " = " + String(regEn.getValue()).substring(0, 80));
+            }
+            
+            // 检查是否有ibex!
+            if (!regHeaders["ibex"]) {
+                console.log("[REG] No ibex from getH, generating via lk...");
+                var NW = Java.use("com.yuewen.nib.NativeWrapper");
+                // 用设备信息生成ibex!
+                var ibexInput = "register_device_test";
+                var ibexVal = NW.a(ibexInput);
+                regHeaders["ibex"] = ibexVal;
+                console.log("[REG_IBEX] " + ibexVal.substring(0, 60));
+            }
+            
+            // 构造REGISTER body!
+            var regTs = regHeaders["tstamp"] || String(Date.now());
+            var regNn = ""; 
+            for (var i = 0; i < 16; i++) {
+                regNn += "0123456789abcdef"[Math.floor(Math.random() * 16)];
+            }
+            // 简化pms(用设备信息)!
+            var regPms = btoa("test_device_" + Date.now()).substring(0, 300);
+            
+            var regData = {
+                "cpt": "2",
+                "ext": "",
+                "nn": regNn,
+                "pms": regPms,
+                "sn": "4c43851051e10785000000000000000000000000000000000000000000000000000000",
+                "tm": regTs
+            };
+            var regBodyStr = "data=" + encodeURIComponent(JSON.stringify(regData));
+            
+            // 用Java发HTTP请求!
+            console.log("[REG] Sending REGISTER...");
+            console.log("[REG] body: " + regBodyStr.substring(0, 100));
+            
+            var URL2 = Java.use("java.net.URL");
+            var urlObj = URL2.$new(ostarUrl);
+            var conn = urlObj.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(15000);
+            
+            // 设置所有头!
+            for (var hk in regHeaders) {
+                if (hk !== "Cookie") {
+                    conn.setRequestProperty(hk, regHeaders[hk]);
+                }
+            }
+            conn.setRequestProperty("Content-Type", "application/x-www-form-urlencoded");
+            
+            // 发body!
+            var os = conn.getOutputStream();
+            var bytes = regBodyStr.getBytes("UTF-8");
+            os.write(bytes);
+            os.flush();
+            os.close();
+            
+            // 读响应!
+            var code = conn.getResponseCode();
+            console.log("[REG] HTTP Status: " + code);
+            
+            var BufferedReader = Java.use("java.io.BufferedReader");
+            var InputStreamReader = Java.use("java.io.InputStreamReader");
+            var reader = BufferedReader.$new(InputStreamReader.$new(conn.getInputStream()));
+            var line = reader.readLine();
+            var response = "";
+            while (line !== null) {
+                response += String(line);
+                line = reader.readLine();
+            }
+            reader.close();
+            console.log("[REG] ★★★RESPONSE: " + response.substring(0, 300));
+            
+        } catch(e) {
+            console.log("[REG_ERR] " + e);
+        }
+        
         console.log("[DONE] All 3 libraries tested!");
     }, 5000);
 });
