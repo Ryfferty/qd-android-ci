@@ -355,7 +355,10 @@ jobs:
                               var ctxPtr = ctx.$handle;
                               try {
                                   var zFunc = new NativeFunction(ostarBase.add(offsets.z), 'pointer', ['pointer', 'pointer', 'pointer']);
-                                  var zResult = zFunc(envPtr, ctxPtr, ptr(0));
+                                  // 修复: (env, thiz jclass, context)!
+                                  var UClass = Java.use("com.ola.star.uin.U");
+                                  var thizPtr = UClass.class.$handle;
+                                  var zResult = zFunc(envPtr, thizPtr, ctxPtr);
                                   if (!zResult.isNull()) {
                                       try {
                                           var zStr = env.getStringUtfChars(zResult, null).readCString();
@@ -365,7 +368,7 @@ jobs:
                               } catch(e) { console.log("[OSTAR_Z_ERR] " + e); }
                               try {
                                   var oFunc = new NativeFunction(ostarBase.add(offsets.o), 'pointer', ['pointer', 'pointer']);
-                                  var oResult = oFunc(envPtr, ptr(0));
+                                  var oResult = oFunc(envPtr, thizPtr);
                                   if (!oResult.isNull()) {
                                       var oStr = env.getStringUtfChars(oResult, null).readCString();
                                       console.log("[OSTAR_O] " + oStr);
@@ -373,7 +376,7 @@ jobs:
                               } catch(e) { console.log("[OSTAR_O_ERR] " + e); }
                               try {
                                   var uFunc = new NativeFunction(ostarBase.add(offsets.u), 'pointer', ['pointer', 'pointer']);
-                                  var uResult = uFunc(envPtr, ptr(0));
+                                  var uResult = uFunc(envPtr, thizPtr);
                                   if (!uResult.isNull()) {
                                       var uStr = env.getStringUtfChars(uResult, null).readCString();
                                       console.log("[OSTAR_U] " + uStr);
