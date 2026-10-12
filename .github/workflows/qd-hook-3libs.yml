@@ -1,0 +1,311 @@
+name: qd-hook-3libs
+on:
+  workflow_dispatch:
+
+jobs:
+  hook:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE
+          pip install -q "frida==16.7.19" "frida-tools<14" "pycryptodome" 2>&1 | tail -1
+          
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 \
+            androidboot.redroid_dpi=240 androidboot.redroid_gpu_mode=guest
+          
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          echo "BOOT_OK"
+          
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz; mv -f fs fs-server; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+
+      - name: Hook 3 Libraries
+        run: |
+          set +e
+          which adb || sudo -S -p '' apt-get install -y -qq android-tools-adb
+          B=localhost:5555
+          
+          curl -sSL --max-time 300 -o q464.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qidian_7.9.464.apk"
+          timeout 120 adb -s $B push q464.apk /data/local/tmp/q464.apk >/dev/null 2>&1
+          timeout 120 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q464.apk" 2>&1 | tail -1
+          timeout 30 adb -s $B shell "am start -n com.qidian.QDReader/.ui.activity.SplashActivity" >/dev/null 2>&1
+          
+          STABLE_PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(timeout 10 adb -s $B shell pidof com.qidian.QDReader | tr -d '\r')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then
+                STABLE_PID=$P
+                echo "PID=$STABLE_PID"
+                break
+              fi
+            fi
+          done
+          [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
+          
+          timeout 10 adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          timeout 10 adb -s $B forward tcp:27042 tcp:27042
+          
+          cat > hook_3libs.js << 'JSEOF'
+          Java.perform(function() {
+              setTimeout(function() {
+                  console.log("[START] Hooking 3 libraries...");
+                  
+                  // ═══════════════════════════════════════════
+                  // ① libnib — NativeWrapper.lk() + StringArmor
+                  // ═══════════════════════════════════════════
+                  try {
+                      var NativeWrapper = Java.use("com.yuewen.nib.NativeWrapper");
+                      console.log("[NIB] NativeWrapper found");
+                      
+                      // Hook lk (private, use reflection)
+                      var methods = NativeWrapper.class.getDeclaredMethods();
+                      methods.forEach(function(m) {
+                          var name = m.getName();
+                          var paramTypes = m.getParameterTypes();
+                          var paramStr = "";
+                          for (var i = 0; i < paramTypes.length; i++) {
+                              paramStr += paramTypes[i].getName() + ",";
+                          }
+                          console.log("[NIB] Method: " + name + "(" + paramStr + ")");
+                      });
+                      
+                      // Hook a() (public, calls lk internally)
+                      if (NativeWrapper.a) {
+                          NativeWrapper.a.implementation = function(input) {
+                              console.log("[NIB_LK_IN] " + input);
+                              var result = this.a(input);
+                              console.log("[NIB_LK_OUT] " + result);
+                              return result;
+                          };
+                          console.log("[NIB] a() hooked");
+                      }
+                      
+                      // Hook hav()
+                      if (NativeWrapper.hav) {
+                          NativeWrapper.hav.implementation = function() {
+                              var result = this.hav();
+                              console.log("[NIB_HAV] " + result);
+                              return result;
+                          };
+                          console.log("[NIB] hav() hooked");
+                      }
+                      
+                      // Hook mmr()
+                      try {
+                          var mmrMethod = NativeWrapper.mmr;
+                          if (mmrMethod) {
+                              mmrMethod.overloads.forEach(function(ov) {
+                                  ov.implementation = function(input) {
+                                      console.log("[NIB_MMR_IN] " + input);
+                                      var result = ov.apply(this, arguments);
+                                      if (result !== null) {
+                                          var hex = "";
+                                                                          for (var i = 0; i < Math.min(result.length, 64); i++) {
+                                          hex += ("0" + (result[i] & 0xFF).toString(16)).slice(-2);
+                                      }
+                                      console.log("[NIB_MMR_OUT] byte[" + result.length + "] " + hex);
+                                  }
+                                  return result;
+                                  };
+                              });
+                              console.log("[NIB] mmr() hooked");
+                          }
+                      } catch(e) { console.log("[NIB] mmr: " + e); }
+                      
+                  } catch(e) {
+                      console.log("[NIB_ERR] " + e);
+                  }
+                  
+                  // Hook nib StringArmor
+                  try {
+                      var NibStringArmor = Java.use("com.yuewen.nib.StringArmor");
+                      NibStringArmor.d.implementation = function(input) {
+                          console.log("[NIB_SA_IN] " + input);
+                          var result = this.d(input);
+                          console.log("[NIB_SA_OUT] " + result);
+                          return result;
+                      };
+                      console.log("[NIB] StringArmor.d() hooked");
+                  } catch(e) { console.log("[NIB_SA_ERR] " + e); }
+                  
+                  // ═══════════════════════════════════════════
+                  // ② libfock — getH() (borgus) — 已有!
+                  // ═══════════════════════════════════════════
+                  try {
+                      var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                      var instance = FockUtil.INSTANCE.value;
+                      console.log("[FOCK] FockUtil found, instance=" + instance);
+                      
+                      // 列出所有native方法!
+                      var fockMethods = FockUtil.class.getDeclaredMethods();
+                      var nativeCount = 0;
+                      fockMethods.forEach(function(m) {
+                          if (m.getModifiers() & 256) { // native
+                              nativeCount++;
+                              console.log("[FOCK_NATIVE] " + m.getName());
+                          }
+                      });
+                      console.log("[FOCK] " + nativeCount + " native methods");
+                      
+                  } catch(e) { console.log("[FOCK_ERR] " + e); }
+                  
+                  // ═══════════════════════════════════════════
+                  // ③ libostar — O-Star SDK (设备指纹/qimei)
+                  // ═══════════════════════════════════════════
+                  try {
+                      // 查找O-Star相关的类!
+                      Java.enumerateLoadedClasses({
+                          onMatch: function(name) {
+                              if (name.indexOf("ola.star") !== -1 || 
+                                  name.indexOf("beacon") !== -1) {
+                                  console.log("[OSTAR_CLASS] " + name);
+                              }
+                          },
+                          onComplete: function() {}
+                      });
+                      
+                      // Hook com.ola.star.uin.U 的native方法!
+                      try {
+                          var U = Java.use("com.ola.star.uin.U");
+                          var uMethods = U.class.getDeclaredMethods();
+                          uMethods.forEach(function(m) {
+                              if (m.getModifiers() & 256) { // native
+                                  console.log("[OSTAR_NATIVE] " + m.getName());
+                              }
+                          });
+                          
+                          // Hook关键方法!
+                          // z() — 设备指纹
+                          if (U.z) {
+                              U.z.overloads.forEach(function(ov) {
+                                  ov.implementation = function() {
+                                      var result = ov.apply(this, arguments);
+                                      console.log("[OSTAR_Z] " + result);
+                                      return result;
+                                  };
+                              });
+                              console.log("[OSTAR] z() hooked");
+                          }
+                          
+                          // o() — 特征值
+                          if (U.o) {
+                              U.o.implementation = function() {
+                                  var result = this.o();
+                                  console.log("[OSTAR_O] " + result);
+                                  return result;
+                              };
+                              console.log("[OSTAR] o() hooked");
+                          }
+                          
+                          // u() — 特征值
+                          if (U.u) {
+                              U.u.implementation = function() {
+                                  var result = this.u();
+                                  console.log("[OSTAR_U] " + result);
+                                  return result;
+                              };
+                              console.log("[OSTAR] u() hooked");
+                          }
+                          
+                      } catch(e) { console.log("[OSTAR_U_ERR] " + e); }
+                      
+                  } catch(e) { console.log("[OSTAR_ERR] " + e); }
+                  
+                  // ═══════════════════════════════════════════
+                  // 主动调用所有hook的方法!
+                  // ═══════════════════════════════════════════
+                  setTimeout(function() {
+                      console.log("\n[CAL] === 主动调用测试 ===");
+                      
+                      // 调libnib!
+                      try {
+                          var NW = Java.use("com.yuewen.nib.NativeWrapper");
+                          var testInput = "test_device_id_12345";
+                          console.log("[CAL_NIB] input: " + testInput);
+                          var lkResult = NW.a(testInput);
+                          console.log("[CAL_NIB] lk result: " + lkResult);
+                          
+                          var havResult = NW.hav();
+                          console.log("[CAL_NIB] hav: " + havResult);
+                      } catch(e) { console.log("[CAL_NIB_ERR] " + e); }
+                      
+                      // 调libfock!
+                      try {
+                          var FU = Java.use("com.qidian.QDReader.component.util.FockUtil");
+                          var inst = FU.INSTANCE.value;
+                          var RB = Java.use("okhttp3.RequestBody");
+                          var MT = Java.use("okhttp3.MediaType");
+                          var mt = MT.parse("application/x-www-form-urlencoded");
+                          var body = RB.create(mt, "localLabels=&gender=0");
+                          var url = "https://bravev6.if.qidian.com/argus/api/v1/client/getconf";
+                          var result = inst.getH(url, "POST", body);
+                          var rm = Java.cast(result, Java.use("java.util.Map"));
+                          var iter = rm.entrySet().iterator();
+                          while (iter.hasNext()) {
+                              var en = Java.cast(iter.next(), Java.use("java.util.Map$Entry"));
+                              console.log("[CAL_FOCK] " + en.getKey() + " = " + String(en.getValue()).substring(0, 80));
+                          }
+                      } catch(e) { console.log("[CAL_FOCK_ERR] " + e); }
+                      
+                      // 调libostar!
+                      try {
+                          var U = Java.use("com.ola.star.uin.U");
+                          // 设备指纹!
+                          var ctx = Java.use("android.app.ActivityThread").currentApplication().getApplicationContext();
+                          try {
+                              var zResult = U.z(ctx);
+                              console.log("[CAL_OSTAR_Z] " + zResult);
+                          } catch(e) { console.log("[CAL_OSTAR_Z_ERR] " + e); }
+                          
+                          try {
+                              var oResult = U.o();
+                              console.log("[CAL_OSTAR_O] " + oResult);
+                          } catch(e) { console.log("[CAL_OSTAR_O_ERR] " + e); }
+                      } catch(e) { console.log("[CAL_OSTAR_ERR] " + e); }
+                      
+                      console.log("[DONE] All calls completed!");
+                  }, 5000);
+                  
+              }, 3000);
+          });
+          JSEOF
+          
+          timeout 30 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_3libs.js 2>&1 | tee /tmp/hook_3libs_output.log
+          echo "=== Hook done ==="
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hook-3libs-result
+          path: /tmp/hook_3libs_output.log
+          if-no-files-found: warn
