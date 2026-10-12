@@ -300,19 +300,45 @@ jobs:
                       }
                       
                                             // ★ Hook NewStringUTF — 抓VMP创建borgus的时刻!
-                      // 找NewStringUTF!
-                      var newStringUTF = null;
-                      var artModule = Process.findModuleByName("libart.so");
-                      if (artModule) {
-                          // 遍历导出找NewStringUTF!
-                          var exports = artModule.enumerateExports();
-                          for (var ei = 0; ei < exports.length; ei++) {
-                              if (exports[ei].name.indexOf("NewStringUTF") !== -1) {
-                                  newStringUTF = exports[ei].address;
-                                  console.log("[NSU] Found: " + exports[ei].name + " at " + newStringUTF);
-                                  break;
+                      // 找NewStringUTF — 方法1: 精确名!
+                      var newStringUTF = Module.findExportByName("libart.so", "_ZN3art3JNIILb0EE12NewStringUTFEP7_JNIEnvPKc");
+                      
+                      // 方法2: JNIEnv vtable!
+                      if (!newStringUTF) {
+                          console.log("[NSU] exact name not found, trying vtable...");
+                          try {
+                              var env = Java.vm.getEnv();
+                              // JNIEnv的函数表!
+                              var envPtr = env.handle.readPointer();
+                              // NewStringUTF = JNI函数表第167项!
+                              var fnTable = envPtr.readPointer();
+                              newStringUTF = fnTable.add(167 * Process.pointerSize).readPointer();
+                              console.log("[NSU] vtable: " + newStringUTF);
+                          } catch(e) {
+                              console.log("[NSU] vtable err: " + e);
+                          }
+                      }
+                      
+                      // 方法3: 遍历找函数(不是变量)!
+                      if (!newStringUTF) {
+                          var artModule = Process.findModuleByName("libart.so");
+                          if (artModule) {
+                              var exports = artModule.enumerateExports();
+                              for (var ei = 0; ei < exports.length; ei++) {
+                                  if (exports[ei].name.indexOf("NewStringUTF") !== -1 && 
+                                      exports[ei].type === "function") {
+                                      newStringUTF = exports[ei].address;
+                                      console.log("[NSU] Found function: " + exports[ei].name);
+                                      break;
+                                  }
                               }
                           }
+                      }
+                      
+                      if (newStringUTF) {
+                          console.log("[NSU] Using: " + newStringUTF);
+                      } else {
+                          console.log("[NSU] NOT FOUND!");
                       }
                       
                       if (newStringUTF) {
