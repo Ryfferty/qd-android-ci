@@ -585,7 +585,39 @@ def gen_qr(dev, n):
     L('[QR] ★出码成功 #%d sessionKey=%s (%s)' % (n, sk, url_src))
     L('[QR_URL] %s' % url)                       # ← 实时取QR给用户: gh run view --log | grep QR_URL
     L('[QR] ASCII二维码(log内直接扫):\n' + qr_ascii(url))
+    relay_qr(url)                                 # ← 中继: push到repo qr_live/ (主线程gh api轮询→桌面转交)
     return {'sessionKey': sk, 'url': url, 'url_src': url_src, 'gen_ts': time.time()}
+
+
+def relay_qr(url):
+    """把QR url+png push到repo固定路径(主线程无法读进行中log, 走repo中继; 失败不致命)"""
+    import subprocess
+    def gh(*a):
+        return subprocess.run(['gh', 'api'] + list(a), capture_output=True, text=True, timeout=30)
+    try:
+        for path, fname in (('qr_live/qr_url.txt', None), ('qr_live/qr.png', 'qr.png')):
+            try:
+                cur = gh('repos/Ryfferty/qd-android-ci/contents/%s' % path, '-X', 'GET')
+                sha = json.loads(cur.stdout).get('sha') if cur.returncode == 0 else None
+            except Exception:
+                sha = None
+            if fname:
+                b = base64.b64encode(open('%s/qr.png' % EVID_DIR, 'rb').read()).decode()
+                msg, content = 'relay qr.png #%s' % n_of(url), b
+            else:
+                msg, content = 'relay qr url', base64.b64encode((url + '\n').encode()).decode()
+            args = ('repos/Ryfferty/qd-android-ci/contents/%s' % path, '-X', 'PUT',
+                    '-f', 'message=%s' % msg, '-f', 'content=%s' % content)
+            if sha:
+                args += ('-f', 'sha=%s' % sha)
+            r = gh(*args)
+            L('[RELAY] %s: %s' % (path, 'OK' if r.returncode == 0 else r.stderr[:80]))
+    except Exception as e:
+        L('[RELAY] fail: %s' % str(e)[:100])
+
+
+def n_of(url):
+    return url.split('sessionkey=')[-1][:8]
 
 # ───────────────────────── 设备档案(oracle) ─────────────────────────
 def extract_dev(m):

@@ -20,6 +20,8 @@ on:
         description: '模式: full=真扫码(25min窗) / verify=短窗验证+死号半真实验'
         required: false
         default: 'full'
+permissions:
+  contents: write
       qr_wait:
         description: 'QR等待窗口秒数(0=用模式默认: full=1500/verify=300)'
         required: false
@@ -130,6 +132,7 @@ jobs:
           QD_BORN_SESSION: ${{ secrets.QD_BORN_SESSION }}
           QD_BORN_MODE: ${{ inputs.mode || 'full' }}
           QD_QR_WAIT: ${{ inputs.qr_wait || '0' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           python3 ci/qr_born_oracle.py 2>&1 | tee /tmp/qrborn_stdout.txt
