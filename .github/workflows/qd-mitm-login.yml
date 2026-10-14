@@ -1,0 +1,169 @@
+name: qd-mitm-login
+
+# 登录态真值抓取 (子代理K, 2026-10-15): 会话注入×MITM透明代理
+#   底稿: qd-ostarmitm.yml(MITM思路) + qd-readvip-v200.yml(v205/v206实证接线: DNAT -s 172.17.0.0/16
+#   + modprobe nat模块 + CA系统证书 + mitmdump -w) + qr-born.yml(consent预写/adb经验)
+# 链路: redroid+q480 → 匿名首启(建QDConfig DB+匿名基线) → pull DB本地sqlite3注入
+#   SettingYWKey/YWGuid/CmfuToken/UserToken(QDUserManager.J写集, we.judian replace语义)
+#   → 复启(logcat ywKeyEmpty:false=登录态装载证据) → 5min自然流量(swipe/tab/书详情/福利)
+#   → flows_extract提取headers JSON(与app_qrlogin_chain.qd_headers逐字段diff的输入)
+# 凭据纪律(repo=PUBLIC): QD_E7_SESSION只在env+runner内存; ywKey/CmfuToken/UserInfo
+#   绝不进log(只打长度)绝不进artifact(flows_extract精确scrub+结构正则; 只传scrubbed flows,
+#   原始/tmp/all.flows与QDConfig DB不上传)
+# 派活: gh workflow run qd-mitm-login --repo Ryfferty/qd-android-ci -f mode=login
+#   (mode=verify=纯匿名管道验证, 不烧session)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'login=注入QD_E7_SESSION抓登录态 / verify=纯匿名验证'
+        default: 'login'
+      traffic_secs:
+        description: '自然流量窗秒数'
+        default: '300'
+
+permissions:
+  contents: read
+
+jobs:
+  mitm-login:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup adb/sqlite3/mitmproxy/binder
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) adb sqlite3 curl || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q mitmproxy 2>&1 | tail -1
+          mitmdump --version | head -2
+          sqlite3 --version | head -1
+
+      - name: Start redroid (1080x2340@420) + root
+        run: |
+          set +e
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 12
+          B=localhost:5555
+          for i in $(seq 1 30); do
+            adb connect $B >/dev/null 2>&1
+            S=$(timeout 10 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 7
+          done
+          # adb root(v200的断线重连轮)
+          OK=0
+          for i in $(seq 1 10); do
+            timeout 25 adb -s $B root >/dev/null 2>&1; sleep 5
+            adb disconnect $B >/dev/null 2>&1; sleep 1
+            adb connect $B >/dev/null 2>&1; sleep 3
+            IDOUT=$(timeout 8 adb -s $B shell id 2>/dev/null | tr -d "\r")
+            echo "root轮$i: $IDOUT"
+            echo "$IDOUT" | grep -q "uid=0" && OK=1 && break
+            sleep 3
+          done
+          [ $OK = 0 ] && echo "ROOT_FAIL(继续, 但DB注入需要root)"
+          timeout 10 adb -s $B shell "setenforce 0" 2>/dev/null
+          timeout 10 adb -s $B shell getprop ro.build.version.sdk | tr -d '\r'
+
+      - name: 下载q480 + 安装
+        run: |
+          set +e
+          B=localhost:5555
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/q480.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/q480.apk" || true
+            SZ=$(stat -c%s /tmp/q480.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"
+            [ "$SZ" -gt 10000000 ] && break
+            sleep 15
+          done
+          md5sum /tmp/q480.apk
+          for i in 1 2 3; do
+            timeout 300 adb -s $B install -r -t /tmp/q480.apk 2>&1 | tail -1
+            if timeout 30 adb -s $B shell pm list packages 2>/dev/null | tr -d '\r' | grep -q com.qidian.QDReader; then
+              echo "INSTALL_OK try $i"; break
+            fi
+            sleep 8; adb connect $B >/dev/null 2>&1
+          done
+
+      - name: MITM接线 (CA系统证书 + iptables DNAT + 封QUIC + mitmdump -w)
+        run: |
+          set +e
+          B=localhost:5555
+          # v201教训: 宿主内核nat表模块没加载→容器侧"Table does not exist"; v205: DNAT用-s网段
+          sudo -S -p '' modprobe nf_conntrack nf_nat iptable_nat nf_nat_ipv4 xt_TCPMSS xt_comment 2>&1 | head -2
+          sudo iptables -t nat -L -n >/dev/null 2>&1 && echo HOST_NAT_OK || echo HOST_NAT_FAIL
+          # 生成CA(confdir固定/tmp/mitm)
+          (timeout 8 mitmdump -p 8899 --set confdir=/tmp/mitm --set quiet=true >/dev/null 2>&1 &); sleep 8
+          ls /tmp/mitm/ | head -4
+          CA=/tmp/mitm/mitmproxy-ca-cert.pem
+          HASH=$(openssl x509 -inform PEM -subject_hash_old -in $CA | head -1)
+          echo "CAHASH=$HASH"
+          timeout 30 adb -s $B push $CA /data/local/tmp/cacert.pem >/dev/null 2>&1
+          timeout 30 adb -s $B shell "mount -o rw,remount / 2>/dev/null; mount -o rw,remount /system 2>/dev/null; cp /data/local/tmp/cacert.pem /system/etc/security/cacerts/$HASH.0; chmod 644 /system/etc/security/cacerts/$HASH.0; ls -la /system/etc/security/cacerts/$HASH.0" 2>&1 | tail -1
+          timeout 20 adb -s $B shell "cp /data/local/tmp/cacert.pem /apex/com.android.conscrypt/cacerts/$HASH.0 2>/dev/null && chmod 644 /apex/com.android.conscrypt/cacerts/$HASH.0 && echo APEX_OK || echo APEX_FAIL"
+          # 透明代理: docker0网段 DNAT→宿主8899 + 封UDP443(QUIC) + ip_forward
+          sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+          sudo iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 80  -j DNAT --to-destination 172.17.0.1:8899
+          sudo iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 443 -j DNAT --to-destination 172.17.0.1:8899
+          sudo iptables -A FORWARD -s 172.17.0.0/16 -p udp --dport 443 -j DROP
+          sudo iptables -t nat -L PREROUTING -n -v | head -8
+          # 全局代理(ostarmitm实证HTTPDNS会走)+DNAT双保险
+          GW=$(timeout 8 adb -s $B shell "ip route | awk '/^default/{print \$3; exit}'" | tr -d '\r')
+          [ -z "$GW" ] && GW=172.17.0.1
+          timeout 10 adb -s $B shell "settings put global http_proxy $GW:8899"
+          echo "PROXY=$(timeout 8 adb -s $B shell settings get global http_proxy | tr -d '\r') GW=$GW"
+          # mitmdump主采集(-w落盘flows; 红线: 不靠console)
+          nohup mitmdump --listen-host 0.0.0.0 -p 8899 --set confdir=/tmp/mitm \
+            --set block_global=false --set flow_detail=1 -w /tmp/all.flows \
+            > /tmp/mitm.log 2>&1 &
+          sleep 5
+          pgrep -f mitmdump >/dev/null && echo MITMDUMP_ALIVE || echo MITMDUMP_NOT_RUNNING
+          # 管路探针(v206: 分开"规则没匹配"和"App没发请求")
+          timeout 8 adb -s $B shell "toybox nc -w 4 bravev6.if.qidian.com 443 </dev/null >/dev/null; echo NC_DONE"
+          sleep 2
+          echo ----探针后DNAT计数----
+          sudo iptables -t nat -L PREROUTING -n -v | head -6
+          head -8 /tmp/mitm.log
+          echo STEP_MITM_DONE
+
+      - name: 采集驱动 (匿名首启→DB注入→登录验证→自然流量→提取)
+        env:
+          QD_E7_SESSION: ${{ secrets.QD_E7_SESSION }}
+          QD_MITM_MODE: ${{ inputs.mode || 'login' }}
+          QD_TRAFFIC_SECS: ${{ inputs.traffic_secs || '300' }}
+        run: |
+          set +e
+          python3 ci/mitm_login_capture.py 2>&1 | tee /tmp/driver_stdout.txt
+          EC=${PIPESTATUS[0]}
+          echo "driver exit=$EC (非0=异常; 证据照常上传)"
+          echo "=== out/ 清单 ==="
+          ls -la /tmp/out/ 2>/dev/null
+          cat /tmp/out/extract_summary.json 2>/dev/null
+          cat /tmp/out/driver_verdict.json 2>/dev/null
+          echo "=== 密扫(应全为0) ==="
+          for pat in $(cat /tmp/e7_secrets.txt 2>/dev/null | grep -v '^$' | head -3); do
+            printf 'hits(out/): %s\n' "$(grep -rcF -- "$pat" /tmp/out/ 2>/dev/null | grep -v ':0' | wc -l)"
+          done
+          exit 0
+
+      - name: Upload (全部scrubbed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mitm-login-capture
+          path: |
+            /tmp/out/
+            /tmp/driver_stdout.txt
+            /tmp/mitm.log
+          if-no-files-found: warn
