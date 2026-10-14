@@ -107,52 +107,65 @@ jobs:
           done
           [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
 
-          # 就绪等待(上限app age 100s): mmkv pref_utils 增长 = ostar/qimei/风控材料真实推进的信号
-          # (qd-qimei-net验证过的判据), 期间做同意弹窗兜底点击(文件预写失效时)
-          READY=0
-          for i in $(seq 1 9); do
-            AGE=$(( $(date +%s) - T0 ))
-            [ $AGE -ge 100 ] && break
-            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/$APP/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
-            echo "  age=${AGE}s mmkv_pref_utils=${SZ:-none}B"
-            if [ -n "$SZ" ] && [ "$SZ" -gt 500 ] 2>/dev/null; then READY=1; break; fi
+          # 就绪等待: 固定等App自然跑到age≥55s再启frida-server (run1实证T+55安全存活176s;
+          # run2教训: T+8就attach→20s后壳自杀重启(pid 1870→2672), mmkv尺寸判据无效=预分配64KB必>500)
+          # 期间做同意弹窗兜底点击(文件预写失效时)
+          while [ $(( $(date +%s) - T0 )) -lt 55 ]; do
             timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml" >/dev/null 2>&1
             timeout 15 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
             XY=$(python3 tap_consent.py /tmp/u.xml 2>/dev/null | head -1)
             [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; echo "CONSENT_TAP $XY"; }
             sleep 8
           done
-          echo "readiness READY=$READY — frida-server starts at app age $(( $(date +%s) - T0 ))s"
+          echo "App age at frida-server start: $(( $(date +%s) - T0 ))s"
 
           # 此刻才启动 frida-server (App已稳定 — geth模板反检测模式)
           adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
           sleep 8
           adb -s $B forward tcp:27042 tcp:27042
 
-          # 被动采集 170s: stdin保持打开, frida CLI存活期间hook持续记录
-          ( (sleep 170; echo) | timeout 178 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_collect_cecelia.js > /tmp/collect.log 2>&1 ) &
-          FRIDA_JOB=$!
-
-          # 采集期间保持App活性: 轮换tap/滚动 促使自然请求(书架/书城/我的)
+          # 被动采集 170s: stdin保持打开让frida存活; pid守卫 — 若壳杀进程重启, 等新进程过40s启动检测期后重挂
+          # (重启进程会重跑完整网络初始化, 重挂后仍能收到它的getconf/r1爆发)
+          : > /tmp/collect.log
+          SESS_END=$(( $(date +%s) + 170 ))
+          CUR_PID=$STABLE_PID
           TAPS="360 580|360 1100|180 1100|360 1100|540 1100|SWIPE|360 700|360 1100|360 580"
           IFS='|' read -ra TAPARR <<< "$TAPS"
-          for t in "${TAPARR[@]}"; do
-            sleep 18
-            if [ "$t" = "SWIPE" ]; then
-              adb -s $B shell "input swipe 360 900 360 300 400" >/dev/null 2>&1
-            else
-              adb -s $B shell "input tap $t" >/dev/null 2>&1
-            fi
-            P=$(timeout 8 adb -s $B shell pidof $APP | tr -d '\r')
-            [ -z "$P" ] && echo "APP_DIED at age $(( $(date +%s) - T0 ))s"
+          TI=0
+          while [ "$(date +%s)" -lt "$SESS_END" ]; do
+            LEFT=$(( SESS_END - $(date +%s) ))
+            [ $LEFT -lt 12 ] && break
+            echo "[SESS] frida attach pid=$CUR_PID left=${LEFT}s"
+            ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:27042 -p $CUR_PID -l hook_collect_cecelia.js >> /tmp/collect.log 2>&1 ) &
+            FJOB=$!
+            while [ "$(date +%s)" -lt "$SESS_END" ]; do
+              sleep 15
+              T=${TAPARR[$TI]}; TI=$(( (TI+1) % ${#TAPARR[@]} ))
+              if [ "$T" = "SWIPE" ]; then
+                adb -s $B shell "input swipe 360 900 360 300 400" >/dev/null 2>&1
+              else
+                adb -s $B shell "input tap $T" >/dev/null 2>&1
+              fi
+              NOWPID=$(timeout 8 adb -s $B shell pidof $APP | tr -d '\r')
+              if [ -z "$NOWPID" ]; then sleep 6; NOWPID=$(timeout 8 adb -s $B shell pidof $APP | tr -d '\r'); fi
+              if [ -n "$NOWPID" ] && [ "$NOWPID" != "$CUR_PID" ]; then
+                echo "[SESS] pid $CUR_PID -> $NOWPID (anti-frida restart): kill frida, settle 40s, reattach"
+                pkill -f "frida -H" 2>/dev/null; sleep 3
+                CUR_PID=$NOWPID
+                REBIRTH=$(date +%s)
+                while [ $(( $(date +%s) - REBIRTH )) -lt 40 ] && [ "$(date +%s)" -lt "$SESS_END" ]; do sleep 5; done
+                break
+              fi
+              [ -z "$NOWPID" ] && echo "APP_DIED at age $(( $(date +%s) - T0 ))s"
+            done
+            wait $FJOB 2>/dev/null
           done
-          wait $FRIDA_JOB || true
           echo "Collection done, app age: $(( $(date +%s) - T0 ))s, pid=$(adb -s $B shell pidof $APP | tr -d '\r')"
 
           # App私有目录设备侧材料 (shared_prefs/mmkv/qv1)
           adb -s $B exec-out "tar -c -C /data/data/$APP shared_prefs" > /tmp/app_prefs.tar 2>/dev/null
           adb -s $B exec-out "tar -c -C /data/data/$APP files/mmkv" > /tmp/app_mmkv.tar 2>/dev/null
-          QV1=$(adb -s $B shell "find /data/data/$APP -name 'qv1*' 2>/dev/null" | tr -d '\r' | head -1)
+          QV1=$(adb -s $B shell "find /data/data/$APP -iname 'qv1*' 2>/dev/null" | tr -d '\r' | head -1)
           [ -n "$QV1" ] && adb -s $B exec-out "cat $QV1" > /tmp/qv1.xml 2>/dev/null
           adb -s $B shell "ls -la /data/data/$APP/files/mmkv/ 2>/dev/null" | head -10
           ls -la /tmp/app_prefs.tar /tmp/app_mmkv.tar /tmp/qv1.xml 2>/dev/null
