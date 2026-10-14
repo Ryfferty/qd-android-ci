@@ -299,4 +299,4 @@ Java.perform(function() {
           " knobs_hooked=" + KNOBS_HOOKED);
     }, 15000);
     L("[READY] passive collection armed");
-})();
+});

@@ -66,11 +66,21 @@ jobs:
           timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q480.apk" 2>&1 | tail -1
 
           # 预写隐私同意(qd-qimei-net同款, 已证可让App走完整启动网络流)
-          UID=$(adb -s $B shell "dumpsys package $APP | grep userId= | head -1" | tr -d '\r' | sed 's/.*userId=//;s/ .*//')
-          echo "app uid=$UID"
+          # ★uid必须取对: 上跑dumpsys误取1001(phone)→660所有权错→App读不了→卡隐私弹窗零网络
+          #   (logcat铁证: "Attempt to read preferences file app_sp.xml without permission")
+          APP_UID=$(adb -s $B shell "stat -c '%u' /data/data/$APP" 2>/dev/null | tr -d '\r')
+          if [ -z "$APP_UID" ] || [ "$APP_UID" = "0" ] || [ "$APP_UID" -le 10000 ] 2>/dev/null; then
+            APP_UID=$(adb -s $B shell "cmd package list packages -U $APP" 2>/dev/null | tr -d '\r' | sed 's/.*uid://' | head -1)
+          fi
+          echo "app uid=$APP_UID"
           adb -s $B shell "mkdir -p /data/data/$APP/shared_prefs"
           adb -s $B shell "echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/$APP/shared_prefs/app_sp.xml"
-          [ -n "$UID" ] && adb -s $B shell "chown $UID:$UID /data/data/$APP/shared_prefs/app_sp.xml; chmod 660 /data/data/$APP/shared_prefs/app_sp.xml"
+          if [ -n "$APP_UID" ] && [ "$APP_UID" -gt 10000 ] 2>/dev/null; then
+            adb -s $B shell "chown $APP_UID:$APP_UID /data/data/$APP/shared_prefs/app_sp.xml; chmod 660 /data/data/$APP/shared_prefs/app_sp.xml"
+          else
+            adb -s $B shell "chmod 644 /data/data/$APP/shared_prefs/app_sp.xml"
+          fi
+          adb -s $B shell "ls -la /data/data/$APP/shared_prefs/app_sp.xml"
 
           adb -s $B logcat -c 2>/dev/null
           (timeout 330 adb -s $B logcat -v time > /tmp/logcat.txt 2>&1 &)
@@ -97,10 +107,22 @@ jobs:
           done
           [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
 
-          # App自然运行到 ~55s: ostar REGISTER/qimei签发/风控材料靠App自己跑(被动hook零干扰)
-          NOW=$(date +%s); AGE=$((NOW-T0))
-          [ $AGE -lt 55 ] && sleep $((55-AGE))
-          echo "App age at frida-server start: $(( $(date +%s) - T0 ))s"
+          # 就绪等待(上限app age 100s): mmkv pref_utils 增长 = ostar/qimei/风控材料真实推进的信号
+          # (qd-qimei-net验证过的判据), 期间做同意弹窗兜底点击(文件预写失效时)
+          READY=0
+          for i in $(seq 1 9); do
+            AGE=$(( $(date +%s) - T0 ))
+            [ $AGE -ge 100 ] && break
+            SZ=$(timeout 8 adb -s $B shell "stat -c%s /data/data/$APP/files/mmkv/pref_utils 2>/dev/null" | tr -d '\r')
+            echo "  age=${AGE}s mmkv_pref_utils=${SZ:-none}B"
+            if [ -n "$SZ" ] && [ "$SZ" -gt 500 ] 2>/dev/null; then READY=1; break; fi
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml" >/dev/null 2>&1
+            timeout 15 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            XY=$(python3 tap_consent.py /tmp/u.xml 2>/dev/null | head -1)
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; echo "CONSENT_TAP $XY"; }
+            sleep 8
+          done
+          echo "readiness READY=$READY — frida-server starts at app age $(( $(date +%s) - T0 ))s"
 
           # 此刻才启动 frida-server (App已稳定 — geth模板反检测模式)
           adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
@@ -132,6 +154,7 @@ jobs:
           adb -s $B exec-out "tar -c -C /data/data/$APP files/mmkv" > /tmp/app_mmkv.tar 2>/dev/null
           QV1=$(adb -s $B shell "find /data/data/$APP -name 'qv1*' 2>/dev/null" | tr -d '\r' | head -1)
           [ -n "$QV1" ] && adb -s $B exec-out "cat $QV1" > /tmp/qv1.xml 2>/dev/null
+          adb -s $B shell "ls -la /data/data/$APP/files/mmkv/ 2>/dev/null" | head -10
           ls -la /tmp/app_prefs.tar /tmp/app_mmkv.tar /tmp/qv1.xml 2>/dev/null
           md5sum /tmp/app_prefs.tar /tmp/app_mmkv.tar /tmp/qv1.xml 2>/dev/null
 
