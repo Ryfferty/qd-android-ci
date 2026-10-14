@@ -402,6 +402,8 @@ Java.perform(function() {
                         var v = arguments.length > 1 ? String(arguments[1]) : "";
                         if (["i", "r", "o16", "o36", "q16", "q36", "runMode", "sora", "ibex", "cecelia", "gorgon", "borgus", "QDSign", "QDInfo", "tstamp", "cpt", "data"].indexOf(k) >= 0) {
                             L("[FORM_ADD] " + k + "=" + v);
+                        } else {
+                            L("[FORM_NAME] " + k + "=" + (v.length > 120 ? v.substring(0, 120) + "…" : v));
                         }
                     }
                 } catch (e) {}
@@ -410,6 +412,105 @@ Java.perform(function() {
         });
         L("[+] FormBody$Builder.add hooked");
     } catch (e) { L("[E] FormBody$Builder: " + e); }
+
+    // ── QDRequestAddKnobsInterceptor 观测 (r1构造方, VMP但Java.use可wrap — getH同款) ──
+    var KI_REPORT = null;
+    try {
+        var KI = Java.use("com.qidian.QDReader.component.retrofit.QDRequestAddKnobsInterceptor");
+        var kim = KI.class.getDeclaredMethods();
+        var kisigs = [];
+        for (var ki = 0; ki < kim.length; ki++) kisigs.push(String(kim[ki].toGenericString()));
+        L("[KI] declared methods=" + kim.length + "\n  " + kisigs.join("\n  "));
+        // intercept(okhttp chain): 每个请求过KI的现场
+        try {
+            KI.intercept.overloads.forEach(function(ov) {
+                ov.implementation = function() {
+                    var ret = callOrig(ov, this, arguments);
+                    try {
+                        var u = "";
+                        try { u = String(arguments[0].request().url().toString()); } catch (e) {}
+                        L("[KI_INTERCEPT] " + u.substring(0, 160));
+                    } catch (e) {}
+                    return ret;
+                };
+            });
+            L("[+] KI.intercept hooked");
+        } catch (e) { L("[E] KI.intercept: " + e); }
+        // checkKnobsUrl: 风险URL判定现场
+        try {
+            KI.checkKnobsUrl.overloads.forEach(function(ov) {
+                ov.implementation = function() {
+                    var ret = callOrig(ov, this, arguments);
+                    try {
+                        L("[KI_CHECK] " + String(arguments[0]).substring(0, 160) + " -> " + ret);
+                    } catch (e) {}
+                    return ret;
+                };
+            });
+            L("[+] KI.checkKnobsUrl hooked");
+        } catch (e) { L("[E] KI.checkKnobsUrl: " + e); }
+        // reportR1/native方法留档引用, 末段直调尝试用
+        KI_REPORT = KI;
+    } catch (e) { L("[E] KI: " + e); }
+
+    // ── knobs OBS SDK NativeWrapper 活动观测 (普通SDK类, 低风险) ──
+    try {
+        var NWW = Java.use("com.yuewen.knobs.core.NativeWrapper");
+        var nwm = NWW.class.getDeclaredMethods();
+        var nwsigs = [];
+        for (var ni = 0; ni < nwm.length; ni++) nwsigs.push(String(nwm[ni].toGenericString()));
+        L("[KNW] NativeWrapper methods=" + nwm.length + "\n  " + nwsigs.join("\n  "));
+        ["a", "lk", "apis", "mmw", "cfbf", "cfbt"].forEach(function(mn) {
+            try {
+                NWW[mn].overloads.forEach(function(ov) {
+                    ov.implementation = function() {
+                        var ret = callOrig(ov, this, arguments);
+                        try {
+                            if (STAT.knobs < MAX.knobs * 2) {
+                                var args = [];
+                                for (var ai = 0; ai < arguments.length; ai++) {
+                                    var a = arguments[ai];
+                                    args.push(a === null ? "null" : (typeof a === "string" ? a : String(a)).substring(0, 80));
+                                }
+                                L("[KNW_CALL] " + mn + "(" + args.join(", ") + ") -> " + (ret === null ? "null" : String(ret).substring(0, 120)));
+                            }
+                        } catch (e) {}
+                        return ret;
+                    };
+                });
+            } catch (e) {}
+        });
+        L("[+] NativeWrapper partial hooked");
+    } catch (e) { L("[E] NativeWrapper: " + e); }
+
+    // ── 末段(200s): 被动数据已入袋, 直调 reportR1 尝试触发 r1 构造(即使崩也保住前面数据) ──
+    setTimeout(function() {
+        Java.perform(function() {
+            try {
+                if (KI_REPORT === null) { L("[KI_LATE] no KI class"); return; }
+                var tried = false;
+                Java.choose("com.qidian.QDReader.component.retrofit.QDRequestAddKnobsInterceptor", {
+                    onMatch: function(inst) {
+                        L("[KI_LATE] live instance found: " + inst);
+                        KI_REPORT.reportR1.overloads.forEach(function(ov) {
+                            if (tried) return;
+                            tried = true;
+                            try {
+                                var n = ov.argumentTypes.length;
+                                L("[KI_LATE] reportR1 arity=" + n + " sig=(" + ov.argumentTypes.map(function(t) { return t.className; }).join(",") + ")");
+                                var ret;
+                                if (n === 0) ret = ov.call(inst);
+                                else if (n === 1) ret = ov.call(inst, "https://druidv6.if.qidian.com/argus/api/v3/client/r1");
+                                else ret = ov.call(inst, "https://druidv6.if.qidian.com/argus/api/v3/client/r1", null);
+                                L("[KI_LATE_R1] ret=" + ret);
+                            } catch (e) { L("[KI_LATE_R1_ERR] " + e); }
+                        });
+                    },
+                    onComplete: function() { L("[KI_LATE] choose done, tried=" + tried); }
+                });
+            } catch (e) { L("[KI_LATE_ERR] " + e); }
+        });
+    }, 200000);
 
     // ── AttributionParamsBuilder 只读探测 ──
     try {
