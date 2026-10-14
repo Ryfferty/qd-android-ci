@@ -230,6 +230,14 @@ class Oracle:
     def stat(self):
         return self.exp.stat()
 
+    def setquiet(self, q):
+        """hook静默开关(门控重dump降App主线程负载 — 38563552056 ANR根因); 旧hook无此export则忽略"""
+        try:
+            return self._call_rpc('setquiet', bool(q))
+        except Exception as e:
+            L('[ORACLE] setquiet不可用(旧hook?): %s' % str(e)[:80])
+            return None
+
     def geth(self, url, method, body):
         """body: None(GET) / str(POST表单体原文, 可为'')。返回oracle Map dict。"""
         r = self._call_rpc('geth', url, method, body)
@@ -443,6 +451,13 @@ def argus_call(oracle, dev, sess, name, method, url, params=None, form=None,
         for k in ('cecelia', 'gorgon', 'borgus'):   # ★全套真风控头 verbatim
             if m.get(k):
                 h[k] = m[k]
+        if 'gorgon' not in h:   # ★App重启后风控SDK未再激活时gorgon空 → GORGON_480常量兜底
+            try:                #   (F实证: 活App现算值==GORGON_480逐字节相同, 构建级常量)
+                from qdsign_gen import GORGON_480
+                h['gorgon'] = GORGON_480
+                entry['gorgon_fallback_const'] = True
+            except Exception:
+                pass
         entry['headers_masked'] = mask_headers(h)
         entry['oracle_map_keys'] = sorted(m.keys())
     except Exception as e:
@@ -454,7 +469,7 @@ def argus_call(oracle, dev, sess, name, method, url, params=None, form=None,
     raw, code = send(full_url, method, body_bytes, h)
     entry['http_code'] = code
     text = raw.decode('utf-8', 'replace')
-    entry['response'] = text[:20000]
+    entry['response'] = text[:200000]   # ★getconf响应>20KB, 2万字符截断会砍JSON致Freshman解析失败(38563552056)
     try:
         j = json.loads(text)
         entry['Result'] = j.get('Result') if 'Result' in j else j.get('code')
@@ -686,7 +701,8 @@ def do_user_login(oracle, dev, ywguid, ywkey, phase='born'):
 def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
     """扫码授权后: user/login → 出生即判 → 带标即claim → 终判复查。返回summary dict"""
     chain = {'phase': phase, 'steps': []}
-    # 0. oracle真头确认成熟(扫码等待期App可能死过, 先复活+重等)
+    # 0. 链路期恢复hook重dump(收sn/geth证据) + oracle真头确认成熟(等待期App可能死过, 先复活+重等)
+    oracle.setquiet(False)
     wait_headers_ready(oracle, 180, label=phase.upper() + '-PRE')
     # 1. user/login
     login = do_user_login(oracle, dev, ywguid, ywkey, phase=phase)
@@ -946,9 +962,11 @@ def main():
         SUMMARY['notes'].append('qimei36 missing at smoke time')
 
     # Phase 2-3: QR出生+轮询 (full=真等25min; verify=短窗+旧码注入)
-    # ★从现在起UI线程进静默模式(只守前台不点不滑 — 38560808112 MainGroupActivity ANR死教训)
+    # ★从现在起UI线程进静默模式(只守前台不点不滑) + hook重dump门控 — 双静默防ANR
+    #   (38560808112/38563552056实证: 乱点与hook重dump都会拖死App主线程→ANR)
     QUIET.set()
-    L('════ Phase 2-3: QR出生(scanQRCode) → 轮询scanQRCodeLogin(窗口%ds, UI已切静默) ════' % QR_WAIT)
+    oracle.setquiet(True)
+    L('════ Phase 2-3: QR出生(scanQRCode) → 轮询scanQRCodeLogin(窗口%ds, UI+hook已切静默) ════' % QR_WAIT)
     stale_test = (MODE == 'verify')
     creds, qstats = qr_wait_loop(oracle, dev, QR_WAIT, stale_test=stale_test)
     SUMMARY['qr'] = {k: qstats[k] for k in ('gens', 'polls', 'status_seen', 'regens_expired',
