@@ -76,9 +76,11 @@ function L(s) { console.log(s); }
         try { refreshFakeMaps(); } catch (e) { L("[SHIELD_ERR] maps init: " + e); }
         setInterval(function() { try { refreshFakeMaps(); } catch (e) {} }, 1000);
 
-        // ① exit/_exit/abort → 吞掉并让自杀线程沉睡30s (run4实证: 检测线程会500次/秒重试exit, 沉睡降负载)
-        var fnc_usleep = null;
+        // ① exit/_exit/abort → 吞掉; 非主线程沉睡30s降检测线程负载, 主线程直接返回保响应
+        //   (run5教训: 主线程被沉睡→ANR→ActivityManager SIGKILL; tid==pid 即主线程)
+        var fnc_usleep = null, fnc_gettid = null;
         try { fnc_usleep = new NativeFunction(Module.findExportByName(null, "usleep"), 'void', ['uint64']); } catch (e) {}
+        try { fnc_gettid = new NativeFunction(Module.findExportByName(null, "gettid"), 'int', []); } catch (e) {}
         ["exit", "_exit", "abort"].forEach(function(fn) {
             try {
                 var p = Module.findExportByName(null, fn);
@@ -86,7 +88,9 @@ function L(s) { console.log(s); }
                 Interceptor.replace(p, new NativeCallback(function(a) {
                     SHIELD.exit++;
                     if (SHIELD.exit <= 10 || SHIELD.exit % 1000 === 0) L("[SHIELD] blocked " + fn + "(" + a + ") #" + SHIELD.exit);
-                    try { if (fnc_usleep) fnc_usleep(30000000); } catch (e) {}
+                    try {
+                        if (fnc_usleep && fnc_gettid && fnc_gettid() !== mypid) fnc_usleep(30000000);
+                    } catch (e) {}
                 }, 'void', ['int']));
             } catch (e) {}
         });

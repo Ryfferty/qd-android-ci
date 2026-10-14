@@ -85,8 +85,8 @@ jobs:
           adb -s $B logcat -c 2>/dev/null
           (timeout 480 adb -s $B logcat -v time > /tmp/logcat.txt 2>&1 &)
 
-          # ★ 两段式: 第一遍冷启动跑~110s(ostar REGISTER/qimei签发/风控状态持久化, run2实证qv1已写)后强停;
-          #   第二遍 = 有状态启动(is_first=false, 同参考抓包设备条件) → r1爆发/qimei即时激活 → 带盾hook全覆盖
+          # ★ 单次启动 + 早注入 + UI推进: attach后由采集循环持续 uiautomator dump→tap tvSkip(跳过登录/引导,
+          #   run5实证: 不跳过登录卡死在login屏→零argus主流量; tvSkip@[24,51][60,87]在登录屏左上角)
           adb -s $B shell "am start -n $APP/.ui.activity.SplashActivity" >/dev/null 2>&1
           T0=$(date +%s)
           STABLE_PID=""
@@ -96,7 +96,7 @@ jobs:
             if [ -n "$P" ]; then
               sleep 5
               P2=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')
-              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then STABLE_PID=$P; echo "Launch1 stable PID=$STABLE_PID"; break; fi
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then STABLE_PID=$P; echo "App stable PID=$STABLE_PID"; break; fi
             fi
             timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml" >/dev/null 2>&1
             timeout 15 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
@@ -104,40 +104,10 @@ jobs:
             [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; echo "CONSENT_TAP $XY"; }
           done
           [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
-          # 冷启动自然跑110s (期间轻tap推进引导页)
-          LAUNCH1_END=$(( $(date +%s) + 110 ))
-          TI=0
-          TAPS="360 580|360 1100|360 1100|540 1100|SWIPE|360 700|180 1100|360 580"
-          IFS='|' read -ra TAPARR <<< "$TAPS"
-          while [ "$(date +%s)" -lt "$LAUNCH1_END" ]; do
-            sleep 12
-            T=${TAPARR[$TI]}; TI=$(( (TI+1) % ${#TAPARR[@]} ))
-            if [ "$T" = "SWIPE" ]; then adb -s $B shell "input swipe 360 900 360 300 400" >/dev/null 2>&1
-            else adb -s $B shell "input tap $T" >/dev/null 2>&1; fi
-          done
-          echo "Launch1 done age=$(( $(date +%s) - T0 ))s, force-stop for state-persisted relaunch"
-          adb -s $B shell "am force-stop $APP"
-          sleep 5
 
-          # ═══ 第二遍: 有状态启动 + 盾hook全覆盖 ═══
-          adb -s $B shell "am start -n $APP/.ui.activity.SplashActivity" >/dev/null 2>&1
-          T1=$(date +%s)
-          STABLE_PID=""
-          for i in $(seq 1 15); do
-            sleep 3
-            P=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')
-            if [ -n "$P" ]; then
-              sleep 5
-              P2=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')
-              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then STABLE_PID=$P; break; fi
-            fi
-          done
-          [ -z "$STABLE_PID" ] && { echo "NO_APP_L2"; exit 0; }
-          echo "Launch2 PID=$STABLE_PID (age $(( $(date +%s) - T1 ))s)"
-
-          # 就绪: Launch2稳定即注入(v2脚本带反检测盾, attach后~100ms生效, 早注入=全覆盖qimei激活/r1爆发)
+          # 就绪: App稳定即注入(带反检测盾, attach后~100ms生效, 早注入=全覆盖登录跳过→getconf→r1爆发)
           # run2实证: T+15 attach可正常工作; run3实证完全初始化的App在attach后1-5s exit(0)自杀 → 盾解决
-          echo "Launch2 attach age: $(( $(date +%s) - T1 ))s"
+          echo "App age at frida attach: $(( $(date +%s) - T0 ))s"
 
           # 此刻启动 frida-server (自定义端口14771, 避开27042默认端口扫描; fs运行本身无害=run2实证)
           adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
@@ -159,12 +129,23 @@ jobs:
             ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $CUR_PID -l hook_collect_cecelia.js >> /tmp/collect.log 2>&1 ) &
             FJOB=$!
             while [ "$(date +%s)" -lt "$SESS_END" ]; do
-              sleep 15
-              T=${TAPARR[$TI]}; TI=$(( (TI+1) % ${#TAPARR[@]} ))
-              if [ "$T" = "SWIPE" ]; then
-                adb -s $B shell "input swipe 360 900 360 300 400" >/dev/null 2>&1
+              sleep 12
+              # UI推进: dump后优先点 tvSkip(跳过登录/引导) / btnAgree; 都没有才做常规保活tap
+              timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml" >/dev/null 2>&1
+              timeout 15 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+              SKIPXY=$(python3 tap_id.py /tmp/u.xml tvSkip 2>/dev/null | head -1)
+              AGRXY=$(python3 tap_consent.py /tmp/u.xml 2>/dev/null | head -1)
+              if [ -n "$SKIPXY" ]; then
+                adb -s $B shell "input tap $SKIPXY"; echo "SKIP_TAP $SKIPXY"
+              elif [ -n "$AGRXY" ]; then
+                adb -s $B shell "input tap $AGRXY"; echo "CONSENT_TAP $AGRXY"
               else
-                adb -s $B shell "input tap $T" >/dev/null 2>&1
+                T=${TAPARR[$TI]}; TI=$(( (TI+1) % ${#TAPARR[@]} ))
+                if [ "$T" = "SWIPE" ]; then
+                  adb -s $B shell "input swipe 360 900 360 300 400" >/dev/null 2>&1
+                else
+                  adb -s $B shell "input tap $T" >/dev/null 2>&1
+                fi
               fi
               NOWPID=$(timeout 8 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')
               if [ -z "$NOWPID" ]; then sleep 6; NOWPID=$(timeout 8 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}'); fi
@@ -186,7 +167,7 @@ jobs:
             kill $FJOB 2>/dev/null
             sleep 2
           done
-          echo "Collection done, launch2 age: $(( $(date +%s) - T1 ))s, pid=$(adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')"
+          echo "Collection done, app age: $(( $(date +%s) - T0 ))s, pid=$(adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')"
 
           # App私有目录设备侧材料 (shared_prefs/mmkv/qv1)
           adb -s $B exec-out "tar -c -C /data/data/$APP shared_prefs" > /tmp/app_prefs.tar 2>/dev/null
