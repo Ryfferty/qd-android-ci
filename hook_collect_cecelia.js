@@ -1,27 +1,137 @@
-// hook_collect_cecelia.js — redroid 真机 cecelia/gorgon/r1-i-r/libknobs密钥 被动采集 (子代理E, 2026-10-14)
+// hook_collect_cecelia.js — redroid 真机 cecelia/gorgon/r1-i-r/libknobs密钥 被动采集 v2 (子代理E, 2026-10-14)
 //
-// 模式: 纯被动(零直调!)。注入后只挂 Interceptor, 让 App 自己跑完 ostar REGISTER/qimei 签发/风控材料生成,
-//       自然网络请求按自身时序发生, hook 只记录。 (上次 getH 直调返回空 cecelia/gorgon = 调太早, 故本脚本不直调)
-//
-// 采集面:
-//   [GETH]      FockUtil.getH 所有自然调用: (url,method,body) → 完整返回 Map (cecelia/gorgon/borgus/QDSign/QDInfo/tstamp/sora/ibex...)
-//   [OKHTTP]    okhttp3.Request$Builder.build() 出口: 最终请求头+体 (qidian/yuewen/argus 域)
-//   [R1REQ]     同上, 但 url 含 /client/r1 → i/r/o16/o36 明文表单体
-//   [FORM_ADD]  okhttp3.FormBody$Builder.add: i/r/o16/o36/q16/q36/runMode 等字段构造现场
-//   [KNOBS_*]   libknobs.so(=q480内md5 267448d2…, 与RECON分析件逐字节同):
+// v2 新增: [0° 反检测盾] — run2/run3实证: 完全初始化的App在frida attach后1-5s内 exit(0) 自杀(logcat
+//   "Process ... exited cleanly (0)", 非崩溃)。盾: ①libc exit/_exit/abort替换成吞掉 ②kill/tgkill自杀信号归零
+//   ③/proc/*/maps|comm 打开重定向到假文件(剔除frida痕迹, 落app私有目录) ④Java System.exit/Runtime.exit/
+//   killProcess拦截。盾在脚本最前面(attach后~100ms内生效), 之后App全自然初始化(qimei激活/r1爆发)全程被hook。
+// 采集面(纯被动, 零直调):
+//   [GETH]      FockUtil.getH 自然调用 (url,method,body) → 完整返回 Map
+//   [OKHTTP]    okhttp3.Request$Builder.build() 出口的最终请求头+体 (qidian/yuewen/argus 域)
+//   [R1REQ]     url 含 /client/r1 → i/r/o16/o36 明文表单体
+//   [FORM_ADD]  FormBody$Builder.add: i/r/o16/o36/q16/q36/runMode…
+//   [KNOBS_*]   libknobs.so (q480, md5=267448d2…, 符号=RECON分析件核对):
 //                 knobs_45543224(0x103e0)=SetA密钥扩展  knobs_40971283(0x126c4)=SetB密钥扩展(key入参即AES密钥)
-//                 knobs_58940235(0x1201c)=通用加密器(input,len,key,&outlen)
-//                 knobs_96145783(0x13db4)=CBC  knobs_12480967(0x140ac)=CFB-128  knobs_29716380(0x14188)=CFB-NEON  knobs_87039164(0x1427c)=CTR
-//                 knobs_70861349(0x3159c)=192B .bss 密钥材料(周期dump, 运行时填充)
-//               (v7a偏移已按arm64符号换算核对: readelf dynsym 实测, 符号名跨ABI一致, 故优先按符号名解析)
-//   [APB]       AttributionParamsBuilder 可达性探测(只读反射, 不替换实现, 避免干扰r1)
-//
-// 密钥纪律: 全部材料只落 console.log → /tmp/collect.log (artifact), 汇总只报 hash/形态。
+//                 knobs_58940235(0x1201c)=通用加密器  knobs_96145783(0x13db4)=CBC  knobs_12480967(0x140ac)=CFB-128
+//                 knobs_29716380(0x14188)=CFB-NEON  knobs_87039164(0x1427c)=CTR  knobs_70861349(0x3159c)=192B bss
+//   [APB]       AttributionParamsBuilder 只读探测
+// 密钥纪律: 材料只落 console.log → collect.log(artifact), 汇总只报 hash/形态。
 
 var STAT = { geth: 0, geth_cecelia: 0, geth_gorgon: 0, http: 0, r1: 0, form: 0, knobs: 0, bss: 0 };
 var MAX = { geth: 200, http: 300, knobs: 900, form: 600 };
+var SHIELD = { exit: 0, abort: 0, kill: 0, maps: 0, comm: 0, jexit: 0 };
 
 function L(s) { console.log(s); }
+
+// ═══ 0° 反检测盾 (最先执行) ═══
+(function installShield() {
+    try {
+        var mypid = Process.id;
+        // 假文件路径: app私有目录(同uid可写, 壳可读)
+        var FAKE_MAPS_PATH = "/data/data/com.qidian.QDReader/.cfgm";
+        var FAKE_COMM_PATH = "/data/data/com.qidian.QDReader/.cfgc";
+        var FAKE_MAPS = Memory.allocUtf8String(FAKE_MAPS_PATH);
+        var FAKE_COMM = Memory.allocUtf8String(FAKE_COMM_PATH);
+
+        var fnc_openat = new NativeFunction(Module.findExportByName(null, "openat"), 'int', ['int', 'pointer', 'int', 'int']);
+        var fnc_read = new NativeFunction(Module.findExportByName(null, "read"), 'int', ['int', 'pointer', 'int']);
+        var fnc_close = new NativeFunction(Module.findExportByName(null, "close"), 'int', ['int']);
+
+        var INREFRESH = false;
+        function readReal(path) {
+            var p = Memory.allocUtf8String(path);
+            var fd = fnc_openat(-100, p, 0, 0);
+            if (fd < 0) return "";
+            var BUFSZ = 131072;
+            var buf = Memory.alloc(BUFSZ);
+            var parts = [], n;
+            while (true) {
+                n = fnc_read(fd, buf, BUFSZ);
+                if (n <= 0) break;
+                parts.push(buf.readUtf8String(n));
+            }
+            fnc_close(fd);
+            return parts.join("");
+        }
+        function filterMaps(s) {
+            return s.split("\n").filter(function(l) {
+                if (l.indexOf("frida") >= 0) return false;
+                if (l.indexOf("gum-js") >= 0 || l.indexOf("gmain") >= 0) return false;
+                if (l.indexOf("gadget") >= 0 || l.indexOf("linjector") >= 0) return false;
+                return true;
+            }).join("\n");
+        }
+        function writeFake(path, content) {
+            var f = new File(path, "w");
+            f.write(content);
+            f.close();
+        }
+        function refreshFakeMaps() {
+            if (INREFRESH) return;
+            INREFRESH = true;
+            try { writeFake(FAKE_MAPS_PATH, filterMaps(readReal("/proc/self/maps"))); } catch (e) {}
+            INREFRESH = false;
+        }
+        // 假comm: 遮蔽 gum-js-loop/gmain/pool-frida 线程名
+        try { writeFake(FAKE_COMM_PATH, "Thread-42\n"); } catch (e) { L("[SHIELD_ERR] comm init: " + e); }
+        try { refreshFakeMaps(); } catch (e) { L("[SHIELD_ERR] maps init: " + e); }
+        setInterval(function() { try { refreshFakeMaps(); } catch (e) {} }, 1000);
+
+        // ① exit/_exit/abort → 吞掉 (run2/3的死法=exit(0))
+        ["exit", "_exit", "abort"].forEach(function(fn) {
+            try {
+                var p = Module.findExportByName(null, fn);
+                if (!p) return;
+                Interceptor.replace(p, new NativeCallback(function(a) {
+                    SHIELD.exit++;
+                    if (SHIELD.exit <= 10 || SHIELD.exit % 50 === 0) L("[SHIELD] blocked " + fn + "(" + a + ") #" + SHIELD.exit);
+                }, 'void', ['int']));
+            } catch (e) {}
+        });
+        // ② kill/tgkill/raise/pthread_kill 自杀信号 → 归零
+        [["kill", 0, 1], ["tgkill", 2, 3], ["raise", 0, 0], ["pthread_kill", 1, 1]].forEach(function(spec) {
+            try {
+                var p = Module.findExportByName(null, spec[0]);
+                if (!p) return;
+                Interceptor.attach(p, {
+                    onEnter: function(args) {
+                        try {
+                            var sig = args[spec[2]].toInt32();
+                            if (sig === 9 || sig === 15 || sig === 6 || sig === 4 || sig === 11) {
+                                args[spec[2]] = ptr(0);
+                                SHIELD.kill++;
+                                if (SHIELD.kill <= 10 || SHIELD.kill % 50 === 0) L("[SHIELD] neutralized " + spec[0] + " sig=" + sig + " #" + SHIELD.kill);
+                            }
+                        } catch (e) {}
+                    }
+                });
+            } catch (e) {}
+        });
+        // ③ /proc/*/maps|comm 打开重定向 (open/openat/fopen 三入口)
+        function pathHook(idx) {
+            return {
+                onEnter: function(args) {
+                    if (INREFRESH) return;
+                    try {
+                        var p = args[idx].readCString();
+                        if (p === null || p.indexOf("/proc/") !== 0) return;
+                        if (p.indexOf("/maps") >= 0 || p.indexOf("/smaps") >= 0) {
+                            args[idx] = FAKE_MAPS; SHIELD.maps++;
+                        } else if (p.indexOf("/comm") >= 0) {
+                            args[idx] = FAKE_COMM; SHIELD.comm++;
+                        }
+                    } catch (e) {}
+                }
+            };
+        }
+        [["open", 0], ["openat", 1], ["fopen", 0], ["fopen64", 0]].forEach(function(spec) {
+            try {
+                var p = Module.findExportByName(null, spec[0]);
+                if (p) Interceptor.attach(p, pathHook(spec[1]));
+            } catch (e) {}
+        });
+        L("[SHIELD] armed (exit/kill/procfs) pid=" + mypid);
+    } catch (e) { L("[SHIELD_ERR] " + e); }
+})();
 
 function hexlify(p, n) {
     try {
@@ -40,7 +150,7 @@ function asciify(p, n) {
     } catch (e) { return "<bad>"; }
 }
 
-// ═══ ① libknobs native hooks (OBS SDK 懒加载 → 轮询等模块出现) ═══
+// ═══ ① libknobs native hooks (OBS SDK 懒加载 → 轮询) ═══
 var KNOBS_HOOKED = false;
 var KDEDUPE = {};
 function seenOnce(map, key) {
@@ -56,7 +166,7 @@ function hookKnobs() {
     KNOBS_HOOKED = true;
     L("[KNOBS] libknobs.so base=" + mod.base + " size=" + mod.size);
 
-    // [符号名, arm64文件偏移(核对值), 标签, 是否按入参去重(仅密钥扩展类)]
+    // [符号名, arm64文件偏移(readelf核对), 标签, 按入参去重(仅密钥扩展)]
     var SYMS = [
         ["knobs_45543224", 0x103e0, "SETA_KEYEXP", true],
         ["knobs_40971283", 0x126c4, "SETB_KEYEXP", true],
@@ -80,7 +190,7 @@ function hookKnobs() {
                         mems.push(hexlify(args[i], 48));
                         ascs.push(asciify(args[i], 48));
                     }
-                    if (s[3]) { // 密钥扩展按(a0,a1,a2前缀)去重: 同一key反复扩展只记首次
+                    if (s[3]) {
                         var dkey = s[2] + "|" + mems[0].substring(0, 32) + "|" + mems[1].substring(0, 96) + "|" + mems[2].substring(0, 32);
                         if (!seenOnce(KDEDUPE, dkey)) return;
                     }
@@ -105,7 +215,7 @@ function hookKnobs() {
         } catch (e) { L("[KNOBS_HOOKFAIL] " + s[0] + ": " + e); }
     });
 
-    // 192B .bss 密钥材料对象 周期dump (静态为零, 运行时填充)
+    // 192B .bss 密钥材料 周期dump
     try {
         var bss = Module.findExportByName("libknobs.so", "knobs_70861349");
         if (!bss) bss = mod.base.add(0x3159c);
@@ -119,7 +229,7 @@ function hookKnobs() {
                 BSSSEEN[h] = 1; STAT.bss++;
                 L("[KNOBS_BSS] t=" + (bssTick * 10) + "s " + h);
             }
-            if (bssTick >= 18) clearInterval(bssTimer);
+            if (bssTick >= 24) clearInterval(bssTimer);
         }, 10000);
         L("[KNOBS] bss192 poller started @ " + bss);
     } catch (e) { L("[KNOBS_BSSFAIL] " + e); }
@@ -128,7 +238,7 @@ var knobsPoll = setInterval(function() {
     hookKnobs();
     if (KNOBS_HOOKED) clearInterval(knobsPoll);
 }, 1000);
-hookKnobs(); // 注入时可能已加载
+hookKnobs();
 
 // ═══ ② Java 层被动 hook ═══
 Java.perform(function() {
@@ -141,6 +251,17 @@ Java.perform(function() {
         }
         L("[MODS] " + names.join(", "));
     } catch (e) { L("[E] mods: " + e); }
+
+    // Java级自杀拦截
+    try {
+        var Sys = Java.use("java.lang.System");
+        Sys.exit.implementation = function(c) { SHIELD.jexit++; L("[SHIELD] blocked System.exit(" + c + ") #" + SHIELD.jexit); };
+        var Rt = Java.use("java.lang.Runtime");
+        Rt.exit.implementation = function(c) { SHIELD.jexit++; L("[SHIELD] blocked Runtime.exit(" + c + ") #" + SHIELD.jexit); };
+        var AOProc = Java.use("android.os.Process");
+        AOProc.killProcess.implementation = function(pid) { SHIELD.jexit++; L("[SHIELD] blocked killProcess(" + pid + ")"); };
+        L("[SHIELD] java exit hooks armed");
+    } catch (e) { L("[SHIELD_JAVA_ERR] " + e); }
 
     var JBuffer = null;
     try { JBuffer = Java.use("okio.Buffer"); } catch (e) { L("[E] okio.Buffer: " + e); }
@@ -178,7 +299,7 @@ Java.perform(function() {
         }
     }
 
-    // ── FockUtil.getH 自然调用的进出口 (cecelia/gorgon/borgus/QDSign/QDInfo 真值) ──
+    // ── FockUtil.getH 自然调用的进出口 ──
     try {
         var FockUtil = Java.use("com.qidian.QDReader.component.util.FockUtil");
         L("[+] FockUtil resolved");
@@ -214,7 +335,7 @@ Java.perform(function() {
                 L("[+] getH hooked sig=(" + sig + ")");
             } catch (e) { L("[E] getH overload: " + e); }
         });
-        // addRetrofitH(okhttp3.Request) → Request: 请求对象加头现场 (第二视角)
+        // addRetrofitH: 请求对象加头现场(第二视角)
         try {
             FockUtil.addRetrofitH.overloads.forEach(function(ov) {
                 ov.implementation = function() {
@@ -235,7 +356,7 @@ Java.perform(function() {
         } catch (e) { L("[E] addRetrofitH: " + e); }
     } catch (e) { L("[E] FockUtil: " + e); }
 
-    // ── okhttp 最终请求 (Request$Builder.build 出口) — r1 的 i/r 原文 + 全部风控头最终形态 ──
+    // ── okhttp 最终请求 (r1 的 i/r 原文 + 全部风控头最终形态) ──
     try {
         var RQB = Java.use("okhttp3.Request$Builder");
         RQB.build.implementation = function() {
@@ -262,7 +383,7 @@ Java.perform(function() {
         L("[+] Request$Builder.build hooked");
     } catch (e) { L("[E] Request$Builder: " + e); }
 
-    // ── FormBody 字段构造现场 (i/r/o16/o36 兜底视角) ──
+    // ── FormBody 字段构造现场 (i/r/o16/o36 兜底) ──
     try {
         var FBB = Java.use("okhttp3.FormBody$Builder");
         FBB.add.overloads.forEach(function(ov) {
@@ -283,7 +404,7 @@ Java.perform(function() {
         L("[+] FormBody$Builder.add hooked");
     } catch (e) { L("[E] FormBody$Builder: " + e); }
 
-    // ── AttributionParamsBuilder 只读探测 (不替换实现, 不干扰r1) ──
+    // ── AttributionParamsBuilder 只读探测 ──
     try {
         var APB = Java.use("com.qidian.QDReader.component.api.AttributionParamsBuilder");
         var ms = APB.class.getDeclaredMethods();
@@ -292,11 +413,11 @@ Java.perform(function() {
         L("[APB] reachable, declared methods=" + ms.length + "\n  " + sigs.join("\n  "));
     } catch (e) { L("[APB] not reachable: " + e); }
 
-    // ── 心跳 ──
     setInterval(function() {
         L("[HB] geth=" + STAT.geth + " cecelia=" + STAT.geth_cecelia + " gorgon=" + STAT.geth_gorgon +
           " http=" + STAT.http + " r1=" + STAT.r1 + " form=" + STAT.form + " knobs=" + STAT.knobs + " bss=" + STAT.bss +
-          " knobs_hooked=" + KNOBS_HOOKED);
+          " knobs_hooked=" + KNOBS_HOOKED + " shield(exit=" + SHIELD.exit + ",kill=" + SHIELD.kill + ",maps=" + SHIELD.maps +
+          ",comm=" + SHIELD.comm + ",jexit=" + SHIELD.jexit + ")");
     }, 15000);
-    L("[READY] passive collection armed");
+    L("[READY] passive collection armed (v2 shield)");
 });

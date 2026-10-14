@@ -107,27 +107,20 @@ jobs:
           done
           [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
 
-          # 就绪等待: 固定等App自然跑到age≥55s再启frida-server (run1实证T+55安全存活176s;
-          # run2教训: T+8就attach→20s后壳自杀重启(pid 1870→2672), mmkv尺寸判据无效=预分配64KB必>500)
+          # 就绪: App稳定即注入(v2脚本带反检测盾, attach后~100ms生效, 早注入=全覆盖qimei激活/r1爆发)
+          # run2实证: T+15 attach可正常工作; run3实证完全初始化的App在attach后1-5s exit(0)自杀 → 盾解决
           # 期间做同意弹窗兜底点击(文件预写失效时)
-          while [ $(( $(date +%s) - T0 )) -lt 55 ]; do
-            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml" >/dev/null 2>&1
-            timeout 15 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
-            XY=$(python3 tap_consent.py /tmp/u.xml 2>/dev/null | head -1)
-            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; echo "CONSENT_TAP $XY"; }
-            sleep 8
-          done
-          echo "App age at frida-server start: $(( $(date +%s) - T0 ))s"
+          echo "App age at frida attach: $(( $(date +%s) - T0 ))s"
 
-          # 此刻才启动 frida-server (App已稳定 — geth模板反检测模式)
-          adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          # 此刻启动 frida-server (自定义端口14771, 避开27042默认端口扫描; fs运行本身无害=run2实证)
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
           sleep 8
-          adb -s $B forward tcp:27042 tcp:27042
+          adb -s $B forward tcp:14771 tcp:14771
 
-          # 被动采集 170s: stdin保持打开让frida存活; pid守卫 — 若壳杀进程重启, 等新进程过40s启动检测期后重挂
+          # 被动采集 200s: stdin保持打开让frida存活; pid守卫 — 若壳杀进程重启, 等新进程过40s后重挂
           # (重启进程会重跑完整网络初始化, 重挂后仍能收到它的getconf/r1爆发)
           : > /tmp/collect.log
-          SESS_END=$(( $(date +%s) + 170 ))
+          SESS_END=$(( $(date +%s) + 200 ))
           CUR_PID=$STABLE_PID
           TAPS="360 580|360 1100|180 1100|360 1100|540 1100|SWIPE|360 700|360 1100|360 580"
           IFS='|' read -ra TAPARR <<< "$TAPS"
@@ -136,7 +129,7 @@ jobs:
             LEFT=$(( SESS_END - $(date +%s) ))
             [ $LEFT -lt 12 ] && break
             echo "[SESS] frida attach pid=$CUR_PID left=${LEFT}s"
-            ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:27042 -p $CUR_PID -l hook_collect_cecelia.js >> /tmp/collect.log 2>&1 ) &
+            ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $CUR_PID -l hook_collect_cecelia.js >> /tmp/collect.log 2>&1 ) &
             FJOB=$!
             while [ "$(date +%s)" -lt "$SESS_END" ]; do
               sleep 15
@@ -150,7 +143,10 @@ jobs:
               if [ -z "$NOWPID" ]; then sleep 6; NOWPID=$(timeout 8 adb -s $B shell pidof $APP | tr -d '\r'); fi
               if [ -n "$NOWPID" ] && [ "$NOWPID" != "$CUR_PID" ]; then
                 echo "[SESS] pid $CUR_PID -> $NOWPID (anti-frida restart): kill frida, settle 40s, reattach"
-                pkill -f "frida -H" 2>/dev/null; sleep 3
+                pkill -f "frida -H" 2>/dev/null
+                pkill -P $FJOB 2>/dev/null
+                kill $FJOB 2>/dev/null
+                sleep 3
                 CUR_PID=$NOWPID
                 REBIRTH=$(date +%s)
                 while [ $(( $(date +%s) - REBIRTH )) -lt 40 ] && [ "$(date +%s)" -lt "$SESS_END" ]; do sleep 5; done
@@ -158,7 +154,10 @@ jobs:
               fi
               [ -z "$NOWPID" ] && echo "APP_DIED at age $(( $(date +%s) - T0 ))s"
             done
-            wait $FJOB 2>/dev/null
+            pkill -f "frida -H" 2>/dev/null
+            pkill -P $FJOB 2>/dev/null
+            kill $FJOB 2>/dev/null
+            sleep 2
           done
           echo "Collection done, app age: $(( $(date +%s) - T0 ))s, pid=$(adb -s $B shell pidof $APP | tr -d '\r')"
 
