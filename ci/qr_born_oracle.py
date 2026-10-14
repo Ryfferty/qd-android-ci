@@ -133,6 +133,12 @@ class Oracle:
         pid = self.pidof()
         if pid:
             return pid
+        L('[ORACLE] App死亡 — force-stop清僵尸后重启')
+        try:
+            self.adb('shell', 'am', 'force-stop', APP, timeout=10)
+        except Exception:
+            pass
+        time.sleep(2)
         try:
             self.adb('shell', 'am', 'start', '-n', APP + '/.ui.activity.SplashActivity', timeout=10)
         except Exception:
@@ -146,25 +152,33 @@ class Oracle:
         return None
 
     def restart_frida_server(self):
-        L('[ORACLE] 重启frida-server...')
+        """fs-srv僵死(App ANR死后attach超时) → pkill -9硬杀+重启+重forward
+        (38560808112实证: 单次pkill不够, 僵尸fs-srv占端口时新fs-srv起不来→attach螺旋失败)"""
+        L('[ORACLE] 重启frida-server(硬)...')
         try:
-            self.adb('shell', 'pkill -f fs-srv', timeout=8)
+            self.adb('shell', 'pkill -9 -f fs-srv', timeout=8)
         except Exception:
             pass
-        time.sleep(2)
+        time.sleep(3)
         try:
             self.adb('shell', 'setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &', timeout=8)
         except Exception:
             pass
-        time.sleep(7)
+        time.sleep(12)
+        try:
+            r = self.adb('shell', 'pidof', 'fs-srv', timeout=8)
+            fs_pid = (r.stdout or '').strip()
+            L('[ORACLE] fs-srv pid=%s' % (fs_pid or '(未起!)'))
+        except Exception:
+            pass
         try:
             self.adb('forward', 'tcp:14771', 'tcp:14771', timeout=8)
         except Exception:
             pass
 
     def attach(self):
-        fs_restarted = False
-        for attempt in range(6):
+        fs_restarts = 0
+        for attempt in range(8):
             try:
                 pid = self.pidof()
                 if not pid:
@@ -188,9 +202,9 @@ class Oracle:
                 return True
             except Exception as e:
                 L('[ORACLE] attach err (attempt %d): %s' % (attempt, scrub(str(e))[:200]))
-                if attempt == 1 and not fs_restarted:
+                if attempt % 2 == 1 and fs_restarts < 4:   # ★每2次失败硬重启fs-srv(38560808112教训)
                     self.restart_frida_server()
-                    fs_restarted = True
+                    fs_restarts += 1
                 time.sleep(6)
         return False
 
@@ -247,11 +261,14 @@ class Oracle:
             raise RuntimeError('rpc.%s exception: %s' % (fn, box['e']))
         return box.get('r')
 
-# ───────────────────────── UI推进线程 (同oracle_verdict.py v3: 前台检测+BACK) ─────────────────────────
+# ───────────────────────── UI推进线程 (oracle_verdict.py v3 + H静默模式) ─────────────────────────
+# ★38560808112实证: 真头成熟后battery乱点会点开主页面重负载→MainGroupActivity ANR→App死→
+#   fs-srv僵死→attach螺旋失败。QR等待期设QUIET: 只守前台(非qd包→BACK), 不点不滑。
 TAPS = [(360, 580), (360, 1100), (180, 1100), (360, 350), (540, 1100), None,
         (360, 700), (360, 350), (360, 580), (360, 1100)]
 SKIP_IDS = ('tvSkip', 'ivSkip', 'btnAgree')
 SKIP_TEXTS = ('跳过', '立即体验', '开始使用', '同意并继续')
+QUIET = threading.Event()
 
 def _find_bounds(xml, id_frag=None, text=None):
     if id_frag:
@@ -284,6 +301,8 @@ def ui_thread(stop, oracle):
             if fg != '?' and 'com.qidian.QDReader' not in fg and 'mCurrentFocus' in fg:
                 oracle.adb('shell', 'input', 'keyevent', '4', timeout=8)
                 act = 'BACK(fg=%s)' % fg.split('u0')[0].strip()[-40:]
+            elif QUIET.is_set():
+                act = 'quiet(只守前台, 不点不滑)'
             else:
                 oracle.adb('shell', 'uiautomator', 'dump', '/sdcard/u.xml', timeout=15)
                 r = oracle.adb('shell', 'cat', '/sdcard/u.xml', timeout=15)
@@ -314,7 +333,7 @@ def ui_thread(stop, oracle):
                     act = 'dump空(%d)' % len(xml)
         except Exception as e:
             act = 'err:%s' % str(e)[:40]
-        if n % 4 == 1:
+        if n % 8 == 1:
             L('[UI] cycle#%d %s' % (n, act))
         stop.wait(11)
 
@@ -634,13 +653,14 @@ def load_dead_session():
     return {'guid': guid, 'key': key, 'cmfu': cmfu}
 
 # ───────────────────────── 出生链(扫码后半段) ─────────────────────────
-def do_user_login(oracle, dev, ywguid, ywkey):
+def do_user_login(oracle, dev, ywguid, ywkey, phase='born'):
     """user/login: b.e表单(bravev6), oracle真头FormBody姿势, 登录时刻匿名(f11=0/uid=0)"""
     sess = {'uid': '0', 'ywGuid': ywguid, 'ywKey': ywkey, 'cmfu': ''}
     e = argus_call(oracle, dev, sess, 'login', 'POST',
                    LOGIN_HOST + '/argus/api/v2/user/login',
                    form={'appId': '12', 'areaId': '30', 'ywguid': ywguid, 'ywkey': ywkey,
-                         'loginfrom': '0', 'fromSource': SRC, 'isFirstRegister': 'false'})
+                         'loginfrom': '0', 'fromSource': SRC, 'isFirstRegister': 'false'},
+                   phase=phase)
     out = {'entry': e}
     try:
         j = json.loads(e.get('response', '') or '{}')
@@ -669,7 +689,7 @@ def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
     # 0. oracle真头确认成熟(扫码等待期App可能死过, 先复活+重等)
     wait_headers_ready(oracle, 180, label=phase.upper() + '-PRE')
     # 1. user/login
-    login = do_user_login(oracle, dev, ywguid, ywkey)
+    login = do_user_login(oracle, dev, ywguid, ywkey, phase=phase)
     chain['login'] = {k: login.get(k) for k in ('Result', 'UserId', 'IsNewUser', 'RegisterTime')}
     chain['steps'].append('login')
     if login.get('Result') != 0 or not login.get('UserId'):
@@ -681,7 +701,7 @@ def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
     chain['sess_uid'] = uid
     # 2. 出生即判: getconf(Freshman) + limitfreepopup + safegetcontent + tips
     e1 = argus_call(oracle, dev, sess, 'getconf', 'POST', HOST + '/argus/api/v1/client/getconf',
-                    form={'localLabels': '', 'gender': '0'})
+                    form={'localLabels': '', 'gender': '0'}, phase=phase)
     try:
         fm = (json.loads(e1.get('response', '') or '{}').get('Data', {}) or {}).get('Freshman', {})
         chain['getconf_Freshman'] = {k: fm.get(k) for k in
@@ -692,7 +712,7 @@ def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
         chain['getconf_err'] = str(ex)[:100]
     chain['steps'].append('getconf')
     e2 = argus_call(oracle, dev, sess, 'limitfree', 'GET',
-                    HOST + '/argus/api/v1/freshman/limitfreepopup')
+                    HOST + '/argus/api/v1/freshman/limitfreepopup', phase=phase)
     chain['limitfree_Result'] = e2.get('Result')
     chain['steps'].append('limitfree')
     # safegetcontent两步(getkey→content, 真实bookId/chapterId)
@@ -701,19 +721,19 @@ def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
         key = str(((json.loads(
             argus_call(oracle, dev, sess, 'getkey', 'GET',
                        HOST + '/argus/api/v4/bookcontent/getkey',
-                       params={'bookId': BOOK_ID, 'ui': '0'}).get('response', '') or '{}')
+                       params={'bookId': BOOK_ID, 'ui': '0'}, phase=phase).get('response', '') or '{}')
             .get('Data', {}) or {}).get('Key', '')))
     except Exception as ex:
         L('[%s] getkey解析失败: %s' % (phase, str(ex)[:80]))
     e3 = argus_call(oracle, dev, sess, 'safeget', 'GET',
                     HOST + '/argus/api/v2/bookcontent/safegetcontent',
-                    params={'bookId': BOOK_ID, 'chapterId': CHAPTER_ID, 'Key': key, 'chapterPwd': ''})
+                    params={'bookId': BOOK_ID, 'chapterId': CHAPTER_ID, 'Key': key, 'chapterPwd': ''}, phase=phase)
     chain['safeget_Result'] = e3.get('Result')
     chain['steps'] += ['getkey', 'safeget']
     # tips → 真taskId
     tid = '0'
     et = argus_call(oracle, dev, sess, 'tips', 'GET',
-                    HOST + '/argus/api/v1/freshman/getreadingtaskprocesstips')
+                    HOST + '/argus/api/v1/freshman/getreadingtaskprocesstips', phase=phase)
     for pat in (r'"taskId"\s*:\s*"(\d+)"', r'"TaskId"\s*:\s*"(\d+)"',
                 r'"taskId"\s*:\s*(\d+)', r'"TaskId"\s*:\s*(\d+)'):
         mm = re.search(pat, et.get('response', '') or '')
@@ -727,7 +747,7 @@ def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
     n0 = int(time.time() * 1000)
     er = argus_call(oracle, dev, sess, 'rec', 'POST',
                     HOST + '/argus/api/v1/freshman/task/recFreshmanTask',
-                    form={'taskId': tid, 'startTime': str(n0), 'endTime': str(n0 + 30000)})
+                    form={'taskId': tid, 'startTime': str(n0), 'endTime': str(n0 + 30000)}, phase=phase)
     chain['rec_Result'] = er.get('Result')
     chain['steps'].append('rec')
     # 带标即claim (rec Result=0)
@@ -736,7 +756,7 @@ def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
                         HOST + '/argus/api/v2/freshman/task/rewardFreshmanTask',
                         form={'taskId': tid, 'mileStone': '-1', 'sessionKey': '', 'banId': '0',
                               'captchaTicket': '', 'captchaRandStr': '', 'challenge': '',
-                              'validate': '', 'seccode': ''})
+                              'validate': '', 'seccode': ''}, phase=phase)
         chain['claim_Result'] = ec.get('Result')
         chain['claim_Message'] = ec.get('Message', '')
         chain['claim_response_raw'] = (ec.get('response', '') or '')[:3000]
@@ -747,10 +767,10 @@ def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
         L('[%s] rec Result=%s 非带标 — 不claim' % (phase, er.get('Result')))
     # 终判复查: claim后limitfree/getconf/safeget对比
     e4 = argus_call(oracle, dev, sess, 'limitfree2', 'GET',
-                    HOST + '/argus/api/v1/freshman/limitfreepopup')
+                    HOST + '/argus/api/v1/freshman/limitfreepopup', phase=phase)
     chain['limitfree2_Result'] = e4.get('Result')
     e5 = argus_call(oracle, dev, sess, 'getconf2', 'POST', HOST + '/argus/api/v1/client/getconf',
-                    form={'localLabels': '', 'gender': '0'})
+                    form={'localLabels': '', 'gender': '0'}, phase=phase)
     try:
         fm2 = (json.loads(e5.get('response', '') or '{}').get('Data', {}) or {}).get('Freshman', {})
         chain['getconf2_Freshman'] = {k: fm2.get(k) for k in
@@ -763,13 +783,13 @@ def run_born_chain(oracle, dev, ywguid, ywkey, phase='born'):
         key2 = str(((json.loads(
             argus_call(oracle, dev, sess, 'getkey2', 'GET',
                        HOST + '/argus/api/v4/bookcontent/getkey',
-                       params={'bookId': BOOK_ID, 'ui': '0'}).get('response', '') or '{}')
+                       params={'bookId': BOOK_ID, 'ui': '0'}, phase=phase).get('response', '') or '{}')
             .get('Data', {}) or {}).get('Key', '')))
     except Exception:
         pass
     e6 = argus_call(oracle, dev, sess, 'safeget2', 'GET',
                     HOST + '/argus/api/v2/bookcontent/safegetcontent',
-                    params={'bookId': BOOK_ID, 'chapterId': CHAPTER_ID, 'Key': key2, 'chapterPwd': ''})
+                    params={'bookId': BOOK_ID, 'chapterId': CHAPTER_ID, 'Key': key2, 'chapterPwd': ''}, phase=phase)
     chain['safeget2_Result'] = e6.get('Result')
     chain['steps'] += ['limitfree2', 'getconf2', 'getkey2', 'safeget2']
     return chain
@@ -826,8 +846,8 @@ def qr_wait_loop(oracle, dev, deadline_s, stale_test=False):
             cur = None
             time.sleep(2)
             continue
-        # 会话过期 → 重新出码
-        if code != 0 or st == 3:
+        # 会话过期/未知会话 → 重新出码 (3=过期; 4=未知会话(38560808112旧码实测), 同样换码)
+        if code != 0 or st in (3, 4):
             life = time.time() - cur['gen_ts']
             stats['qr_lifetimes'].append(round(life, 1))
             stats['regens_expired'] += 1
@@ -852,12 +872,15 @@ def qr_wait_loop(oracle, dev, deadline_s, stale_test=False):
         if st not in (0, 1) and st != last_st:
             L('[POLL] scanStatus=%s (0待扫 1已扫 3过期 5成功)' % st)
         last_st = st
-        # 30s心跳: 重复[QR_URL](实时通道) + oracle存活检查(主线程内联, 避免并发RPC)
+        # 30s心跳: 重复[QR_URL](实时通道) + App/oracle存活检查(主线程内联, 避免并发RPC)
         if time.time() - last_hb > 30:
             last_hb = time.time()
             L('[QR] 心跳 t+%ds/%ds QR#%d scanStatus=%s | [QR_URL] %s' % (
                 time.time() - t0, deadline_s, stats['gens'], st, cur['url']))
             try:
+                if not oracle.pidof():
+                    L('[QR] 心跳: App无pid — 复活')
+                    oracle.ensure_app()
                 oracle.stat()
             except Exception:
                 L('[QR] 心跳: oracle stat失败 — 重挂')
@@ -923,7 +946,9 @@ def main():
         SUMMARY['notes'].append('qimei36 missing at smoke time')
 
     # Phase 2-3: QR出生+轮询 (full=真等25min; verify=短窗+旧码注入)
-    L('════ Phase 2-3: QR出生(scanQRCode) → 轮询scanQRCodeLogin(窗口%ds) ════' % QR_WAIT)
+    # ★从现在起UI线程进静默模式(只守前台不点不滑 — 38560808112 MainGroupActivity ANR死教训)
+    QUIET.set()
+    L('════ Phase 2-3: QR出生(scanQRCode) → 轮询scanQRCodeLogin(窗口%ds, UI已切静默) ════' % QR_WAIT)
     stale_test = (MODE == 'verify')
     creds, qstats = qr_wait_loop(oracle, dev, QR_WAIT, stale_test=stale_test)
     SUMMARY['qr'] = {k: qstats[k] for k in ('gens', 'polls', 'status_seen', 'regens_expired',
