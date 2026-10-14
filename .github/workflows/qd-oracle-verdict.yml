@@ -1,0 +1,140 @@
+name: qd-oracle-verdict
+# 子代理F 2026-10-14: 活App当风控头oracle — 带新人标账号(900074388329)的领取请求第一次带100%真风控头, 拿-10021终判
+# 基础: qd-collect-risk.yml 已验证模式 (redroid11 + q480 APK + 反检测盾 + frida 16.7.19 自定义端口14771)
+# 链路: attach hook_oracle.js(v7被动采集+Fock.sn输入捕获+rpc.geth) → 等qimei激活(自然[GETH] 2_ cecelia)
+#   → oracle冒烟(getconf直调geth) → 真头终判链9步(getconf→limitfree→tips→rec→reward→autoV2/V3→复查)
+#   → 合成头对照链9步(borgus_gen标准形态, 无cecelia/gorgon=纯协议出生条件) → 真头vs合成头Result对比
+# 凭据纪律: QD_BORN_SESSION(repo secret, base64(JSON))只在runner内存解码, 不echo不落文件;
+#   job log只打Result码/Message/响应体摘要; 头值只落artifact(/tmp/verdict/**, ywkey/CmfuToken已脱敏)
+# 判读: reward Result=0且Data非空=领取成功; -10021=风控仍拦; -100006=无权限
+on:
+  workflow_dispatch:
+
+jobs:
+  verdict:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup redroid + frida
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome 2>&1 | tail -1
+
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          adb -s localhost:5555 shell "echo BOOT_OK"
+
+          # frida-server 只下载推送, 不启动 (等App稳定后再启 — geth模板模式, v7实证)
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fs-server 2>/dev/null; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6; timeout 30 adb -s localhost:5555 wait-for-device || true
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+          echo "Setup complete"
+
+      - name: Install q480 + consent + launch app
+        run: |
+          set +e
+          B=localhost:5555
+          APP=com.qidian.QDReader
+
+          # q480 (7.9.480): libknobs.so md5=267448d26c43efb6cfddf269d14f865b 与RECON分析件逐字节同(v7实证)
+          curl -sSL --max-time 900 -o q480.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/q480.apk"
+          md5sum q480.apk
+          timeout 300 adb -s $B push q480.apk /data/local/tmp/q480.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q480.apk" 2>&1 | tail -1
+
+          # 预写隐私同意(qd-qimei-net同款, v7实证可让App走完整启动网络流; uid必须取对)
+          APP_UID=$(adb -s $B shell "stat -c '%u' /data/data/$APP" 2>/dev/null | tr -d '\r')
+          if [ -z "$APP_UID" ] || [ "$APP_UID" = "0" ] || [ "$APP_UID" -le 10000 ] 2>/dev/null; then
+            APP_UID=$(adb -s $B shell "cmd package list packages -U $APP" 2>/dev/null | tr -d '\r' | sed 's/.*uid://' | head -1)
+          fi
+          echo "app uid=$APP_UID"
+          adb -s $B shell "mkdir -p /data/data/$APP/shared_prefs"
+          adb -s $B shell "echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/$APP/shared_prefs/app_sp.xml"
+          if [ -n "$APP_UID" ] && [ "$APP_UID" -gt 10000 ] 2>/dev/null; then
+            adb -s $B shell "chown $APP_UID:$APP_UID /data/data/$APP/shared_prefs/app_sp.xml; chmod 660 /data/data/$APP/shared_prefs/app_sp.xml"
+          else
+            adb -s $B shell "chmod 644 /data/data/$APP/shared_prefs/app_sp.xml"
+          fi
+          adb -s $B shell "ls -la /data/data/$APP/shared_prefs/app_sp.xml"
+
+          adb -s $B logcat -c 2>/dev/null
+          (timeout 900 adb -s $B logcat -v time > /tmp/logcat.txt 2>&1 &)
+
+          # 单次启动 + 稳定检测 + 隐私弹窗点击 (v7实证: tvSkip/btnAgree不点卡登录屏零argus流量)
+          adb -s $B shell "am start -n $APP/.ui.activity.SplashActivity" >/dev/null 2>&1
+          T0=$(date +%s)
+          STABLE_PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then STABLE_PID=$P; echo "App stable PID=$STABLE_PID"; break; fi
+            fi
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml" >/dev/null 2>&1
+            timeout 15 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            XY=$(python3 tap_consent.py /tmp/u.xml 2>/dev/null | head -1)
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; echo "CONSENT_TAP $XY"; }
+          done
+          [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 1; }
+          echo "App age at frida attach: $(( $(date +%s) - T0 ))s"
+
+          # 此刻启动 frida-server (自定义端口14771, 避开默认端口扫描; v7实证)
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:14771 tcp:14771
+          echo "frida-server up, app pid=$STABLE_PID"
+
+      - name: Oracle verdict chain (真头终判 + 合成头对照)
+        env:
+          QD_BORN_SESSION: ${{ secrets.QD_BORN_SESSION }}
+        run: |
+          set +e
+          python3 ci/oracle_verdict.py 2>&1 | tee /tmp/verdict_stdout.txt
+          EC=$?
+          echo "oracle_verdict.py exit=$EC (非0=看门狗/异常, 证据仍上传)"
+          echo "=== oracle.log 大小与关键行数 ==="
+          wc -c /tmp/oracle.log 2>/dev/null
+          for pat in '\[GETH\]' '\[SNIN\]' '\[SNOUT\]' '\[KI_CIHAI\]' '\[SHIELD\]' '\[HB\]'; do
+            printf '%s: ' "$pat"; grep -ac "$pat" /tmp/oracle.log 2>/dev/null || echo 0
+          done
+          tail -5 /tmp/oracle.log 2>/dev/null
+          exit 0
+
+      - name: Upload Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oracle-verdict
+          path: |
+            /tmp/verdict_stdout.txt
+            /tmp/oracle.log
+            /tmp/verdict/
+            /tmp/logcat.txt
+            /tmp/u.xml
+          if-no-files-found: warn
