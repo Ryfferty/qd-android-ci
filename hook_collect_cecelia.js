@@ -436,81 +436,65 @@ Java.perform(function() {
             });
             L("[+] KI.intercept hooked");
         } catch (e) { L("[E] KI.intercept: " + e); }
-        // checkKnobsUrl: 风险URL判定现场
+        // cihai(String): VMP重命名后的 knobs 方法(saveKnobsEnvInfo/checkKnobsUrl族, 实名a/b/cihai/judian/search)
         try {
-            KI.checkKnobsUrl.overloads.forEach(function(ov) {
+            KI.cihai.overloads.forEach(function(ov) {
                 ov.implementation = function() {
                     var ret = callOrig(ov, this, arguments);
-                    try {
-                        L("[KI_CHECK] " + String(arguments[0]).substring(0, 160) + " -> " + ret);
-                    } catch (e) {}
+                    try { L("[KI_CIHAI] " + String(arguments[0]).substring(0, 200) + " -> " + ret); } catch (e) {}
                     return ret;
                 };
             });
-            L("[+] KI.checkKnobsUrl hooked");
-        } catch (e) { L("[E] KI.checkKnobsUrl: " + e); }
+            L("[+] KI.cihai hooked");
+        } catch (e) { L("[E] KI.cihai: " + e); }
         // reportR1/native方法留档引用, 末段直调尝试用
         KI_REPORT = KI;
     } catch (e) { L("[E] KI: " + e); }
 
-    // ── knobs OBS SDK NativeWrapper 活动观测 (普通SDK类, 低风险) ──
+    // ── knobs OBS SDK NativeWrapper 全量观测 (17个native, 普通SDK类, 低风险) ──
     try {
         var NWW = Java.use("com.yuewen.knobs.core.NativeWrapper");
         var nwm = NWW.class.getDeclaredMethods();
-        var nwsigs = [];
-        for (var ni = 0; ni < nwm.length; ni++) nwsigs.push(String(nwm[ni].toGenericString()));
-        L("[KNW] NativeWrapper methods=" + nwm.length + "\n  " + nwsigs.join("\n  "));
-        ["a", "lk", "apis", "mmw", "cfbf", "cfbt"].forEach(function(mn) {
+        var nwnames = {};
+        for (var ni = 0; ni < nwm.length; ni++) nwnames[String(nwm[ni].getName())] = 1;
+        var nwList = Object.keys(nwnames);
+        L("[KNW] NativeWrapper methods=" + nwm.length + " (" + nwList.join(",") + ")");
+        nwList.forEach(function(mn) {
             try {
                 NWW[mn].overloads.forEach(function(ov) {
                     ov.implementation = function() {
                         var ret = callOrig(ov, this, arguments);
                         try {
-                            if (STAT.knobs < MAX.knobs * 2) {
-                                var args = [];
-                                for (var ai = 0; ai < arguments.length; ai++) {
-                                    var a = arguments[ai];
-                                    args.push(a === null ? "null" : (typeof a === "string" ? a : String(a)).substring(0, 80));
-                                }
-                                L("[KNW_CALL] " + mn + "(" + args.join(", ") + ") -> " + (ret === null ? "null" : String(ret).substring(0, 120)));
+                            var args = [];
+                            for (var ai = 0; ai < arguments.length; ai++) {
+                                var a = arguments[ai];
+                                var s = (a === null || a === undefined) ? "null" : String(a);
+                                args.push(s.length > 200 ? s.substring(0, 200) : s);
                             }
+                            L("[KNW_CALL] " + mn + "(" + args.join(", ") + ") -> " + (ret === null ? "null" : String(ret).substring(0, 300)));
                         } catch (e) {}
                         return ret;
                     };
                 });
-            } catch (e) {}
+            } catch (e) { L("[KNW_HOOKFAIL] " + mn + ": " + e); }
         });
-        L("[+] NativeWrapper partial hooked");
+        L("[+] NativeWrapper ALL " + nwList.length + " methods hooked");
     } catch (e) { L("[E] NativeWrapper: " + e); }
 
-    // ── 末段(200s): 被动数据已入袋, 直调 reportR1 尝试触发 r1 构造(即使崩也保住前面数据) ──
-    setTimeout(function() {
-        Java.perform(function() {
-            try {
-                if (KI_REPORT === null) { L("[KI_LATE] no KI class"); return; }
-                var tried = false;
-                Java.choose("com.qidian.QDReader.component.retrofit.QDRequestAddKnobsInterceptor", {
-                    onMatch: function(inst) {
-                        L("[KI_LATE] live instance found: " + inst);
-                        KI_REPORT.reportR1.overloads.forEach(function(ov) {
-                            if (tried) return;
-                            tried = true;
-                            try {
-                                var n = ov.argumentTypes.length;
-                                L("[KI_LATE] reportR1 arity=" + n + " sig=(" + ov.argumentTypes.map(function(t) { return t.className; }).join(",") + ")");
-                                var ret;
-                                if (n === 0) ret = ov.call(inst);
-                                else if (n === 1) ret = ov.call(inst, "https://druidv6.if.qidian.com/argus/api/v3/client/r1");
-                                else ret = ov.call(inst, "https://druidv6.if.qidian.com/argus/api/v3/client/r1", null);
-                                L("[KI_LATE_R1] ret=" + ret);
-                            } catch (e) { L("[KI_LATE_R1_ERR] " + e); }
-                        });
-                    },
-                    onComplete: function() { L("[KI_LATE] choose done, tried=" + tried); }
-                });
-            } catch (e) { L("[KI_LATE_ERR] " + e); }
-        });
-    }, 200000);
+    // ── r1 触发电池 (T+70 / T+140, 在 T+90 ANR死亡前): 直调 KI 的 VMP 静态方法族 ──
+    // 实名映射推断: b()=reportR1? / a(boolean)=reportGetKnobsEnvInfo? / search()=getKnobsEnvInfo(sora) / judian()=开关
+    function kiBattery(tag) {
+        try {
+            var KIB = Java.use("com.qidian.QDReader.component.retrofit.QDRequestAddKnobsInterceptor");
+            try { KIB.b(); L("[KI_TRY " + tag + "] b() ok"); } catch (e) { L("[KI_TRY " + tag + "] b() ERR " + e); }
+            try { L("[KI_TRY " + tag + "] judian()=" + KIB.judian()); } catch (e) { L("[KI_TRY " + tag + "] judian() ERR " + e); }
+            try { var sr = KIB.search(); L("[KI_TRY " + tag + "] search()=" + (sr === null ? "null" : String(sr).substring(0, 300))); } catch (e) { L("[KI_TRY " + tag + "] search() ERR " + e); }
+            try { KIB.a(true); L("[KI_TRY " + tag + "] a(true) ok"); } catch (e) { L("[KI_TRY " + tag + "] a(true) ERR " + e); }
+            try { KIB.a(false); L("[KI_TRY " + tag + "] a(false) ok"); } catch (e) { L("[KI_TRY " + tag + "] a(false) ERR " + e); }
+        } catch (e) { L("[KI_TRY " + tag + "] ERR " + e); }
+    }
+    setTimeout(function() { Java.perform(function() { kiBattery("t70"); }); }, 70000);
+    setTimeout(function() { Java.perform(function() { kiBattery("t140"); }); }, 140000);
 
     // ── AttributionParamsBuilder 只读探测 ──
     try {
