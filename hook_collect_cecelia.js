@@ -76,14 +76,17 @@ function L(s) { console.log(s); }
         try { refreshFakeMaps(); } catch (e) { L("[SHIELD_ERR] maps init: " + e); }
         setInterval(function() { try { refreshFakeMaps(); } catch (e) {} }, 1000);
 
-        // ① exit/_exit/abort → 吞掉 (run2/3的死法=exit(0))
+        // ① exit/_exit/abort → 吞掉并让自杀线程沉睡30s (run4实证: 检测线程会500次/秒重试exit, 沉睡降负载)
+        var fnc_usleep = null;
+        try { fnc_usleep = new NativeFunction(Module.findExportByName(null, "usleep"), 'void', ['uint64']); } catch (e) {}
         ["exit", "_exit", "abort"].forEach(function(fn) {
             try {
                 var p = Module.findExportByName(null, fn);
                 if (!p) return;
                 Interceptor.replace(p, new NativeCallback(function(a) {
                     SHIELD.exit++;
-                    if (SHIELD.exit <= 10 || SHIELD.exit % 50 === 0) L("[SHIELD] blocked " + fn + "(" + a + ") #" + SHIELD.exit);
+                    if (SHIELD.exit <= 10 || SHIELD.exit % 1000 === 0) L("[SHIELD] blocked " + fn + "(" + a + ") #" + SHIELD.exit);
+                    try { if (fnc_usleep) fnc_usleep(30000000); } catch (e) {}
                 }, 'void', ['int']));
             } catch (e) {}
         });

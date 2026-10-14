@@ -1,0 +1,218 @@
+name: qd-collect-risk
+# 子代理E 2026-10-14: redroid真机被动采集 cecelia/gorgon 真值 + r1 i/r + libknobs 密钥材料
+# 基于 qd-hook-geth.yml 已跑通模式(redroid11+frida16.7.19+先稳定App再启frida-server避免壳检测),
+# 关键改造: ① q480 APK(libknobs.so与RECON分析件md5同) ② 预写隐私同意 ③ 纯被动hook(零直调, FockUtil.getH
+# 自然调用+okhttp最终请求+libknobs SetB密钥扩展) ④ 注入时机: App稳定后等~55s再挂hook(约T+65s hook就绪),
+#    采集170s到T+235 — 覆盖 qimei激活/r1爆发(~T+75s)与90s+成熟期(比"90s后才注入"多收r1爆发窗口, 被动hook不干扰App)
+# ⑤ 采集后dump app私有目录(shared_prefs/mmkv/qv1) — 设备侧密钥材料线索
+# 密钥纪律: 完整值只落artifact文件, job log只打形态/hash/计数
+on:
+  workflow_dispatch:
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup redroid + frida
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          adb -s localhost:5555 shell "echo BOOT_OK"
+
+          # frida-server 只下载推送, 不启动 (等App稳定后再启 — geth模板模式)
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fs-server 2>/dev/null; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6; timeout 30 adb -s localhost:5555 wait-for-device || true
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+          echo "Setup complete"
+
+      - name: Install q480 + consent + passive collect
+        run: |
+          set +e
+          B=localhost:5555
+          APP=com.qidian.QDReader
+
+          # q480 (7.9.480): libknobs.so md5=267448d26c43efb6cfddf269d14f865b 与RECON分析件逐字节同(符号偏移已核对)
+          curl -sSL --max-time 900 -o q480.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/q480.apk"
+          md5sum q480.apk
+          timeout 300 adb -s $B push q480.apk /data/local/tmp/q480.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q480.apk" 2>&1 | tail -1
+
+          # 预写隐私同意(qd-qimei-net同款, 已证可让App走完整启动网络流)
+          UID=$(adb -s $B shell "dumpsys package $APP | grep userId= | head -1" | tr -d '\r' | sed 's/.*userId=//;s/ .*//')
+          echo "app uid=$UID"
+          adb -s $B shell "mkdir -p /data/data/$APP/shared_prefs"
+          adb -s $B shell "echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/$APP/shared_prefs/app_sp.xml"
+          [ -n "$UID" ] && adb -s $B shell "chown $UID:$UID /data/data/$APP/shared_prefs/app_sp.xml; chmod 660 /data/data/$APP/shared_prefs/app_sp.xml"
+
+          adb -s $B logcat -c 2>/dev/null
+          (timeout 330 adb -s $B logcat -v time > /tmp/logcat.txt 2>&1 &)
+
+          # 启动 App — 计时基准
+          T0=$(date +%s)
+          adb -s $B shell "am start -n $APP/.ui.activity.SplashActivity" >/dev/null 2>&1
+
+          # 稳定PID循环 + 同意弹窗兜底点击(预写失效时)
+          STABLE_PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then STABLE_PID=$P; echo "App stable PID=$STABLE_PID"; break; fi
+            fi
+            # 弹窗兜底: btnAgree/同意并继续
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml" >/dev/null 2>&1
+            timeout 15 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            XY=$(python3 tap_consent.py /tmp/u.xml 2>/dev/null | head -1)
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; echo "CONSENT_TAP $XY"; }
+          done
+          [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 0; }
+
+          # App自然运行到 ~55s: ostar REGISTER/qimei签发/风控材料靠App自己跑(被动hook零干扰)
+          NOW=$(date +%s); AGE=$((NOW-T0))
+          [ $AGE -lt 55 ] && sleep $((55-AGE))
+          echo "App age at frida-server start: $(( $(date +%s) - T0 ))s"
+
+          # 此刻才启动 frida-server (App已稳定 — geth模板反检测模式)
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:27042 tcp:27042
+
+          # 被动采集 170s: stdin保持打开, frida CLI存活期间hook持续记录
+          ( (sleep 170; echo) | timeout 178 frida -H 127.0.0.1:27042 -p $STABLE_PID -l hook_collect_cecelia.js > /tmp/collect.log 2>&1 ) &
+          FRIDA_JOB=$!
+
+          # 采集期间保持App活性: 轮换tap/滚动 促使自然请求(书架/书城/我的)
+          TAPS="360 580|360 1100|180 1100|360 1100|540 1100|SWIPE|360 700|360 1100|360 580"
+          IFS='|' read -ra TAPARR <<< "$TAPS"
+          for t in "${TAPARR[@]}"; do
+            sleep 18
+            if [ "$t" = "SWIPE" ]; then
+              adb -s $B shell "input swipe 360 900 360 300 400" >/dev/null 2>&1
+            else
+              adb -s $B shell "input tap $t" >/dev/null 2>&1
+            fi
+            P=$(timeout 8 adb -s $B shell pidof $APP | tr -d '\r')
+            [ -z "$P" ] && echo "APP_DIED at age $(( $(date +%s) - T0 ))s"
+          done
+          wait $FRIDA_JOB || true
+          echo "Collection done, app age: $(( $(date +%s) - T0 ))s, pid=$(adb -s $B shell pidof $APP | tr -d '\r')"
+
+          # App私有目录设备侧材料 (shared_prefs/mmkv/qv1)
+          adb -s $B exec-out "tar -c -C /data/data/$APP shared_prefs" > /tmp/app_prefs.tar 2>/dev/null
+          adb -s $B exec-out "tar -c -C /data/data/$APP files/mmkv" > /tmp/app_mmkv.tar 2>/dev/null
+          QV1=$(adb -s $B shell "find /data/data/$APP -name 'qv1*' 2>/dev/null" | tr -d '\r' | head -1)
+          [ -n "$QV1" ] && adb -s $B exec-out "cat $QV1" > /tmp/qv1.xml 2>/dev/null
+          ls -la /tmp/app_prefs.tar /tmp/app_mmkv.tar /tmp/qv1.xml 2>/dev/null
+          md5sum /tmp/app_prefs.tar /tmp/app_mmkv.tar /tmp/qv1.xml 2>/dev/null
+
+          # ═══ 汇总(形态/hash/计数, 完整值只在artifact) ═══
+          python3 << 'PYEOF'
+          import re, hashlib, json, collections
+          try:
+              log = open('/tmp/collect.log', encoding='utf-8', errors='replace').read()
+          except Exception as e:
+              print('NO_LOG', e); raise SystemExit
+          summary = {}
+          geth = []
+          for m in re.findall(r'\[GETH\] (\{.*\})', log):
+              try: geth.append(json.loads(m))
+              except Exception: pass
+          cecs, gorgs = [], []
+          for j in geth:
+              h = j.get('h') or {}
+              c = h.get('cecelia') or ''
+              g = h.get('gorgon') or ''
+              if len(c) > 2: cecs.append(c)
+              if len(g) > 2: gorgs.append(g)
+          summary['geth_total'] = log.count('[GETH]')
+          summary['geth_json_ok'] = len(geth)
+          summary['geth_nonempty_cecelia'] = len(cecs)
+          summary['unique_cecelia'] = len(set(cecs))
+          summary['cecelia_prefix_counts'] = dict(collections.Counter(c.split('_')[0] for c in cecs))
+          summary['geth_nonempty_gorgon'] = len(gorgs)
+          summary['unique_gorgon'] = len(set(gorgs))
+          summary['gorgon_shapes'] = sorted({'len=%d prefix16=%s md5=%s' % (len(v), v[:16], hashlib.md5(v.encode()).hexdigest()) for v in set(gorgs)})
+          summary['addrh_count'] = log.count('[ADDRH]')
+          summary['okhttp_count'] = log.count('[OKHTTP]')
+          summary['r1req_count'] = log.count('[R1REQ]')
+          fi = re.findall(r'\[FORM_ADD\] i=(\S+)', log)
+          fr = re.findall(r'\[FORM_ADD\] r=(\S+)', log)
+          summary['form_i_count'] = len(fi)
+          summary['form_r_count'] = len(fr)
+          summary['form_i_shapes'] = sorted({'len=%d md5=%s' % (len(v), hashlib.md5(v.encode()).hexdigest()) for v in set(fi)})
+          summary['form_r_shapes'] = sorted({'len=%d md5=%s' % (len(v), hashlib.md5(v.encode()).hexdigest()) for v in set(fr)})
+          kn = re.findall(r'\[KNOBS_ENTER\] (\w+) (\w+)\s*\n\s*a0ptr=(\S+) mem=(\S+)\s*\n\s*a1ptr=(\S+) mem=(\S+)', log)
+          byfn = collections.defaultdict(list)
+          for fn, sym, a0, m0, a1, m1 in kn:
+              byfn[fn].append((m0, m1))
+          summary['knobs_enter_by_fn'] = {k: len(v) for k, v in byfn.items()}
+          summary['knobs_keymat'] = {}
+          for fn in ('SETA_KEYEXP', 'SETB_KEYEXP'):
+              ks = {m1 for _, m1 in byfn.get(fn, []) if re.fullmatch(r'[0-9a-f]+', m1 or '')}
+              summary['knobs_keymat'][fn] = sorted('len=%dB sha256=%s' % (len(k)//2, hashlib.sha256(k.encode()).hexdigest()) for k in ks)
+          bss = re.findall(r'\[KNOBS_BSS\] t=\d+s ([0-9a-f]+)', log)
+          nz = [b for b in bss if set(b) != {'0'}]
+          summary['bss_dumps'] = len(bss)
+          summary['bss_nonzero'] = len(nz)
+          summary['bss_nonzero_md5s'] = sorted(hashlib.md5(b.encode()).hexdigest() for b in set(nz))
+          m = re.findall(r'\[HB\] (.*)', log)
+          if m: summary['last_hb'] = m[-1]
+          summary['errors_head'] = [l for l in log.splitlines() if l.startswith('[E') or 'HOOKFAIL' in l][:15]
+          with open('/tmp/collect_summary.json', 'w') as f:
+              json.dump(summary, f, indent=1, ensure_ascii=False)
+          print(json.dumps(summary, indent=1, ensure_ascii=False))
+          PYEOF
+
+          echo ""
+          echo "=== collect.log 大小与关键行数 ==="
+          wc -c /tmp/collect.log
+          grep -ac '\[GETH\]' /tmp/collect.log
+          grep -ac '\[R1REQ\]' /tmp/collect.log
+          grep -ac '\[KNOBS_ENTER\]' /tmp/collect.log
+          tail -3 /tmp/logcat.txt 2>/dev/null
+          exit 0
+
+      - name: Upload Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: risk-collect
+          path: |
+            /tmp/collect.log
+            /tmp/collect_summary.json
+            /tmp/logcat.txt
+            /tmp/app_prefs.tar
+            /tmp/app_mmkv.tar
+            /tmp/qv1.xml
+            /tmp/u.xml
+          if-no-files-found: warn
