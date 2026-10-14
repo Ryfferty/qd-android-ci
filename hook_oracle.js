@@ -17,8 +17,12 @@
 var STAT = { geth: 0, geth_cecelia: 0, geth_cec2: 0, geth_gorgon: 0, sn: 0, http: 0, r1: 0, form: 0, knobs: 0, bss: 0 };
 var MAX = { geth: 400, http: 300, knobs: 900, form: 600, sn: 400 };
 var SHIELD = { exit: 0, abort: 0, kill: 0, maps: 0, comm: 0, jexit: 0 };
+// ★H(38563552056实证): 长等待期(QR 25min)自然流量的重dump(JSON.stringify+log桥)拖慢App主线程
+//   → MsgService/JPush广播ANR→App死。rpc.setquiet(true)门控全部重dump(STAT计数与反检测盾不受影响)。
+var HQUIET = false;
 
 function L(s) { console.log(s); }
+function canDump() { return !HQUIET; }
 
 // ═══ 0° 反检测盾 (v7原样, 最先执行) ═══
 (function installShield() {
@@ -181,7 +185,7 @@ function hookKnobs() {
         try {
             Interceptor.attach(addr, {
                 onEnter: function(args) {
-                    if (STAT.knobs >= MAX.knobs) return;
+                    if (STAT.knobs >= MAX.knobs || !canDump()) return;
                     var raws = [], mems = [], ascs = [];
                     for (var i = 0; i < 6; i++) {
                         raws.push(args[i].toString());
@@ -309,7 +313,7 @@ Java.perform(function() {
                     var ret = callOrig(ov, this, arguments);
                     try {
                         STAT.geth++;
-                        if (STAT.geth <= MAX.geth) {
+                        if (STAT.geth <= MAX.geth && canDump()) {
                             var inUrl = arguments.length > 0 ? String(arguments[0]) : "";
                             var inMethod = arguments.length > 1 ? String(arguments[1]) : "";
                             var inBody = arguments.length > 2 ? bodyToStr(arguments[2]) : null;
@@ -340,7 +344,7 @@ Java.perform(function() {
                 ov.implementation = function() {
                     var ret = callOrig(ov, this, arguments);
                     try {
-                        if (STAT.geth <= MAX.geth) {
+                        if (STAT.geth <= MAX.geth && canDump()) {
                             var inUrl = "";
                             try { inUrl = String(arguments[0].url().toString()); } catch (e) {}
                             var outH = {};
@@ -363,7 +367,7 @@ Java.perform(function() {
             try {
                 var url = String(req.url().toString());
                 if (/qidian\.com|yuewen\.com|argus/i.test(url)) {
-                    if (STAT.http < MAX.http) {
+                    if (STAT.http < MAX.http && canDump()) {
                         STAT.http++;
                         var hb = null;
                         try { hb = bodyToStr(req.body()); } catch (e) {}
@@ -388,7 +392,7 @@ Java.perform(function() {
         FBB.add.overloads.forEach(function(ov) {
             ov.implementation = function() {
                 try {
-                    if (STAT.form < MAX.form) {
+                    if (STAT.form < MAX.form && canDump()) {
                         STAT.form++;
                         var k = arguments.length > 0 ? String(arguments[0]) : "";
                         var v = arguments.length > 1 ? String(arguments[1]) : "";
@@ -453,6 +457,7 @@ Java.perform(function() {
                 NWW[mn].overloads.forEach(function(ov) {
                     ov.implementation = function() {
                         var ret = callOrig(ov, this, arguments);
+                        if (!canDump()) return ret;   // ★H: KNW dump静默门控
                         try {
                             var args = [];
                             for (var ai = 0; ai < arguments.length; ai++) {
@@ -491,7 +496,7 @@ Java.perform(function() {
                 var r = sn.call(this, b, len);
                 try {
                     STAT.sn++;
-                    if (STAT.sn <= MAX.sn) {
+                    if (STAT.sn <= MAX.sn && canDump()) {
                         L("[SNIN] #" + STAT.sn + " len=" + (b === null ? "null" : b.length) + " str=" + JSON.stringify(b === null ? "null" : jb2str(b)));
                         L("[SNOUT] #" + STAT.sn + " out=" + r);
                     }
@@ -555,6 +560,8 @@ Java.perform(function() {
 // ═══ ③ rpc.exports: oracle驱动接口 ═══
 rpc.exports = {
     ping: function() { return "pong"; },
+    // ★H: 长等待期静默开关(true=关全部重dump, STAT/盾不受影响; 出生链前关回false收全程证据)
+    setquiet: function(q) { HQUIET = !!q; return HQUIET; },
     stat: function() {
         return {
             pid: Process.id,
