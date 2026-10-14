@@ -20,12 +20,13 @@ on:
         description: '模式: full=真扫码(25min窗) / verify=短窗验证+死号半真实验'
         required: false
         default: 'full'
-permissions:
-  contents: write
       qr_wait:
         description: 'QR等待窗口秒数(0=用模式默认: full=1500/verify=300)'
         required: false
         default: '0'
+
+permissions:
+  contents: write
 
 jobs:
   qr-born:
