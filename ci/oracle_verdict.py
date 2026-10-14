@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-# oracle_verdict.py — 活App风控头oracle终判链 (子代理F, 2026-10-14)
+# oracle_verdict.py — 活App风控头oracle终判链 v2 (子代理F, 2026-10-14)
 #
 # 用法(runner上, 前置: redroid+q480 App已稳定启动, frida-server 14771已起且adb forward已通):
 #   QD_BORN_SESSION=<base64(JSON)> python3 ci/oracle_verdict.py
 #
-# 流程:
-#   1. attach hook_oracle.js (反检测盾+v7被动采集+Fock.sn捕获+rpc.geth)
-#   2. 等qimei激活 (自然[GETH]对 cecelia 出现 2_ 前缀, stat.geth_cec2>0; 期限attach+180s)
-#   3. oracle冒烟: geth(getconf URL) → 验证 cecelia 2_ / gorgon非空 / borgus 32hex / canon(md5)对拍
-#   4. 真头终判链(9步, 请求从GitHub runner IP发出): getconf → limitfreepopup → tips → recFreshmanTask
-#      → rewardFreshmanTask → autoreceive v2/v3 → 复查 limitfreepopup+getconf
-#      每步: python拼好(url,method,body) → oracle geth拿全套头 → 修补 Cookie(ywguid/ywkey) +
-#      QDInfo(f11=ywGuid, f12=当前ms) + QDSign(f2=uid, 保持oracle的ts与md5) → 发请求
-#   5. 合成头对照链(同9步): python自算 QDInfo/QDSign(3DES, canon md5已与自然调用对拍一致) +
-#      borgus_gen标准形态 + 无cecelia/gorgon —— 真头vs合成头 Result对比 = 风控头因果证据
-#   6. (条件) 若真头reward≠0: 追加一发 verbatim oracle QDSign(uid=0) 的reward诊断
-#   7. 汇总 verdict_summary.json + sn两形态样本提取(oracle.log → sn_pairs.txt)
+# v2 (run 38548441945 实证修正, 3个根因):
+#   ① getH的QDSign只签URL query不签POST body(f7=md5('')), 自然App在retrofit层用
+#      md5(canon(body))重签(80组okhttp实证: androidUpdate/push/report f7==md5(canon(body)全中)
+#      → 真头链QDSign由python按canon(body)计算(与synth同款, run1实证synth rec Result=0通过)
+#   ② gorgon空: run1 App卡GuidanceActivity没到主页(v7实证要到主页才有全套流量),
+#      且gorgon诞生晚(cecelia_analysis: ~T+73本地窗口) → 激活门改为 cecelia 2_ AND gorgon非空,
+#      期限attach+300s; 期间循环冒烟+UI推进(tvSkip/跳过/battery)
+#   ③ taskId提取: tips响应是"TaskId":"1327694266436943872"(带引号) → v1只匹配无引号形态漏了
+#      → 链路改为两段: 先getconf/limitfree/tips → 提真taskId → 再rec/reward/auto/复查
+# 另修: frida-python console.log走set_log_handler才能进oracle.log(v1走默认stdout, oracle.log空)
 #
-# 纪律: QD_BORN_SESSION解码值只活在内存, 绝不echo到日志/绝不写文件/绝不进commit;
-#       job log只打 Result码/Message/响应体摘要; 头值只落 /tmp/verdict/**(artifact, ywkey/CmfuToken已脱敏)。
+# 流程: attach → 等激活(cecelia 2_ + gorgon非空 + borgus 32hex, 循环冒烟getconf) →
+#   真头终判链(oracle cecelia/gorgon/borgus/QDInfo/tstamp/Cookie/UA + python QDSign) →
+#   合成头对照链(python全合成, 无cecelia/gorgon, borgus_gen标准形态) → 真头vs合成头Result对比
+# 纪律: QD_BORN_SESSION解码值只活在内存; job log只打Result码/Message/响应体摘要;
+#   头值只落/tmp/verdict/**(artifact, ywkey/CmfuToken已脱敏)
 import os, sys, json, time, base64, gzip, re, subprocess, threading, collections
 import urllib.request, urllib.parse, urllib.error
 
@@ -100,7 +101,7 @@ class Oracle:
         self.script = None
         self.exp = None
         self.logf = open(ORACLE_LOG, 'a')
-        self.recent = collections.deque(maxlen=800)
+        self.recent = collections.deque(maxlen=1000)
         self.attach()
 
     def adb(self, *args, timeout=15):
@@ -127,6 +128,11 @@ class Oracle:
                     src = f.read()
                 self.script = self.session.create_script(src)
                 self.script.on('message', self._on_msg)
+                # ★frida-python: console.log走log handler(默认打stdout不进oracle.log) — v1实证
+                try:
+                    self.script.set_log_handler(self._on_log)
+                except Exception as e:
+                    L('[ORACLE] set_log_handler不可用(退回stdout+tee): %s' % str(e)[:80])
                 self.script.load()
                 self.exp = getattr(self.script, 'exports_sync', None) or self.script.exports
                 self.pid = pid
@@ -137,18 +143,24 @@ class Oracle:
                 time.sleep(6)
         return False
 
+    def _on_log(self, level, message):
+        self._emit(str(message))
+
     def _on_msg(self, message, data):
         try:
-            if message.get('type') == 'log':
-                line = str(message.get('payload'))
-            elif message.get('type') == 'error':
-                line = '[SCRIPT_ERR] ' + str(message.get('description'))[:400] + ' | ' + str(message.get('stack', ''))[:300]
+            if message.get('type') == 'error':
+                self._emit('[SCRIPT_ERR] ' + str(message.get('description'))[:400])
             else:
-                line = '[MSG] ' + json.dumps(message)[:300]
+                self._emit('[MSG] ' + json.dumps(message)[:300])
         except Exception:
-            line = '[MSG_RAW] ' + str(message)[:300]
-        self.logf.write(line + '\n'); self.logf.flush()
-        self.recent.append(line)
+            pass
+
+    def _emit(self, line):
+        try:
+            self.logf.write(line + '\n'); self.logf.flush()
+            self.recent.append(line)
+        except Exception:
+            pass
 
     def stat(self):
         return self.exp.stat()
@@ -159,6 +171,16 @@ class Oracle:
         if r is None or r.get('__err'):
             raise RuntimeError('rpc.geth err: %s' % (r or {}).get('__err'))
         return r.get('map') or {}
+
+    def geth_retry(self, url, method, body):
+        """geth + App死亡时重挂重试一次"""
+        try:
+            return self.geth(url, method, body)
+        except Exception as e:
+            L('[ORACLE] geth失败(%s) — 重挂后重试' % scrub(str(e))[:120])
+            if self.attach():
+                return self.geth(url, method, body)
+            raise
 
     def _call_rpc(self, fn, *args):
         box = {}
@@ -175,15 +197,15 @@ class Oracle:
             raise RuntimeError('rpc.%s exception: %s' % (fn, box['e']))
         return box.get('r')
 
-# ───────────────────────── UI推进线程 (v7 tap battery同款) ─────────────────────────
+# ───────────────────────── UI推进线程 (v7 tap battery + 跳过文本匹配 + 日志) ─────────────────────────
 TAPS = [(360, 580), (360, 1100), (180, 1100), (360, 350), (540, 1100), None,
-        (360, 700), (360, 350), (360, 580), (360, 1100)]   # None = 上滑
+        (360, 700), (360, 350), (360, 580), (360, 1100)]   # None = 上滑(Guidance推进)
 
 def _find_bounds(xml, id_frag=None, text=None):
     if id_frag:
         pat = r'resource-id="[^"]*%s[^"]*"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"' % re.escape(id_frag)
     else:
-        pat = r'text="%s"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"' % re.escape(text)
+        pat = r'text="[^"]*%s[^"]*"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"' % re.escape(text)
     for m in re.finditer(pat, xml):
         x1, y1, x2, y2 = map(int, m.groups())
         return (x1 + x2) // 2, (y1 + y2) // 2
@@ -191,23 +213,32 @@ def _find_bounds(xml, id_frag=None, text=None):
 
 def ui_thread(stop, oracle):
     ti = 0
+    n = 0
     while not stop.is_set():
+        n += 1
+        act = ''
         try:
             oracle.adb('shell', 'uiautomator', 'dump', '/sdcard/u.xml', timeout=15)
             r = oracle.adb('shell', 'cat', '/sdcard/u.xml', timeout=15)
             xml = r.stdout or ''
-            xy = _find_bounds(xml, 'tvSkip') or _find_bounds(xml, 'btnAgree') or _find_bounds(xml, text='同意并继续')
+            xy = (_find_bounds(xml, 'tvSkip') or _find_bounds(xml, text='跳过')
+                  or _find_bounds(xml, 'btnAgree') or _find_bounds(xml, text='同意并继续'))
             if xy:
+                act = 'tap(%d,%d)' % xy
                 oracle.adb('shell', 'input', 'tap', str(xy[0]), str(xy[1]))
             else:
                 t = TAPS[ti % len(TAPS)]; ti += 1
                 if t is None:
+                    act = 'swipe'
                     oracle.adb('shell', 'input', 'swipe', '360', '900', '360', '300', '400')
                 else:
+                    act = 'battery(%d,%d)' % t
                     oracle.adb('shell', 'input', 'tap', str(t[0]), str(t[1]))
-        except Exception:
-            pass
-        stop.wait(12)
+        except Exception as e:
+            act = 'err:%s' % str(e)[:40]
+        if n % 3 == 1:
+            L('[UI] cycle#%d %s' % (n, act))
+        stop.wait(11)
 
 # ───────────────────────── 请求构造与patch ─────────────────────────
 def patch_qdinfo(orig_b64, guid, now_ms):
@@ -217,16 +248,6 @@ def patch_qdinfo(orig_b64, guid, now_ms):
     f[11] = guid          # f11 = uid (匿名设备=0)
     f[12] = str(now_ms)   # f12 = 时间戳ms
     return des3_enc_b64('|'.join(f), K + K[:8], QDINFO_IV)
-
-def patch_qdsign_uid(orig_b64, guid):
-    """oracle QDSign: Rv1rPTnczce|ts|uid|androidid|1|av|1|md5|f189...
-    保持 oracle 的 ts 与 md5(对同一请求的签名), 只把 uid(=0) 换成账号 guid → 与Cookie/QDInfo一致。
-    (App发送的QDSign含空格分块, python重编码无空格 — 两种格式服务端都收: App自然流/纯协议链均已实证)"""
-    f = des3_dec(orig_b64.replace(' ', ''), KS, QDSIGN_IV).split('|')
-    if len(f) != 9:
-        raise RuntimeError('QDSign字段数=%d(!=9): %r' % (len(f), f[:4]))
-    f[2] = guid
-    return des3_enc_b64('|'.join(f), KS, QDSIGN_IV)
 
 def patch_cookie(orig_ck, guid, key, cmfu):
     ck = orig_ck
@@ -239,8 +260,10 @@ def patch_cookie(orig_ck, guid, key, cmfu):
     return ck
 
 def canon_of(url, method, body_bytes):
-    """QDSign第8段md5的输入 (qd_newborn_chain同款, 已与App自然调用对拍一致:
-    getprebook?gender=m&categoryIds= → md5('categoryids=&gender=m') == App QDSign f7 ✓)"""
+    """QDSign第8段md5输入 — 与自然App最终请求对拍一致:
+    GET→md5(query参数小写排序), POST→md5(form参数小写排序)
+    (v7 80组okhttp实证: androidUpdate/push/report f7==md5(canon)全中;
+     run1实证: getH的map QDSign只签query(f7=md5('')不签body), retrofit层才重签body)"""
     if method == 'GET':
         q = url.split('?', 1)[1] if '?' in url else ''
         if not q:
@@ -258,6 +281,12 @@ def canon_of(url, method, body_bytes):
         return '&'.join('%s=%s' % (k.lower(), urllib.parse.unquote_plus(v)) for k, v in sorted(pf.items()))
     except Exception:
         return ''
+
+def build_qdsign(ts, guid, androidid, appver, canon_str):
+    """python QDSign = 3DES(Rv1rPTnczce|ts|uid|androidid|1|appver|1|md5(canon)|f189)
+    与qd_newborn_chain同款(run1实证: synth rec Result=0 签名通过)"""
+    return des3_enc_b64('|'.join(['Rv1rPTnczce', str(ts), guid, androidid, '1', appver, '1',
+                                  md5(canon_str), F189]), KS, QDSIGN_IV)
 
 def send(url, method, body, headers, timeout=25):
     hh = dict(headers)
@@ -287,17 +316,21 @@ def mask_headers(h):
         m['Cookie'] = re.sub(r'cmfuToken=[^;]+', 'cmfuToken=<SCRUBBED>', m['Cookie'])
     return m
 
-# ───────────────────────── 链定义 ─────────────────────────
-def build_steps(tid):
+# ───────────────────────── 链定义(两段: 先tips提真taskId) ─────────────────────────
+def steps_phase_a():
+    return [
+        ('getconf',   'GET',  '/argus/api/v1/young/getconf', None),
+        ('limitfree', 'GET',  '/argus/api/v1/freshman/limitfreepopup', None),
+        ('tips',      'GET',  '/argus/api/v1/freshman/getreadingtaskprocesstips', None),
+    ]
+
+def steps_phase_b(tid):
     n0 = int(time.time() * 1000)
     rec_body = urllib.parse.urlencode({'taskId': tid, 'startTime': str(n0), 'endTime': str(n0 + 30000)})
     reward_body = urllib.parse.urlencode({'taskId': tid, 'mileStone': '-1', 'sessionKey': '',
                                           'banId': '0', 'captchaTicket': '', 'captchaRandStr': '',
                                           'challenge': '', 'validate': '', 'seccode': ''})
     return [
-        ('getconf',     'GET',  '/argus/api/v1/young/getconf', None),
-        ('limitfree',   'GET',  '/argus/api/v1/freshman/limitfreepopup', None),
-        ('tips',        'GET',  '/argus/api/v1/freshman/getreadingtaskprocesstips', None),
         ('rec',         'POST', '/argus/api/v1/freshman/task/recFreshmanTask', rec_body),
         ('reward',      'POST', '/argus/api/v2/freshman/task/rewardFreshmanTask', reward_body),
         ('autorecv_v2', 'POST', '/argus/api/v2/freshman/autoreceive', ''),
@@ -307,16 +340,17 @@ def build_steps(tid):
     ]
 
 def extract_tid(raw_text):
-    for pat in (r'"taskId"\s*:\s*"(\d+)"', r'"TaskId"\s*:\s*(\d+)'):
-        m = re.search(pat, raw_text)
+    for pat in (r'"taskId"\s*:\s*"(\d+)"', r'"TaskId"\s*:\s*"(\d+)"',
+                r'"taskId"\s*:\s*(\d+)', r'"TaskId"\s*:\s*(\d+)'):
+        m = re.search(pat, raw_text or '')
         if m:
             return m.group(1)
     return '0'
 
-# ───────────────────────── 主流程 ─────────────────────────
-SUMMARY = {'smoke': {}, 'real': [], 'synth': [], 'diag': [], 'sn_pairs': 0, 'notes': []}
+# ───────────────────────── 链执行 ─────────────────────────
+SUMMARY = {'smoke': {}, 'real': [], 'synth': [], 'sn_pairs': 0, 'notes': []}
 
-def run_chain(tag, oracle, sess, steps, header_builder, dev):
+def run_chain(tag, oracle, sess, steps, header_builder):
     results = []
     for i, (label, method, path, body) in enumerate(steps):
         url = HOST + path
@@ -327,9 +361,9 @@ def run_chain(tag, oracle, sess, steps, header_builder, dev):
             entry['headers_masked'] = mask_headers(headers)
         except Exception as e:
             entry['error'] = 'header build: ' + scrub(str(e))[:300]
-            L('[%s %02d %-12s] HDR_ERR %s' % (tag, i, label, entry['error']))
+            L('[%s %-12s] HDR_ERR %s' % (tag, label, entry['error']))
             results.append(entry)
-            with open('%s/%s_%02d_%s.json' % (EVID_DIR, tag, i, label), 'w') as f:
+            with open('%s/%s_%s.json' % (EVID_DIR, tag, label), 'w') as f:
                 json.dump(entry, f, ensure_ascii=False, indent=1)
             time.sleep(2.5)
             continue
@@ -341,33 +375,30 @@ def run_chain(tag, oracle, sess, steps, header_builder, dev):
             j = json.loads(text)
             entry['Result'] = j.get('Result')
             entry['Message'] = str(j.get('Message', ''))[:60]
-            L('[%s %02d %-12s] HTTP %s Result=%s %s' % (tag, i, label, code, j.get('Result'), entry['Message']))
+            L('[%s %-12s] HTTP %s Result=%s %s' % (tag, label, code, j.get('Result'), entry['Message']))
         except Exception:
             entry['Result'] = 'HTTP%d' % code
-            L('[%s %02d %-12s] HTTP %s 非业务: %s' % (tag, i, label, code, text[:90].replace('\n', ' ')))
+            L('[%s %-12s] HTTP %s 非业务: %s' % (tag, label, code, text[:90].replace('\n', ' ')))
         results.append(entry)
-        with open('%s/%s_%02d_%s.json' % (EVID_DIR, tag, i, label), 'w') as f:
+        with open('%s/%s_%s.json' % (EVID_DIR, tag, label), 'w') as f:
             json.dump(entry, f, ensure_ascii=False, indent=1)
         time.sleep(2.5)
     return results
 
-def real_header_builder(oracle, sess):
+def real_header_builder(oracle, sess, dev):
+    """真头链: oracle全套真风控头(cecelia/gorgon/borgus/QDInfo/tstamp/Cookie/UA) +
+    python QDSign(canon(body) md5 — getH不签body, retrofit层重签形态, v2修正)"""
     def build(url, method, body):
-        try:
-            m = oracle.geth(url, method, body)   # body: None or str
-        except Exception as e:
-            L('[REAL] geth失败(%s) — 重挂oracle后重试一次' % scrub(str(e))[:120])
-            if oracle.attach():
-                m = oracle.geth(url, method, body)
-            else:
-                raise
+        m = oracle.geth_retry(url, method, body)
+        canon = canon_of(url, method, body.encode() if isinstance(body, str) else body)
+        ts = m.get('tstamp') or str(int(time.time() * 1000))
         now_ms = int(time.time() * 1000)
-        h = {'User-Agent': m.get('User-Agent', ''),
+        h = {'User-Agent': m.get('User-Agent', dev['ua']),
              'Accept-Encoding': 'gzip',
              'Connection': 'Keep-Alive',
              'QDInfo': patch_qdinfo(m['QDInfo'], sess['guid'], now_ms),
-             'tstamp': m.get('tstamp', str(now_ms)),
-             'QDSign': patch_qdsign_uid(m['QDSign'], sess['guid']),
+             'tstamp': ts,
+             'QDSign': build_qdsign(ts, sess['guid'], dev['androidid'], dev['appver'], canon),
              'Cookie': patch_cookie(m['Cookie'], sess['guid'], sess['key'], sess['cmfu'])}
         for k in ('cecelia', 'gorgon', 'borgus'):   # ★全套真风控头, verbatim
             if m.get(k):
@@ -376,15 +407,15 @@ def real_header_builder(oracle, sess):
     return build
 
 def synth_header_builder(sess, dev):
+    """合成头对照链: python全合成(QDInfo/QDSign), borgus_gen标准形态, 无cecelia/gorgon = 纯协议出生条件"""
     def build(url, method, body):
         now_ms = int(time.time() * 1000)
         ts = str(now_ms)
         f = list(dev['qdinfo_fields'])
         f[11] = sess['guid']; f[12] = ts
         qdi = des3_enc_b64('|'.join(f), K + K[:8], QDINFO_IV)
-        mm = md5(canon_of(url, method, body.encode() if isinstance(body, str) else body))
-        qds = des3_enc_b64('|'.join(['Rv1rPTnczce', ts, sess['guid'], dev['androidid'],
-                                     '1', dev['appver'], '1', mm, F189]), KS, QDSIGN_IV)
+        canon = canon_of(url, method, body.encode() if isinstance(body, str) else body)
+        qds = build_qdsign(ts, sess['guid'], dev['androidid'], dev['appver'], canon)
         from borgus_gen import borgus as borgus_std
         bor = borgus_std(now_ms, dev['qimei36'], dev['vcode'])
         ck = patch_cookie(dev['cookie_template'], sess['guid'], sess['key'], sess['cmfu'])
@@ -394,10 +425,11 @@ def synth_header_builder(sess, dev):
                 'Cookie': ck}   # 无cecelia/gorgon = 纯协议出生条件
     return build
 
+# ───────────────────────── 主流程 ─────────────────────────
 def main():
     os.makedirs(EVID_DIR, exist_ok=True)
     t_start = time.time()
-    L('=== oracle verdict chain start (pid=%d) ===' % os.getpid())
+    L('=== oracle verdict chain v2 start (pid=%d) ===' % os.getpid())
     sess = load_session()
 
     oracle = Oracle()
@@ -411,29 +443,42 @@ def main():
     th = threading.Thread(target=ui_thread, args=(stop, oracle), daemon=True)
     th.start()
 
-    # 1. 等qimei激活: 自然[GETH]对 cecelia 2_ 前缀 (attach+180s期限)
-    L('[WAIT] 等qimei激活 (stat.geth_cec2>0, 期限180s)...')
+    # 1. 等全套真头成熟: cecelia 2_ AND gorgon非空 AND borgus 32hex (循环冒烟, 期限attach+300s)
+    #    (run1教训: cecelia 2_在T+38就有, 但gorgon诞生晚且App卡Guidance时不产 — v2必须等gorgon)
+    L('[WAIT] 等真头成熟 (cecelia 2_ + gorgon非空 + borgus 32hex, 冒烟循环, 期限300s)...')
     t0 = time.time()
-    activated = False
-    while time.time() - t0 < 180:
-        try:
-            st = oracle.stat()
-            if st.get('geth_cec2', 0) > 0:
-                activated = True
-                L('[WAIT] qimei激活 ✓ (attach+%ds, stat=%s)' % (time.time() - t0, json.dumps(st)))
-                break
-            if st.get('geth', 0) == 0 and int(time.time() - t0) % 30 < 6:
-                L('[WAIT] t+%ds 尚无自然getH (stat=%s)' % (time.time() - t0, json.dumps(st)))
-        except Exception as e:
-            L('[WAIT] stat err: %s — 尝试重挂' % scrub(str(e))[:150])
-            if not oracle.attach():
-                time.sleep(8)
-        time.sleep(5)
-    if not activated:
-        L('[WAIT] 180s内未见自然2_ cecelia — 仍尝试直调冒烟并如实报告')
-
-    # 2. 冒烟测试
     smoke = {}
+    ready = False
+    while time.time() - t0 < 300:
+        try:
+            m = oracle.geth(SMOKE_URL, 'GET', None)
+            cec = m.get('cecelia') or ''
+            gorg = m.get('gorgon') or ''
+            bor = m.get('borgus') or ''
+            smoke = {'t': int(time.time() - t0), 'cecelia_2': cec.startswith('2_'),
+                     'cecelia_len': len(cec), 'gorgon_len': len(gorg),
+                     'borgus_32hex': bool(re.fullmatch(r'[0-9a-f]{32}', bor)),
+                     'keys': sorted(m.keys())}
+            if smoke['cecelia_2'] and len(gorg) > 100 and smoke['borgus_32hex']:
+                ready = True
+                L('[WAIT] 真头成熟 ✓ t+%ds: %s' % (time.time() - t0, json.dumps(smoke)))
+                break
+            if int(time.time() - t0) % 30 < 10:
+                try:
+                    st = oracle.stat()
+                    smoke['stat'] = {k: st.get(k) for k in ('geth', 'geth_cec2', 'geth_gorgon', 'sn', 'http')}
+                except Exception:
+                    pass
+                L('[WAIT] t+%ds 未齐: %s' % (time.time() - t0, json.dumps(smoke, ensure_ascii=False)))
+        except Exception as e:
+            L('[WAIT] 冒烟异常: %s — 重挂' % scrub(str(e))[:150])
+            if not oracle.attach():
+                pass
+        time.sleep(10)
+    if not ready:
+        L('[WAIT] 300s内真头未全齐(如上) — 继续跑链并如实报告(头以实际拿到的为准)')
+
+    # 2. 冒烟定案记录 + canon对拍 + 设备档案
     try:
         m = oracle.geth(SMOKE_URL, 'GET', None)
         cec = m.get('cecelia') or ''
@@ -444,101 +489,51 @@ def main():
                  'gorgon_len': len(gorg), 'borgus_len': len(bor),
                  'cecelia_2': cec.startswith('2_'), 'gorgon_nonempty': len(gorg) > 100,
                  'borgus_32hex': bool(re.fullmatch(r'[0-9a-f]{32}', bor))}
-        # canon对拍: 无query GET → md5('')
-        try:
-            qf = des3_dec(m['QDSign'].replace(' ', ''), KS, QDSIGN_IV).split('|')
-            smoke['qdsign_f7'] = qf[7]
-            smoke['canon_md5_empty'] = md5('')
-            smoke['canon_match_empty'] = qf[7] == md5('')
-            smoke['qdsign_f2_uid'] = qf[2]
-            smoke['qdsign_f5_av'] = qf[5]
-        except Exception as e:
-            smoke['qdsign_decode_err'] = str(e)[:120]
-        # 设备档案(供合成头对照链)
-        try:
-            qdi_f = des3_dec(m['QDInfo'], K + K[:8], QDINFO_IV).split('|')
-            smoke['qdinfo_fields_n'] = len(qdi_f)
-        except Exception as e:
-            qdi_f = []
-            smoke['qdinfo_decode_err'] = str(e)[:120]
-        smoke['ok'] = bool(smoke.get('cecelia_2') and smoke.get('gorgon_nonempty') and smoke.get('borgus_32hex'))
+        qf = des3_dec(m['QDSign'].replace(' ', ''), KS, QDSIGN_IV).split('|')
+        smoke['qdsign_f7'] = qf[7]
+        smoke['canon_md5_empty'] = md5('')
+        smoke['canon_match_empty'] = qf[7] == md5('')
+        smoke['qdsign_f2_uid'] = qf[2]
+        smoke['qdsign_f5_av'] = qf[5]
+        qdi_f = des3_dec(m['QDInfo'], K + K[:8], QDINFO_IV).split('|')
+        smoke['qdinfo_fields_n'] = len(qdi_f)
+        smoke['ok'] = bool(smoke['cecelia_2'] and smoke['gorgon_nonempty'] and smoke['borgus_32hex'])
         L('[SMOKE] %s' % json.dumps(smoke, ensure_ascii=False))
         SUMMARY['smoke'] = smoke
         json.dump(smoke, open(EVID_DIR + '/smoke.json', 'w'), ensure_ascii=False, indent=1)
-        if not smoke['ok']:
-            L('[SMOKE] oracle直调头不完整 — 如实报告并诊断: cecelia=%r gorgon=%r borgus=%r (可能需更久等待/str2签名问题, 对照oracle.log自然[GETH]对)' % (cec[:8], gorg[:8], bor[:8]))
-    except Exception as e:
-        L('[SMOKE] oracle直调失败: %s' % scrub(str(e))[:300])
-        SUMMARY['smoke'] = {'error': scrub(str(e))[:300]}
-
-    dev = {}
-    try:
-        m0 = oracle.geth(SMOKE_URL, 'GET', None)
-        qdi_f = des3_dec(m0['QDInfo'], K + K[:8], QDINFO_IV).split('|')
-        qf = des3_dec(m0['QDSign'].replace(' ', ''), KS, QDSIGN_IV).split('|')
         dev = {'qdinfo_fields': qdi_f, 'androidid': qdi_f[0], 'appver': qf[5], 'vcode': qdi_f[8],
-               'qimei36': qdi_f[14] if len(qdi_f) > 14 else '', 'ua': m0.get('User-Agent', ''),
-               'cookie_template': m0.get('Cookie', '')}
-        L('[DEV] oracle设备档案: androidid=%s model=%s vcode=%s qimei36=%s' % (qdi_f[0], qdi_f[7], qdi_f[8], qdi_f[14][:16] + '…'))
+               'qimei36': qdi_f[14] if len(qdi_f) > 14 else '', 'ua': m.get('User-Agent', ''),
+               'cookie_template': m.get('Cookie', '')}
         SUMMARY['device'] = {'androidid': qdi_f[0], 'model': qdi_f[7], 'vcode': qdi_f[8],
                              'qimei36': qdi_f[14], 'ua': dev['ua']}
+        L('[DEV] oracle设备档案: androidid=%s model=%s vcode=%s qimei36=%s' % (
+            qdi_f[0], qdi_f[7], qdi_f[8], qdi_f[14][:16] + '…'))
     except Exception as e:
-        L('[DEV] 设备档案提取失败: %s — 合成头对照链将退化' % scrub(str(e))[:200])
+        L('[SMOKE] oracle直调失败: %s — 链路无法进行, 如实退出' % scrub(str(e))[:300])
+        SUMMARY['smoke'] = {'error': scrub(str(e))[:300]}
+        json.dump(SUMMARY, open(EVID_DIR + '/verdict_summary.json', 'w'), ensure_ascii=False, indent=1)
+        stop.set()
+        return 0
 
-    # 3. 真头终判链
-    if dev:
-        L('════ 真头终判链 (oracle全套真风控头) ════')
-        steps = build_steps('0')
-        SUMMARY['real'] = run_chain('real', oracle, sess, steps, real_header_builder(oracle, sess), dev)
-        # tips响应里提taskId重跑rec/reward? 链内已按'0'跑 — 用tips响应提取的tid补一发reward(若tid非0)
-        try:
-            tips_raw = next((r['response'] for r in SUMMARY['real'] if r.get('step') == 'tips'), '')
-            tid = extract_tid(tips_raw)
-            if tid != '0':
-                L('[TID] tips响应提取taskId=%s ≠ 0 — 用真taskId补跑rec+reward' % tid)
-                sub = build_steps(tid)[3:5]
-                SUMMARY['real'].extend(run_chain('real', oracle, sess, sub, real_header_builder(oracle, sess), dev))
-        except Exception as e:
-            L('[TID] %s' % scrub(str(e))[:150])
+    # 3. 真头终判链 (两段: phase a 提真taskId → phase b 领取)
+    L('════ 真头终判链 (oracle全套真风控头 + python QDSign) ════')
+    rb = real_header_builder(oracle, sess, dev)
+    SUMMARY['real'] = run_chain('real', oracle, sess, steps_phase_a(), rb)
+    tips_raw = next((r.get('response', '') for r in SUMMARY['real'] if r.get('step') == 'tips'), '')
+    tid = extract_tid(tips_raw)
+    L('[TID] tips响应提取taskId=%s' % tid)
+    SUMMARY['taskid'] = tid
+    SUMMARY['real'].extend(run_chain('real', oracle, sess, steps_phase_b(tid), rb))
 
-        # 4. 合成头对照链 (borgus_gen标准形态, 无cecelia/gorgon)
-        L('════ 合成头对照链 (纯协议合成头) ════')
-        SUMMARY['synth'] = run_chain('synth', oracle, sess, build_steps('0'),
-                                     synth_header_builder(sess, dev), dev)
-        try:
-            tips_raw = next((r['response'] for r in SUMMARY['synth'] if r.get('step') == 'tips'), '')
-            tid = extract_tid(tips_raw)
-            if tid != '0':
-                sub = build_steps(tid)[3:5]
-                SUMMARY['synth'].extend(run_chain('synth', oracle, sess, sub,
-                                                  synth_header_builder(sess, dev), dev))
-        except Exception:
-            pass
+    # 4. 合成头对照链 (borgus_gen标准形态, 无cecelia/gorgon)
+    L('════ 合成头对照链 (纯协议合成头) ════')
+    sb = synth_header_builder(sess, dev)
+    SUMMARY['synth'] = run_chain('synth', oracle, sess, steps_phase_a(), sb)
+    tips_raw_s = next((r.get('response', '') for r in SUMMARY['synth'] if r.get('step') == 'tips'), '')
+    tid_s = extract_tid(tips_raw_s)
+    SUMMARY['synth'].extend(run_chain('synth', oracle, sess, steps_phase_b(tid_s), sb))
 
-        # 5. 条件诊断: 真头reward≠0 → verbatim oracle QDSign(uid=0)再发一发reward
-        real_reward = [r for r in SUMMARY['real'] if r.get('step') in ('reward',)]
-        if real_reward and real_reward[-1].get('Result') not in (0, '0'):
-            L('[DIAG] 真头reward≠0 — 追加verbatim-QDSign(uid=0)诊断发')
-            try:
-                def vb_build(url, method, body):
-                    m = oracle.geth(url, method, body)
-                    now_ms = int(time.time() * 1000)
-                    h = {'User-Agent': m.get('User-Agent', ''), 'Accept-Encoding': 'gzip',
-                         'Connection': 'Keep-Alive',
-                         'QDInfo': patch_qdinfo(m['QDInfo'], sess['guid'], now_ms),
-                         'tstamp': m.get('tstamp', str(now_ms)),
-                         'QDSign': m['QDSign'],          # verbatim(含空格分块, uid=0)
-                         'Cookie': patch_cookie(m['Cookie'], sess['guid'], sess['key'], sess['cmfu'])}
-                    for k in ('cecelia', 'gorgon', 'borgus'):
-                        if m.get(k):
-                            h[k] = m[k]
-                    return h
-                sub = build_steps('0')[4:5]
-                SUMMARY['diag'] = run_chain('diag', oracle, sess, sub, vb_build, dev)
-            except Exception as e:
-                L('[DIAG] err %s' % scrub(str(e))[:200])
-
-    # 6. sn两形态样本提取
+    # 5. sn两形态样本提取
     sn_pairs = []
     try:
         cur = None
@@ -562,19 +557,19 @@ def main():
     stop.set()
     json.dump(SUMMARY, open(EVID_DIR + '/verdict_summary.json', 'w'), ensure_ascii=False, indent=1)
 
-    # 7. 终判摘要
+    # 6. 终判摘要
     L('════════ 终判摘要 ════════')
     L('smoke: %s' % json.dumps(SUMMARY.get('smoke', {}), ensure_ascii=False)[:300])
-    for tag in ('real', 'synth', 'diag'):
+    for tag in ('real', 'synth'):
         for r in SUMMARY.get(tag, []):
             L('%-5s %-12s Result=%s %s' % (tag, r.get('step'), r.get('Result', r.get('error', '?')), r.get('Message', '')))
     L('耗时 %ds; 证据 %s/; sn对 %d; oracle.log %s' % (time.time() - t_start, EVID_DIR, len(sn_pairs), ORACLE_LOG))
     return 0
 
 if __name__ == '__main__':
-    # 硬看门狗: 14分钟无论如何落summary退出(artifact照常上传)
+    # 硬看门狗: 16分钟无论如何落summary退出(artifact照常上传)
     def _watchdog():
-        time.sleep(840)
+        time.sleep(960)
         try:
             SUMMARY['notes'].append('watchdog_timeout')
             json.dump(SUMMARY, open(EVID_DIR + '/verdict_summary.json', 'w'), ensure_ascii=False, indent=1)
