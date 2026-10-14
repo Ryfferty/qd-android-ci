@@ -9,6 +9,11 @@ name: qd-oracle-verdict
 # 判读: reward Result=0且Data非空=领取成功; -10021=风控仍拦; -100006=无权限
 on:
   workflow_dispatch:
+    inputs:
+      chains:
+        description: '链臂(逗号分隔: real,synth,synth2)'
+        required: false
+        default: 'real,synth,synth2'
 
 jobs:
   verdict:
@@ -113,6 +118,7 @@ jobs:
       - name: Oracle verdict chain (真头终判 + 合成头对照)
         env:
           QD_BORN_SESSION: ${{ secrets.QD_BORN_SESSION }}
+          ORACLE_CHAINS: ${{ inputs.chains || 'real,synth,synth2' }}
         run: |
           set +e
           python3 ci/oracle_verdict.py 2>&1 | tee /tmp/verdict_stdout.txt
