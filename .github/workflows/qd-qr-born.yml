@@ -1,0 +1,160 @@
+name: qd-qr-born
+# 子代理H 2026-10-14: 终局实验"QR出生×oracle真头" — 一次CI运行内完成:
+#   活App当oracle → 协议链用oracle真头做QR出生(sdkv2/scanQRCode) → 等用户扫码(唯一人工环节)
+#   → user/login(oracle真头FormBody) → 出生即判(getconf/limitfree/safegetcontent/rec)
+#   → 带标即claim(rewardFreshmanTask) → 终判复查
+# 底稿: qd-oracle-verdict.yml (子代理F, redroid11+q480+反检测盾+frida 16.7.19@14771, 备份.bak.2026-10-14)
+# 派活: 用户到场时 → gh workflow run qd-qr-born --repo Ryfferty/qd-android-ci -f mode=full
+#   QR实时转交: gh run watch 或 gh run view --log | grep QR_URL (URL在log心跳里每30s重复;
+#   log里还有ASCII二维码可直接扫; qr.png/qr_url.txt在artifact=run结束后取)
+# verify模式(默认不出实验数据, 只验管道): 短窗300s + 旧sessionkey过期重生成注入
+#   + 半真实验(死号900074388329走user/login→rec→claim, 预期claim=-10021但管道+头注入正确)
+# 凭据纪律: QD_BORN_SESSION(repo secret)只在runner内存; 新号ywKey/CmfuToken绝不进
+#   artifact/log/commit(脚本SECRETS scrub, log只打业务字段); 号一次性(出生→判→领同run)
+# 判读: login Result=0+IsNewUser=1=出生成功; rec Result=0=带标; claim Result=0=领取成功;
+#   safegetcontent Result=0=VIP章节可读=真实限免权限; -10021=账号风险等级高(粘性)
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '模式: full=真扫码(25min窗) / verify=短窗验证+死号半真实验'
+        required: false
+        default: 'full'
+      qr_wait:
+        description: 'QR等待窗口秒数(0=用模式默认: full=1500/verify=300)'
+        required: false
+        default: '0'
+
+jobs:
+  qr-born:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup redroid + frida
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) android-tools-adb curl xz-utils unzip python3-pip libzbar0 || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q "frida==16.7.19" "frida-tools<14" pycryptodome qrcode pillow pyzbar 2>&1 | tail -1
+
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_width=720 androidboot.redroid_height=1184 androidboot.redroid_dpi=240 \
+            androidboot.redroid_gpu_mode=guest 2>&1 | tail -1
+
+          adb start-server >/dev/null 2>&1; sleep 5
+          for i in $(seq 1 30); do
+            adb connect localhost:5555 >/dev/null 2>&1
+            S=$(timeout 8 adb -s localhost:5555 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && break
+            sleep 6
+          done
+          adb -s localhost:5555 shell "echo BOOT_OK"
+
+          # frida-server 只下载推送, 不启动 (等App稳定后再启 — geth模板模式, v7实证)
+          FR=16.7.19
+          curl -sSL --max-time 180 -o fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f fs.xz 2>/dev/null || gunzip -f fs.xz 2>/dev/null
+          mv -f fs fs-server 2>/dev/null; chmod +x fs-server
+          timeout 30 adb -s localhost:5555 root 2>&1 | head -1
+          sleep 6; timeout 30 adb -s localhost:5555 wait-for-device || true
+          adb -s localhost:5555 shell "setenforce 0" 2>&1 | head -1
+          adb -s localhost:5555 push fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s localhost:5555 shell "chmod 755 /data/local/tmp/fs-srv"
+          echo "Setup complete"
+
+      - name: Install q480 + consent + launch app
+        run: |
+          set +e
+          B=localhost:5555
+          APP=com.qidian.QDReader
+
+          # q480 (7.9.480): libknobs.so md5=267448d26c43efb6cfddf269d14f865b 与RECON分析件逐字节同(v7实证)
+          curl -sSL --max-time 900 -o q480.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/q480.apk"
+          md5sum q480.apk
+          timeout 300 adb -s $B push q480.apk /data/local/tmp/q480.apk >/dev/null 2>&1
+          timeout 300 adb -s $B shell "pm install -r -d -t --user 0 /data/local/tmp/q480.apk" 2>&1 | tail -1
+
+          # 预写隐私同意(qd-qimei-net同款, v7实证可让App走完整启动网络流; uid必须取对)
+          APP_UID=$(adb -s $B shell "stat -c '%u' /data/data/$APP" 2>/dev/null | tr -d '\r')
+          if [ -z "$APP_UID" ] || [ "$APP_UID" = "0" ] || [ "$APP_UID" -le 10000 ] 2>/dev/null; then
+            APP_UID=$(adb -s $B shell "cmd package list packages -U $APP" 2>/dev/null | tr -d '\r' | sed 's/.*uid://' | head -1)
+          fi
+          echo "app uid=$APP_UID"
+          adb -s $B shell "mkdir -p /data/data/$APP/shared_prefs"
+          adb -s $B shell "echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/$APP/shared_prefs/app_sp.xml"
+          if [ -n "$APP_UID" ] && [ "$APP_UID" -gt 10000 ] 2>/dev/null; then
+            adb -s $B shell "chown $APP_UID:$APP_UID /data/data/$APP/shared_prefs/app_sp.xml; chmod 660 /data/data/$APP/shared_prefs/app_sp.xml"
+          else
+            adb -s $B shell "chmod 644 /data/data/$APP/shared_prefs/app_sp.xml"
+          fi
+          adb -s $B shell "ls -la /data/data/$APP/shared_prefs/app_sp.xml"
+
+          adb -s $B logcat -c 2>/dev/null
+          (timeout 3000 adb -s $B logcat -v time > /tmp/logcat.txt 2>&1 &)
+
+          # 单次启动 + 稳定检测 + 隐私弹窗点击 (v7实证: tvSkip/btnAgree不点卡登录屏零argus流量)
+          adb -s $B shell "am start -n $APP/.ui.activity.SplashActivity" >/dev/null 2>&1
+          T0=$(date +%s)
+          STABLE_PID=""
+          for i in $(seq 1 15); do
+            sleep 3
+            P=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')
+            if [ -n "$P" ]; then
+              sleep 5
+              P2=$(timeout 10 adb -s $B shell pidof $APP | tr -d '\r' | awk '{print $1}')
+              if [ "$P" = "$P2" ] && [ -n "$P2" ]; then STABLE_PID=$P; echo "App stable PID=$STABLE_PID"; break; fi
+            fi
+            timeout 15 adb -s $B shell "uiautomator dump /sdcard/u.xml" >/dev/null 2>&1
+            timeout 15 adb -s $B shell "cat /sdcard/u.xml" 2>/dev/null | tr -d '\r' > /tmp/u.xml
+            XY=$(python3 tap_consent.py /tmp/u.xml 2>/dev/null | head -1)
+            [ -n "$XY" ] && { adb -s $B shell "input tap $XY"; echo "CONSENT_TAP $XY"; }
+          done
+          [ -z "$STABLE_PID" ] && { echo "NO_APP"; exit 1; }
+          echo "App age at frida attach: $(( $(date +%s) - T0 ))s"
+
+          # 此刻启动 frida-server (自定义端口14771, 避开默认端口扫描; v7实证)
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
+          sleep 8
+          adb -s $B forward tcp:14771 tcp:14771
+          echo "frida-server up, app pid=$STABLE_PID"
+
+      - name: QR born oracle chain (出码→等扫→login→判→领)
+        env:
+          QD_BORN_SESSION: ${{ secrets.QD_BORN_SESSION }}
+          QD_BORN_MODE: ${{ inputs.mode || 'full' }}
+          QD_QR_WAIT: ${{ inputs.qr_wait || '0' }}
+        run: |
+          set +e
+          python3 ci/qr_born_oracle.py 2>&1 | tee /tmp/qrborn_stdout.txt
+          EC=$?
+          echo "qr_born_oracle.py exit=$EC (非0=看门狗/异常, 证据仍上传)"
+          echo "=== oracle.log 大小与关键行数 ==="
+          wc -c /tmp/oracle.log 2>/dev/null
+          for pat in '\[GETH\]' '\[SNIN\]' '\[SNOUT\]' '\[SHIELD\]' '\[HB\]'; do
+            printf '%s: ' "$pat"; grep -ac "$pat" /tmp/oracle.log 2>/dev/null || echo 0
+          done
+          echo "=== QR产物 ==="
+          ls -la /tmp/qrborn/ 2>/dev/null
+          cat /tmp/qrborn/qr_url.txt 2>/dev/null
+          tail -5 /tmp/oracle.log 2>/dev/null
+          exit 0
+
+      - name: Upload Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qr-born
+          path: |
+            /tmp/qrborn_stdout.txt
+            /tmp/oracle.log
+            /tmp/qrborn/
+            /tmp/logcat.txt
+            /tmp/u.xml
+          if-no-files-found: warn
