@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
-# oracle_verdict.py — 活App风控头oracle终判链 v2 (子代理F, 2026-10-14)
+# oracle_verdict.py — 活App风控头oracle终判链 v3 (子代理F, 2026-10-14)
 #
 # 用法(runner上, 前置: redroid+q480 App已稳定启动, frida-server 14771已起且adb forward已通):
-#   QD_BORN_SESSION=<base64(JSON)> python3 ci/oracle_verdict.py
+#   QD_BORN_SESSION=<base64(JSON)> ORACLE_CHAINS=real,synth,synth2 python3 ci/oracle_verdict.py
+#
+# v3 (run 38550149276 实证修正):
+#   ① App卡Guidance+误点开webview_shell浏览器→后台化→ANR死(v2 logcat铁证) →
+#      UI循环加前台检测(非qd包→BACK键), dump结果+最后xml落盘, 横滑推进Guidance轮播
+#   ② App死亡后frida attach超时(fs-srv僵死) → attach失败2次后重启fs-srv+am start重启App
+#   ③ 合成臂v2(synth2): borgus_480(子代理G参数并入公式, 135/136语料验证) + GORGON_480常量
+#      (184B跨安装恒定) + python QDSign — 唯一缺cecelia(不可合成)
+#   ④ 设备档案在等待循环首次好冒烟时捕获 — oracle后期死亡不影响synth/synth2臂
 #
 # v2 (run 38548441945 实证修正, 3个根因):
 #   ① getH的QDSign只签URL query不签POST body(f7=md5('')), 自然App在retrofit层用
-#      md5(canon(body))重签(80组okhttp实证: androidUpdate/push/report f7==md5(canon(body)全中)
-#      → 真头链QDSign由python按canon(body)计算(与synth同款, run1实证synth rec Result=0通过)
-#   ② gorgon空: run1 App卡GuidanceActivity没到主页(v7实证要到主页才有全套流量),
-#      且gorgon诞生晚(cecelia_analysis: ~T+73本地窗口) → 激活门改为 cecelia 2_ AND gorgon非空,
-#      期限attach+300s; 期间循环冒烟+UI推进(tvSkip/跳过/battery)
-#   ③ taskId提取: tips响应是"TaskId":"1327694266436943872"(带引号) → v1只匹配无引号形态漏了
-#      → 链路改为两段: 先getconf/limitfree/tips → 提真taskId → 再rec/reward/auto/复查
-# 另修: frida-python console.log走set_log_handler才能进oracle.log(v1走默认stdout, oracle.log空)
+#      md5(canon(body))重签(80组okhttp实证) → 真头链QDSign由python按canon(body)计算
+#      (run1实证synth rec Result=0通过)
+#   ② gorgon空: App卡Guidance没到主页(v7实证要到主页才有全套流量+gorgon)
+#   ③ taskId提取: tips响应是"TaskId":"1327694266436943872"(带引号) → v1漏了
+#   另修: frida-python console.log走set_log_handler才能进oracle.log
 #
-# 流程: attach → 等激活(cecelia 2_ + gorgon非空 + borgus 32hex, 循环冒烟getconf) →
-#   真头终判链(oracle cecelia/gorgon/borgus/QDInfo/tstamp/Cookie/UA + python QDSign) →
-#   合成头对照链(python全合成, 无cecelia/gorgon, borgus_gen标准形态) → 真头vs合成头Result对比
+# 链路: 真头臂(oracle cecelia/gorgon/borgus/QDInfo/tstamp/Cookie/UA+python QDSign) vs
+#   synth臂(v1四字段borgus, 无cecelia/gorgon=纯协议出生条件) vs
+#   synth2臂(borgus_480+GORGON_480常量+无cecelia=最强合成) — 三臂Result对比=风控头因果
 # 纪律: QD_BORN_SESSION解码值只活在内存; job log只打Result码/Message/响应体摘要;
 #   头值只落/tmp/verdict/**(artifact, ywkey/CmfuToken已脱敏)
 import os, sys, json, time, base64, gzip, re, subprocess, threading, collections
@@ -116,12 +121,50 @@ class Oracle:
         except Exception:
             return None
 
+    def ensure_app(self):
+        """App死了就am start重启(隐私consent已预写, 会走完整启动流)"""
+        pid = self.pidof()
+        if pid:
+            return pid
+        try:
+            self.adb('shell', 'am', 'start', '-n', APP + '/.ui.activity.SplashActivity', timeout=10)
+        except Exception:
+            pass
+        for _ in range(12):
+            time.sleep(5)
+            pid = self.pidof()
+            if pid:
+                L('[ORACLE] App已重启 pid=%s' % pid)
+                return pid
+        return None
+
+    def restart_frida_server(self):
+        """fs-srv僵死(App ANR死后attach超时) → 重启frida-server+重forward"""
+        L('[ORACLE] 重启frida-server...')
+        try:
+            self.adb('shell', 'pkill -f fs-srv', timeout=8)
+        except Exception:
+            pass
+        time.sleep(2)
+        try:
+            self.adb('shell', 'setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &', timeout=8)
+        except Exception:
+            pass
+        time.sleep(7)
+        try:
+            self.adb('forward', 'tcp:14771', 'tcp:14771', timeout=8)
+        except Exception:
+            pass
+
     def attach(self):
+        fs_restarted = False
         for attempt in range(6):
             try:
                 pid = self.pidof()
                 if not pid:
-                    L('[ORACLE] no pid yet (attempt %d)' % attempt); time.sleep(5); continue
+                    pid = self.ensure_app()
+                if not pid:
+                    L('[ORACLE] no pid (attempt %d)' % attempt); time.sleep(5); continue
                 dev = self.frida.get_device_manager().add_remote_device(self.host)
                 self.session = dev.attach(int(pid))
                 with open(HOOK) as f:
@@ -140,6 +183,9 @@ class Oracle:
                 return True
             except Exception as e:
                 L('[ORACLE] attach err (attempt %d): %s' % (attempt, scrub(str(e))[:200]))
+                if attempt == 1 and not fs_restarted:
+                    self.restart_frida_server()
+                    fs_restarted = True
                 time.sleep(6)
         return False
 
@@ -197,9 +243,11 @@ class Oracle:
             raise RuntimeError('rpc.%s exception: %s' % (fn, box['e']))
         return box.get('r')
 
-# ───────────────────────── UI推进线程 (v7 tap battery + 跳过文本匹配 + 日志) ─────────────────────────
+# ───────────────────────── UI推进线程 (v3: 前台检测+BACK键+dump落盘+轮播横滑) ─────────────────────────
 TAPS = [(360, 580), (360, 1100), (180, 1100), (360, 350), (540, 1100), None,
-        (360, 700), (360, 350), (360, 580), (360, 1100)]   # None = 上滑(Guidance推进)
+        (360, 700), (360, 350), (360, 580), (360, 1100)]   # None = 轮播横滑
+SKIP_IDS = ('tvSkip', 'ivSkip', 'btnAgree')
+SKIP_TEXTS = ('跳过', '立即体验', '开始使用', '同意并继续')
 
 def _find_bounds(xml, id_frag=None, text=None):
     if id_frag:
@@ -211,6 +259,17 @@ def _find_bounds(xml, id_frag=None, text=None):
         return (x1 + x2) // 2, (y1 + y2) // 2
     return None
 
+def _foreground(oracle):
+    """当前前台窗口行(误点开的浏览器/webview → 需要BACK回App); 取不到返回'?'"""
+    try:
+        r = oracle.adb('shell', 'dumpsys', 'window', timeout=12)
+        for line in (r.stdout or '').splitlines():
+            if 'mCurrentFocus' in line or 'mFocusedApp' in line:
+                return line.strip()[:200]
+        return '?'
+    except Exception:
+        return '?'
+
 def ui_thread(stop, oracle):
     ti = 0
     n = 0
@@ -218,25 +277,48 @@ def ui_thread(stop, oracle):
         n += 1
         act = ''
         try:
-            oracle.adb('shell', 'uiautomator', 'dump', '/sdcard/u.xml', timeout=15)
-            r = oracle.adb('shell', 'cat', '/sdcard/u.xml', timeout=15)
-            xml = r.stdout or ''
-            xy = (_find_bounds(xml, 'tvSkip') or _find_bounds(xml, text='跳过')
-                  or _find_bounds(xml, 'btnAgree') or _find_bounds(xml, text='同意并继续'))
-            if xy:
-                act = 'tap(%d,%d)' % xy
-                oracle.adb('shell', 'input', 'tap', str(xy[0]), str(xy[1]))
+            # ① 前台检测: 非起点App在前台(误点开浏览器等) → BACK回App (v2教训: 卡webview_shell→ANR死)
+            fg = _foreground(oracle)
+            if fg != '?' and 'com.qidian.QDReader' not in fg and 'mCurrentFocus' in fg:
+                oracle.adb('shell', 'input', 'keyevent', '4', timeout=8)
+                act = 'BACK(fg=%s)' % fg.split('u0')[0].strip()[-40:]
+            # ② uiautomator dump → 优先点跳过类按钮
             else:
-                t = TAPS[ti % len(TAPS)]; ti += 1
-                if t is None:
-                    act = 'swipe'
-                    oracle.adb('shell', 'input', 'swipe', '360', '900', '360', '300', '400')
+                oracle.adb('shell', 'uiautomator', 'dump', '/sdcard/u.xml', timeout=15)
+                r = oracle.adb('shell', 'cat', '/sdcard/u.xml', timeout=15)
+                xml = r.stdout or ''
+                if len(xml) > 200:
+                    try:
+                        with open('/tmp/u.xml', 'w') as f:
+                            f.write(xml)
+                    except Exception:
+                        pass
+                    xy = None
+                    for i in SKIP_IDS:
+                        xy = _find_bounds(xml, i)
+                        if xy:
+                            break
+                    if not xy:
+                        for t in SKIP_TEXTS:
+                            xy = _find_bounds(xml, text=t)
+                            if xy:
+                                break
+                    if xy:
+                        act = 'tap(%d,%d)' % xy
+                        oracle.adb('shell', 'input', 'tap', str(xy[0]), str(xy[1]))
+                    else:
+                        t = TAPS[ti % len(TAPS)]; ti += 1
+                        if t is None:
+                            act = 'hswipe(轮播)'
+                            oracle.adb('shell', 'input', 'swipe', '680', '600', '60', '600', '300')
+                        else:
+                            act = 'battery(%d,%d)' % t
+                            oracle.adb('shell', 'input', 'tap', str(t[0]), str(t[1]))
                 else:
-                    act = 'battery(%d,%d)' % t
-                    oracle.adb('shell', 'input', 'tap', str(t[0]), str(t[1]))
+                    act = 'dump空(%d)' % len(xml)
         except Exception as e:
             act = 'err:%s' % str(e)[:40]
-        if n % 3 == 1:
+        if n % 2 == 1:
             L('[UI] cycle#%d %s' % (n, act))
         stop.wait(11)
 
@@ -348,7 +430,6 @@ def extract_tid(raw_text):
     return '0'
 
 # ───────────────────────── 链执行 ─────────────────────────
-SUMMARY = {'smoke': {}, 'real': [], 'synth': [], 'sn_pairs': 0, 'notes': []}
 
 def run_chain(tag, oracle, sess, steps, header_builder):
     results = []
@@ -407,7 +488,7 @@ def real_header_builder(oracle, sess, dev):
     return build
 
 def synth_header_builder(sess, dev):
-    """合成头对照链: python全合成(QDInfo/QDSign), borgus_gen标准形态, 无cecelia/gorgon = 纯协议出生条件"""
+    """合成头对照臂v1: python全合成(QDInfo/QDSign), v1四字段borgus, 无cecelia/gorgon = 纯协议出生条件"""
     def build(url, method, body):
         now_ms = int(time.time() * 1000)
         ts = str(now_ms)
@@ -425,11 +506,56 @@ def synth_header_builder(sess, dev):
                 'Cookie': ck}   # 无cecelia/gorgon = 纯协议出生条件
     return build
 
-# ───────────────────────── 主流程 ─────────────────────────
+def synth2_header_builder(sess, dev):
+    """合成头对照臂v2(最强合成): borgus_480(子代理G参数并入公式135/136验证) +
+    GORGON_480常量(184B跨安装恒定可复用) + python QDSign — 唯一缺cecelia(不可合成)"""
+    from borgus_gen import borgus_480
+    try:
+        from qdsign_gen import GORGON_480
+    except Exception:
+        GORGON_480 = ''
+    def build(url, method, body):
+        now_ms = int(time.time() * 1000)
+        ts = str(now_ms)
+        f = list(dev['qdinfo_fields'])
+        f[11] = sess['guid']; f[12] = ts
+        qdi = des3_enc_b64('|'.join(f), K + K[:8], QDINFO_IV)
+        canon = canon_of(url, method, body.encode() if isinstance(body, str) else body)
+        qds = build_qdsign(ts, sess['guid'], dev['androidid'], dev['appver'], canon)
+        bor = borgus_480(url, body if isinstance(body, str) else None, now_ms, dev['qimei36'])
+        ck = patch_cookie(dev['cookie_template'], sess['guid'], sess['key'], sess['cmfu'])
+        ck = re.sub(r'QDInfo=[^;]+', 'QDInfo=%s' % qdi, ck, count=1)
+        h = {'User-Agent': dev['ua'], 'Accept-Encoding': 'gzip', 'Connection': 'Keep-Alive',
+             'QDInfo': qdi, 'tstamp': ts, 'QDSign': qds, 'borgus': bor,
+             'Cookie': ck}      # 无cecelia(唯一不可合成项)
+        if GORGON_480:
+            h['gorgon'] = GORGON_480
+        return h
+    return build
+
+
+SUMMARY = {'smoke': {}, 'real': [], 'synth': [], 'synth2': [], 'sn_pairs': 0, 'notes': []}
+CHAINS = [c.strip() for c in (os.environ.get('ORACLE_CHAINS') or 'real,synth,synth2').split(',') if c.strip()]
+
+def extract_dev(m):
+    qf = des3_dec(m['QDSign'].replace(' ', ''), KS, QDSIGN_IV).split('|')
+    qdi_f = des3_dec(m['QDInfo'], K + K[:8], QDINFO_IV).split('|')
+    return {'qdinfo_fields': qdi_f, 'androidid': qdi_f[0], 'appver': qf[5], 'vcode': qdi_f[8],
+            'qimei36': qdi_f[14] if len(qdi_f) > 14 else '', 'ua': m.get('User-Agent', ''),
+            'cookie_template': m.get('Cookie', '')}
+
+def run_chain_pair(tag, oracle, sess, header_builder, results):
+    results.extend(run_chain(tag, oracle, sess, steps_phase_a(), header_builder))
+    tips_raw = next((r.get('response', '') for r in results if r.get('step') == 'tips'), '')
+    tid = extract_tid(tips_raw)
+    L('[TID] %s臂 tips响应提取taskId=%s' % (tag, tid))
+    SUMMARY.setdefault('taskid', {})[tag] = tid
+    results.extend(run_chain(tag, oracle, sess, steps_phase_b(tid), header_builder))
+
 def main():
     os.makedirs(EVID_DIR, exist_ok=True)
     t_start = time.time()
-    L('=== oracle verdict chain v2 start (pid=%d) ===' % os.getpid())
+    L('=== oracle verdict chain v3 start (pid=%d, chains=%s) ===' % (os.getpid(), CHAINS))
     sess = load_session()
 
     oracle = Oracle()
@@ -443,11 +569,12 @@ def main():
     th = threading.Thread(target=ui_thread, args=(stop, oracle), daemon=True)
     th.start()
 
-    # 1. 等全套真头成熟: cecelia 2_ AND gorgon非空 AND borgus 32hex (循环冒烟, 期限attach+300s)
-    #    (run1教训: cecelia 2_在T+38就有, 但gorgon诞生晚且App卡Guidance时不产 — v2必须等gorgon)
+    # 1. 等真头成熟: cecelia 2_ AND gorgon非空 AND borgus 32hex (冒烟循环, 期限300s)
+    #    设备档案在首次好冒烟时捕获 — oracle后期死亡不影响synth/synth2臂
     L('[WAIT] 等真头成熟 (cecelia 2_ + gorgon非空 + borgus 32hex, 冒烟循环, 期限300s)...')
     t0 = time.time()
     smoke = {}
+    dev = None
     ready = False
     while time.time() - t0 < 300:
         try:
@@ -457,8 +584,17 @@ def main():
             bor = m.get('borgus') or ''
             smoke = {'t': int(time.time() - t0), 'cecelia_2': cec.startswith('2_'),
                      'cecelia_len': len(cec), 'gorgon_len': len(gorg),
-                     'borgus_32hex': bool(re.fullmatch(r'[0-9a-f]{32}', bor)),
-                     'keys': sorted(m.keys())}
+                     'borgus_32hex': bool(re.fullmatch(r'[0-9a-f]{32}', bor))}
+            if dev is None and smoke['cecelia_2']:
+                try:
+                    dev = extract_dev(m)   # ★早期捕获设备档案+cookie模板
+                    SUMMARY['device'] = {'androidid': dev['qdinfo_fields'][0],
+                                         'model': dev['qdinfo_fields'][7],
+                                         'vcode': dev['qdinfo_fields'][8],
+                                         'qimei36': dev['qimei36'], 'ua': dev['ua']}
+                    L('[DEV] 设备档案已捕获(App后期死也不影响合成臂)')
+                except Exception as e:
+                    L('[DEV] 档案提取失败: %s' % scrub(str(e))[:120])
             if smoke['cecelia_2'] and len(gorg) > 100 and smoke['borgus_32hex']:
                 ready = True
                 L('[WAIT] 真头成熟 ✓ t+%ds: %s' % (time.time() - t0, json.dumps(smoke)))
@@ -473,67 +609,76 @@ def main():
         except Exception as e:
             L('[WAIT] 冒烟异常: %s — 重挂' % scrub(str(e))[:150])
             if not oracle.attach():
-                pass
+                time.sleep(10)
         time.sleep(10)
     if not ready:
         L('[WAIT] 300s内真头未全齐(如上) — 继续跑链并如实报告(头以实际拿到的为准)')
 
-    # 2. 冒烟定案记录 + canon对拍 + 设备档案
-    try:
-        m = oracle.geth(SMOKE_URL, 'GET', None)
-        cec = m.get('cecelia') or ''
-        gorg = m.get('gorgon') or ''
-        bor = m.get('borgus') or ''
-        smoke = {'url': SMOKE_URL, 'keys': sorted(m.keys()),
+    # 2. 冒烟定案记录(oracle活着就刷新dev; 死了用等待期捕获的dev)
+    m_final = None
+    for attempt in range(3):
+        try:
+            m_final = oracle.geth(SMOKE_URL, 'GET', None)
+            break
+        except Exception as e:
+            L('[SMOKE] 直调失败(尝试%d): %s — 重挂' % (attempt, scrub(str(e))[:150]))
+            if not oracle.attach():
+                time.sleep(8)
+    oracle_alive = m_final is not None
+    if oracle_alive:
+        cec = m_final.get('cecelia') or ''
+        gorg = m_final.get('gorgon') or ''
+        bor = m_final.get('borgus') or ''
+        smoke = {'url': SMOKE_URL, 'keys': sorted(m_final.keys()),
                  'cecelia_prefix': cec[:4], 'cecelia_len': len(cec),
                  'gorgon_len': len(gorg), 'borgus_len': len(bor),
                  'cecelia_2': cec.startswith('2_'), 'gorgon_nonempty': len(gorg) > 100,
                  'borgus_32hex': bool(re.fullmatch(r'[0-9a-f]{32}', bor))}
-        qf = des3_dec(m['QDSign'].replace(' ', ''), KS, QDSIGN_IV).split('|')
-        smoke['qdsign_f7'] = qf[7]
-        smoke['canon_md5_empty'] = md5('')
-        smoke['canon_match_empty'] = qf[7] == md5('')
-        smoke['qdsign_f2_uid'] = qf[2]
-        smoke['qdsign_f5_av'] = qf[5]
-        qdi_f = des3_dec(m['QDInfo'], K + K[:8], QDINFO_IV).split('|')
-        smoke['qdinfo_fields_n'] = len(qdi_f)
+        try:
+            qf = des3_dec(m_final['QDSign'].replace(' ', ''), KS, QDSIGN_IV).split('|')
+            smoke['qdsign_f7'] = qf[7]
+            smoke['canon_md5_empty'] = md5('')
+            smoke['canon_match_empty'] = qf[7] == md5('')
+            smoke['qdsign_f5_av'] = qf[5]
+        except Exception:
+            pass
         smoke['ok'] = bool(smoke['cecelia_2'] and smoke['gorgon_nonempty'] and smoke['borgus_32hex'])
-        L('[SMOKE] %s' % json.dumps(smoke, ensure_ascii=False))
-        SUMMARY['smoke'] = smoke
-        json.dump(smoke, open(EVID_DIR + '/smoke.json', 'w'), ensure_ascii=False, indent=1)
-        dev = {'qdinfo_fields': qdi_f, 'androidid': qdi_f[0], 'appver': qf[5], 'vcode': qdi_f[8],
-               'qimei36': qdi_f[14] if len(qdi_f) > 14 else '', 'ua': m.get('User-Agent', ''),
-               'cookie_template': m.get('Cookie', '')}
-        SUMMARY['device'] = {'androidid': qdi_f[0], 'model': qdi_f[7], 'vcode': qdi_f[8],
-                             'qimei36': qdi_f[14], 'ua': dev['ua']}
-        L('[DEV] oracle设备档案: androidid=%s model=%s vcode=%s qimei36=%s' % (
-            qdi_f[0], qdi_f[7], qdi_f[8], qdi_f[14][:16] + '…'))
-    except Exception as e:
-        L('[SMOKE] oracle直调失败: %s — 链路无法进行, 如实退出' % scrub(str(e))[:300])
-        SUMMARY['smoke'] = {'error': scrub(str(e))[:300]}
-        json.dump(SUMMARY, open(EVID_DIR + '/verdict_summary.json', 'w'), ensure_ascii=False, indent=1)
+        try:
+            dev = extract_dev(m_final)
+            SUMMARY['device'] = {'androidid': dev['qdinfo_fields'][0], 'model': dev['qdinfo_fields'][7],
+                                 'vcode': dev['qdinfo_fields'][8], 'qimei36': dev['qimei36'], 'ua': dev['ua']}
+        except Exception:
+            pass
+    SUMMARY['smoke'] = smoke
+    json.dump(smoke, open(EVID_DIR + '/smoke.json', 'w'), ensure_ascii=False, indent=1)
+    L('[SMOKE] oracle存活=%s %s' % (oracle_alive, json.dumps(smoke, ensure_ascii=False)[:400]))
+    if dev:
+        L('[DEV] androidid=%s model=%s vcode=%s qimei36=%s' % (
+            dev['qdinfo_fields'][0], dev['qdinfo_fields'][7], dev['qdinfo_fields'][8],
+            dev['qimei36'][:16] + '…'))
+    else:
+        L('[FATAL] 无设备档案(等待期也没捕获到好冒烟) — 合成臂也无法构造, 如实退出')
+        SUMMARY['notes'].append('no device template')
         stop.set()
+        json.dump(SUMMARY, open(EVID_DIR + '/verdict_summary.json', 'w'), ensure_ascii=False, indent=1)
         return 0
 
-    # 3. 真头终判链 (两段: phase a 提真taskId → phase b 领取)
-    L('════ 真头终判链 (oracle全套真风控头 + python QDSign) ════')
-    rb = real_header_builder(oracle, sess, dev)
-    SUMMARY['real'] = run_chain('real', oracle, sess, steps_phase_a(), rb)
-    tips_raw = next((r.get('response', '') for r in SUMMARY['real'] if r.get('step') == 'tips'), '')
-    tid = extract_tid(tips_raw)
-    L('[TID] tips响应提取taskId=%s' % tid)
-    SUMMARY['taskid'] = tid
-    SUMMARY['real'].extend(run_chain('real', oracle, sess, steps_phase_b(tid), rb))
+    # 3. 三臂链路 (两段: phase a提真taskId → phase b领取)
+    if 'real' in CHAINS:
+        if oracle_alive:
+            L('════ 真头臂 (oracle全套真风控头 + python QDSign) ════')
+            run_chain_pair('real', oracle, sess, real_header_builder(oracle, sess, dev), SUMMARY['real'])
+        else:
+            L('════ 真头臂跳过: oracle已死(等待期后) — 如实报告 ════')
+            SUMMARY['notes'].append('real arm skipped: oracle dead')
+    if 'synth' in CHAINS:
+        L('════ 合成臂v1 (纯协议出生条件: v1四字段borgus, 无cecelia/gorgon) ════')
+        run_chain_pair('synth', oracle, sess, synth_header_builder(sess, dev), SUMMARY['synth'])
+    if 'synth2' in CHAINS:
+        L('════ 合成臂v2 (最强合成: borgus_480 + GORGON_480常量, 无cecelia) ════')
+        run_chain_pair('synth2', oracle, sess, synth2_header_builder(sess, dev), SUMMARY['synth2'])
 
-    # 4. 合成头对照链 (borgus_gen标准形态, 无cecelia/gorgon)
-    L('════ 合成头对照链 (纯协议合成头) ════')
-    sb = synth_header_builder(sess, dev)
-    SUMMARY['synth'] = run_chain('synth', oracle, sess, steps_phase_a(), sb)
-    tips_raw_s = next((r.get('response', '') for r in SUMMARY['synth'] if r.get('step') == 'tips'), '')
-    tid_s = extract_tid(tips_raw_s)
-    SUMMARY['synth'].extend(run_chain('synth', oracle, sess, steps_phase_b(tid_s), sb))
-
-    # 5. sn两形态样本提取
+    # 4. sn两形态样本提取
     sn_pairs = []
     try:
         cur = None
@@ -557,12 +702,12 @@ def main():
     stop.set()
     json.dump(SUMMARY, open(EVID_DIR + '/verdict_summary.json', 'w'), ensure_ascii=False, indent=1)
 
-    # 6. 终判摘要
+    # 5. 终判摘要
     L('════════ 终判摘要 ════════')
     L('smoke: %s' % json.dumps(SUMMARY.get('smoke', {}), ensure_ascii=False)[:300])
-    for tag in ('real', 'synth'):
+    for tag in ('real', 'synth', 'synth2'):
         for r in SUMMARY.get(tag, []):
-            L('%-5s %-12s Result=%s %s' % (tag, r.get('step'), r.get('Result', r.get('error', '?')), r.get('Message', '')))
+            L('%-6s %-12s Result=%s %s' % (tag, r.get('step'), r.get('Result', r.get('error', '?')), r.get('Message', '')))
     L('耗时 %ds; 证据 %s/; sn对 %d; oracle.log %s' % (time.time() - t_start, EVID_DIR, len(sn_pairs), ORACLE_LOG))
     return 0
 
