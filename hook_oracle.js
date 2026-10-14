@@ -577,10 +577,31 @@ rpc.exports = {
                 var inst = FU.INSTANCE.value;
                 var rb = null;
                 if (body !== null && body !== undefined) {
-                    // body为字符串(POST表单体原文, 可为'') — 构造RequestBody模仿自然POST调用
-                    var RB = Java.use("okhttp3.RequestBody");
-                    var MT = Java.use("okhttp3.MediaType");
-                    rb = RB.create(MT.parse("application/x-www-form-urlencoded"), String(body));
+                    // ★v3(38553721868实证): RequestBody.create时getH的borgus只走四字段形态(不并入body参数);
+                    //   自然调用用FormBody → borgus并入参数(子代理G 135/136语料验证的合并公式)。
+                    //   表单体构造FormBody模仿自然调用, 其余退回RequestBody.create。
+                    var s = String(body);
+                    var made = false;
+                    if (s.indexOf("=") >= 0 && s.indexOf("\n") < 0) {
+                        try {
+                            var FBB = Java.use("okhttp3.FormBody$Builder");
+                            var fbb = FBB.$new();
+                            var parts = s.split("&");
+                            for (var pi = 0; pi < parts.length; pi++) {
+                                if (parts[pi].length === 0) continue;
+                                var eq = parts[pi].indexOf("=");
+                                if (eq < 0) fbb.addEncoded(parts[pi], "");
+                                else fbb.addEncoded(parts[pi].substring(0, eq), parts[pi].substring(eq + 1));
+                            }
+                            rb = fbb.build();
+                            made = true;
+                        } catch (e) { L("[RPC_FORMBODY_ERR] " + e); }
+                    }
+                    if (!made) {
+                        var RB = Java.use("okhttp3.RequestBody");
+                        var MT = Java.use("okhttp3.MediaType");
+                        rb = RB.create(MT.parse("application/x-www-form-urlencoded"), s);
+                    }
                 }
                 var res = inst.getH(String(url), String(method || "GET"), rb);
                 var m = {};
