@@ -117,7 +117,7 @@ jobs:
           # 被动采集 200s: stdin保持打开让frida存活; pid守卫 — 若壳杀进程重启, 等新进程过40s后重挂
           # (重启进程会重跑完整网络初始化, 重挂后仍能收到它的getconf/r1爆发)
           : > /tmp/collect.log
-          SESS_END=$(( $(date +%s) + 240 ))
+          SESS_END=$(( $(date +%s) + 300 ))
           CUR_PID=$STABLE_PID
           TAPS="360 580|360 1100|180 1100|360 350|540 1100|SWIPE|360 700|360 350|360 580|360 1100"
           IFS='|' read -ra TAPARR <<< "$TAPS"

@@ -491,10 +491,13 @@ Java.perform(function() {
             try { var sr = KIB.search(); L("[KI_TRY " + tag + "] search()=" + (sr === null ? "null" : String(sr).substring(0, 300))); } catch (e) { L("[KI_TRY " + tag + "] search() ERR " + e); }
             try { KIB.a(true); L("[KI_TRY " + tag + "] a(true) ok"); } catch (e) { L("[KI_TRY " + tag + "] a(true) ERR " + e); }
             try { KIB.a(false); L("[KI_TRY " + tag + "] a(false) ok"); } catch (e) { L("[KI_TRY " + tag + "] a(false) ERR " + e); }
+            try { KIB.cihai("https://druidv6.if.qidian.com/argus/api/v3/freshman/autoreceive"); L("[KI_TRY " + tag + "] cihai(autoreceive) ok"); } catch (e) { L("[KI_TRY " + tag + "] cihai1 ERR " + e); }
+            try { KIB.cihai("https://druidv6.if.qidian.com/argus/api/v3/client/r1"); L("[KI_TRY " + tag + "] cihai(r1url) ok"); } catch (e) { L("[KI_TRY " + tag + "] cihai2 ERR " + e); }
         } catch (e) { L("[KI_TRY " + tag + "] ERR " + e); }
     }
     setTimeout(function() { Java.perform(function() { kiBattery("t70"); }); }, 70000);
     setTimeout(function() { Java.perform(function() { kiBattery("t140"); }); }, 140000);
+    setTimeout(function() { Java.perform(function() { kiBattery("t200"); }); }, 200000);
 
     // ── AttributionParamsBuilder 只读探测 ──
     try {
