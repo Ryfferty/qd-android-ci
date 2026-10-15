@@ -1,18 +1,26 @@
 name: qd-r1-keyhunt
 
-# r1 密钥攻坚采集 (2026-10-15): 登录态会话注入 × frida 被动 hook libknobs SetB 原语
-# 依据 (qidian_auto/RECON/r1_key_hunt.md, 全部 unidbg/静态实证):
-#   - r/i = AES-128-CFB-128 (libknobs SetB); key 不在 libknobs 内 (keyexp 0 内部调用者,
-#     无 init_array, .bss 192B init 后全零) → 由 VMP(l1.judian) 运行时经 dlsym 传入
-#   - keyexp(ctx,key,bits) ctx+8/+16 起 = 扩展调度且 sched[0:16]=原始key → hook CFB 即可回读 key
-#   - 触发窗: 登录态注入后 r1 自然发 ×10-14 (qd-mitm-login 实证); 匿名层不触发 (qd-collect-risk 教训)
-#   - 反检测盾 = hook_collect_cecelia.js v2 同款 (run2-run5 实证 attach 后自杀被拦)
-# 采集面 (纯被动零直调): SETA/SETB keyexp + CFB/CFB-NEON/CTR/CBC/GEN_ENCRYPT 入出参
-#   + .bss knobs_70861349 192B 轮询 + dlsym("knobs_*") + KI.intercept/NativeWrapper/okhttp r1 wire
-# 验收: ci/r1_gen.py harvest /tmp/keyhunt_collect.log → [HIT] + CONFIRMED (key,iv) 对
-#   (oracle = 语料 608B r 解密后出现本机 qimei36 / 高 printable; 语料已随仓 ci/r1_corpus.json)
+# r1 密钥攻坚采集 第二轮 (2026-10-15): 登录态会话注入 × frida hook_r1_keyhunt_v2.js
+# 第一轮(run 38712019406)结论 → 本轮改造依据:
+#   - 642 keyexp 全为 SETA(StringArmor噪声); SetB CFB/CTR/CBC/GEN_ENC/dlsym/Java-okhttp/KI 全 0 命中,
+#     而 mitm 同窗见 r1 wire ×8 ⇒ r1 构建+加密+发送整体在 360 VMP 内部, 绕开 libknobs 导出面与 Java okhttp
+#   - driver 在 Phase A `input swipe` 10s 超时崩(未兜底) → 登录态段没跑到(648B r 只在登录窗出现)
+#     → mitm_login_capture.py 已修: ui_swipe/ui_tap 三级兜底(input×2→sendevent→跳过) + run_phase 阶段隔离
+#   - 守护 attach≈T+13s, 而 uh.j Timer 首次 delay=0 → r 构建可能在头几秒 → 本轮快 attach(≈T+3-4s)
+# 本轮采集面 (详见 hook_r1_keyhunt_v2.js 头注):
+#   a. VMP Java边界: KI$Companion 7方法(reportR1/getPrefKnobsKey/saveKnobsEnvInfo/search/checkKnobsUrl…)
+#      + KI外壳静态(judian/search/cihai/b) + intercept$1.invoke(sora头) + Fock.lock/sign + uh.j.e/f(envJSON)
+#      + StringArmor.d 装甲词典
+#   b. pref/文件: getSharedPreferences观测 + EditorImpl.putString(knobs文件或≥400B大值) + native openat/write
+#      首写捕获 (r 缓存落盘时刻)
+#   c. SSL_write 线路捕获(r1 i/r b64+sora头, 不依赖Java okhttp) → 触发 Memory.scan(r/i密文针+i[0:24]全局
+#      不变量针+明文特征针) 与 AES 扩展调度全内存扫描(schedScan, VMP私有cipher钥匙必留痕) + SBOX/Te0常量扫描
+#      + mmap/mprotect PROT_EXEC 匿名区观测(VMP代码解密)
+#   e. libknobs 补全: SetB 块级原语 0x136f0/0x13064/0x12e0c(VMP手搓CFB必经) + canary自检直调(证明hook存活)
+# 验收: ci/r1_gen.py harvest keyhunt_collect.log → [HIT]/[PTCT-HIT]/[SCHED] + CONFIRMED (key,iv)
+#   (pt,ct) oracle: memscan/pref 拿到 r 明文时 keystream=pt^ct, AES-ECB(ct[j-1],K)==ks[j] 秒级裁决全部候选
 # 凭据纪律: QD_E7_SESSION 只在 env+runner 内存; ywkey/token 不进 log/artifact (driver scrub 管线);
-#   r1 key/IV/明文 = App 内嵌密码材料, 只落 artifact (job log 打 hash/形态), 与 collect-risk 先例一致
+#   QDConfig DB(含注入行)不上传; r1 key/IV/明文/调度 = App 内嵌密码材料, 只落 artifact
 # 派活: gh workflow run qd-r1-keyhunt --repo Ryfferty/qd-android-ci -f mode=login -f traffic_secs=240
 on:
   workflow_dispatch:
@@ -24,8 +32,8 @@ on:
         description: 'Phase D 自然流量窗秒数'
         default: '240'
       guardian_secs:
-        description: 'frida 守护总窗秒数(覆盖driver全程)'
-        default: '620'
+        description: 'frida 守护总窗秒数(覆盖driver全程; 第二轮全Phase实跑≈660s+余量)'
+        default: '780'
 
 permissions:
   contents: read
@@ -149,26 +157,27 @@ jobs:
           QD_E7_SESSION: ${{ secrets.QD_E7_SESSION }}
           QD_MITM_MODE: ${{ inputs.mode || 'login' }}
           QD_TRAFFIC_SECS: ${{ inputs.traffic_secs || '240' }}
-          GUARD_SECS: ${{ inputs.guardian_secs || '620' }}
+          GUARD_SECS: ${{ inputs.guardian_secs || '780' }}
         run: |
           set +e
           B=localhost:5555
           APP=com.qidian.QDReader
           : > /tmp/keyhunt_collect.log
-          # ── frida 守护: 每个新稳定pid即attach (盾在attach后~100ms生效; driver管UI/生命周期, 守护零UI操作) ──
+          # ── frida 守护: 快attach(1s轮询+2s稳判, ≈T+3-4s; 第一轮T+13s会漏 uh.j delay=0 的首建窗) ──
+          # 每个新稳定pid即attach; 若快attach引发早夭, 守护对下一个pid自动重来(driver有App看门狗重启)
           (
-            SESS_END=$(( $(date +%s) + ${GUARD_SECS:-620} ))
+            SESS_END=$(( $(date +%s) + ${GUARD_SECS:-780} ))
             LAST_PID=""; FS_STARTED=0
             while [ "$(date +%s)" -lt "$SESS_END" ]; do
               P=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
               if [ -n "$P" ] && [ "$P" != "$LAST_PID" ]; then
-                sleep 5
+                sleep 2
                 P2=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
                 if [ "$P" = "$P2" ]; then
                   LAST_PID=$P
                   if [ $FS_STARTED = 0 ]; then
                     adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
-                    sleep 6
+                    sleep 4
                     adb -s $B forward tcp:14771 tcp:14771
                     FS_STARTED=1
                   fi
@@ -176,14 +185,14 @@ jobs:
                   LEFT=$(( SESS_END - $(date +%s) ))
                   [ $LEFT -lt 20 ] && break
                   echo "[GUARD] $(date +%s) attach pid=$P window=${LEFT}s" >> /tmp/keyhunt_guard.log
-                  ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $P -l hook_r1_keyhunt.js >> /tmp/keyhunt_collect.log 2>&1 ) &
+                  ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $P -l hook_r1_keyhunt_v2.js >> /tmp/keyhunt_collect.log 2>&1 ) &
                 fi
               elif [ -z "$P" ] && [ -n "$LAST_PID" ]; then
                 echo "[GUARD] $(date +%s) pid $LAST_PID gone (driver phase切换)" >> /tmp/keyhunt_guard.log
                 LAST_PID=""
                 pkill -f "frida -H" 2>/dev/null
               fi
-              sleep 3
+              sleep 1
             done
             pkill -f "frida -H" 2>/dev/null
           ) &
@@ -195,16 +204,23 @@ jobs:
           echo "driver exit=$EC"
           sleep 20   # 尾部采集
           kill $GUARD 2>/dev/null; pkill -f "frida -H" 2>/dev/null
-          # ── 设备侧材料: prefs(tt/s_d/leic) + mmkv ──
+          # ── 设备侧材料: prefs(tt/s_d/leic) + mmkv + r_key_info + files 全量tar ──
+          # (r_key_info 定性: cn.jiguang.bt.c = JPush RegKeyInfo 缓存, 与 r1 无关 — 归档排除歧义;
+          #  QDConfig DB 含注入凭据, 只取文件名列表不取内容)
           mkdir -p /tmp/out/prefs
           adb -s $B exec-out "tar -c -C /data/data/$APP shared_prefs" > /tmp/out/prefs/shared_prefs.tar 2>/dev/null
           adb -s $B exec-out "tar -c -C /data/data/$APP files" > /tmp/out/prefs/files.tar 2>/dev/null
           adb -s $B shell "ls -la /data/data/$APP/files/ 2>/dev/null" > /tmp/out/prefs/files_listing.txt
+          adb -s $B exec-out "cat /data/data/$APP/files/r_key_info 2>/dev/null" > /tmp/out/prefs/r_key_info.bin
+          adb -s $B exec-out "tar -c -C /data/data/$APP files/mmkv 2>/dev/null" > /tmp/out/prefs/mmkv.tar
+          adb -s $B shell "ls -la /data/data/$APP/databases/ /data/data/$APP/files/mmkv/ 2>/dev/null" > /tmp/out/prefs/dbs_mmkv_listing.txt
           # ── 现场收割: harvest → verdict (完整key只落artifact, job log打HIT行与指纹) ──
           python3 ci/r1_gen.py harvest /tmp/keyhunt_collect.log 2>&1 | tee /tmp/out/keyhunt_verdict.txt
           echo "=== 事件计数 ==="
-          for ev in keyexp cfb ctr bss genenc dlsym wire knw; do
-            printf '%-8s %s\n' "$ev" "$(grep -c "\"ev\": *\"$ev\"\|\"ev\":\"$ev\"" /tmp/keyhunt_collect.log 2>/dev/null)"
+          for ev in keyexp cfb ctr cbc genenc blockprim bss dlsym canary knobs_lk \
+                    vmp sora sora_java envjson armor pref_open pref_write filewrite \
+                    sslwire memscan schedscan sboxhit execregion wire knw ki_intercept; do
+            printf '%-12s %s\n' "$ev" "$(grep -c "\"ev\": *\"$ev\"\|\"ev\":\"$ev\"" /tmp/keyhunt_collect.log 2>/dev/null)"
           done
           grep -c "R1KEY" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/R1KEY_total: /'
           echo "=== 密扫(应全为0) ==="

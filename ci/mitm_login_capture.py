@@ -59,6 +59,106 @@ def sh(*args, timeout=20):
     return adb('shell', *args, timeout=timeout)
 
 
+# ── UI 输入安全层 (第一轮教训: `input swipe` TimeoutExpired 未兜底直接崩掉整个 driver,
+#    登录态段(Phase B/C/D)全没跑到, 而 r1 648B 形态只在登录窗出现) ──
+# 兜底链: input(30s) → 重试1次 input → sendevent 裸协议 → 放弃并如实记录。任何一级都不抛。
+_TOUCH_DEV = None       # /dev/input/eventX (带 ABS_MT_POSITION_X 的设备), 懒探测
+_UI_FAILS = {'input': 0, 'sendevent': 0}
+
+
+def _find_touch_dev():
+    global _TOUCH_DEV
+    if _TOUCH_DEV is not None:
+        return _TOUCH_DEV or None
+    _TOUCH_DEV = ''
+    try:
+        r = sh('getevent', '-pl', timeout=15)
+        cur = None
+        for line in (r.stdout or '').splitlines():
+            line = line.strip()
+            m = re.match(r'add device \d+: (/dev/input/event\d+)', line)
+            if m:
+                cur = m.group(1)
+            if cur and 'ABS_MT_POSITION_X' in line:
+                _TOUCH_DEV = cur
+                break
+    except Exception:
+        pass
+    return _TOUCH_DEV or None
+
+
+def _sendevent_seq(cmds):
+    """把一串 sendevent 三元组打包成单次 adb shell 调用(减少往返), 失败不抛。"""
+    dev = _find_touch_dev()
+    if not dev:
+        _UI_FAILS['sendevent'] += 1
+        return False
+    script = ' && '.join('sendevent %s %d %d %d' % (dev, t, c, v) for t, c, v in cmds)
+    try:
+        sh(script, timeout=25)      # 单串传远端shell
+        return True
+    except Exception:
+        _UI_FAILS['sendevent'] += 1
+        return False
+
+
+def _sendevent_swipe(x1, y1, x2, y2, steps=8):
+    """type-B MT 滑动: TRACKING_ID=57, POSITION_X=53, POSITION_Y=54, BTN_TOUCH=330"""
+    cmds = [(3, 57, 100), (3, 53, x1), (3, 54, y1), (1, 330, 1), (0, 0, 0)]
+    for i in range(1, steps + 1):
+        x = x1 + (x2 - x1) * i // steps
+        y = y1 + (y2 - y1) * i // steps
+        cmds += [(3, 53, x), (3, 54, y), (0, 0, 0)]
+    cmds += [(3, 57, -1 & 0xffffffff), (1, 330, 0), (0, 0, 0)]
+    return _sendevent_seq(cmds)
+
+
+def _sendevent_tap(x, y):
+    return _sendevent_seq([(3, 57, 101), (3, 53, x), (3, 54, y),
+                           (1, 330, 1), (0, 0, 0),
+                           (3, 57, -1 & 0xffffffff), (1, 330, 0), (0, 0, 0)])
+
+
+def ui_swipe(x1, y1, x2, y2, ms=300):
+    """永不抛的滑动: input×2 → sendevent → 放弃(返回False)"""
+    for attempt in (1, 2):
+        try:
+            sh('input', 'swipe', str(x1), str(y1), str(x2), str(y2), str(ms), timeout=30)
+            return True
+        except Exception as e:
+            _UI_FAILS['input'] += 1
+            L('[UI] input swipe 第%d次失败(%s) — %s' % (attempt, type(e).__name__,
+              '转sendevent' if attempt == 2 else '重试'))
+    ok = _sendevent_swipe(x1, y1, x2, y2)
+    L('[UI] sendevent swipe 兜底: %s' % ('OK' if ok else '也失败(跳过本轮, 不中断)'))
+    return ok
+
+
+def ui_tap(x, y):
+    """永不抛的点按: input×2 → sendevent → 放弃"""
+    for attempt in (1, 2):
+        try:
+            sh('input', 'tap', str(x), str(y), timeout=30)
+            return True
+        except Exception as e:
+            _UI_FAILS['input'] += 1
+            L('[UI] input tap 第%d次失败(%s) — %s' % (attempt, type(e).__name__,
+              '转sendevent' if attempt == 2 else '重试'))
+    ok = _sendevent_tap(x, y)
+    L('[UI] sendevent tap 兜底: %s' % ('OK' if ok else '也失败(跳过, 不中断)'))
+    return ok
+
+
+def ui_key(code):
+    try:
+        sh('input', 'keyevent', str(code), timeout=25)
+        return True
+    except Exception:
+        _UI_FAILS['input'] += 1
+        L('[UI] keyevent %s 失败(跳过)' % code)
+        return False
+
+
 def pidof():
     try:
         out = (sh('pidof', APP, timeout=10).stdout or '').strip()
@@ -101,7 +201,7 @@ def tap_text(xml, *texts):
     for t in texts:
         xy = find_bounds(xml, text=t)
         if xy:
-            sh('input', 'tap', str(xy[0]), str(xy[1]))
+            ui_tap(xy[0], xy[1])
             return t
     return None
 
@@ -110,7 +210,7 @@ def tap_id(xml, *ids):
     for i in ids:
         xy = find_bounds(xml, id_frag=i)
         if xy:
-            sh('input', 'tap', str(xy[0]), str(xy[1]))
+            ui_tap(xy[0], xy[1])
             return i
     return None
 
@@ -234,7 +334,7 @@ def phase_first_launch():
               tap_text(xml, '跳过', '立即体验', '同意并继续', '开始使用')
         if not hit:
             hit = 'coord(63,104)'
-            sh('input', 'tap', '63', '104')
+            ui_tap(63, 104)
         L('[A] 登录屏轮%d 点了%s fg=%s' % (attempt, hit, foreground()[:60]))
         time.sleep(8)
         fg = foreground()
@@ -247,7 +347,7 @@ def phase_first_launch():
     L('[A] 匿名窗60s(顺带匿名基线) flows=%dB' % _fb())
     t0 = time.time()
     while time.time() - t0 < 60:
-        sh('input', 'swipe', '540', '1700', '540', '700', '300', timeout=10)
+        ui_swipe(540, 1700, 540, 700)   # 第一轮崩点: 原 sh('input','swipe',...,timeout=10) 无兜底
         time.sleep(9)
     L('[A] 匿名窗结束 flows=%dB' % _fb())
 
@@ -402,7 +502,7 @@ def phase_traffic(secs):
                 time.sleep(12)
                 continue
             # 滑动刷新(书城/发现列表)
-            sh('input', 'swipe', '540', '1700', '540', '650', '300', timeout=10)
+            ui_swipe(540, 1700, 540, 650)
             # tab轮换(~40s一次)
             if n % 4 == 0:
                 xml = dump_ui()
@@ -422,10 +522,10 @@ def phase_traffic(secs):
                     xy = ((x1 + x2) // 2, (y1 + y2) // 2)
                     break
                 if xy:
-                    sh('input', 'tap', str(xy[0]), str(xy[1]))
+                    ui_tap(xy[0], xy[1])
                     L('[D] t+%ds 进书详情 tap(%d,%d)' % (el, xy[0], xy[1]))
                     time.sleep(12)
-                    sh('input', 'keyevent', '4', timeout=10)
+                    ui_key(4)
                     did_book = True
             # t+220s: 福利中心尝试(我的tab→福利)
             if not did_welfare and el > 220:
@@ -438,7 +538,7 @@ def phase_traffic(secs):
                     L('[D] t+%ds 福利入口: %s' % (el, hit))
                     time.sleep(8)
                     screenshot('shot_welfare.png')
-                    sh('input', 'keyevent', '4', timeout=10)
+                    ui_key(4)
                 did_welfare = True
             # 截图序列(~30s一张)
             if n % 3 == 1:
@@ -508,6 +608,17 @@ def load_secret_values():
     return load_secrets(SECRETS_FILE)
 
 
+def run_phase(name, fn, *args):
+    """阶段隔离: 任何一Phase崩(含未预料的TimeoutExpired)都不能挡住后续Phase —
+    第一轮事故根因: Phase A 匿名窗一个 swipe 超时 → 整个 driver 死 → 登录态段(648B r1)没跑到。"""
+    try:
+        return fn(*args)
+    except Exception as e:
+        L('[%s] ★阶段异常被隔离: %s: %s (继续后续阶段)' % (name, type(e).__name__, str(e)[:200]))
+        VERDICT['phase_%s_crash' % name] = '%s: %s' % (type(e).__name__, str(e)[:120])
+        return None
+
+
 def main():
     global MODE
     os.makedirs(OUT, exist_ok=True)
@@ -520,16 +631,21 @@ def main():
             L('[FATAL] mode=login但QD_E7_SESSION不可用 — 降级为verify(匿名), 如实报告')
             MODE = 'verify'
             VERDICT['downgraded_to_verify'] = True
-    phase_first_launch()
+    run_phase('A', phase_first_launch)
     if MODE == 'login' and sess:
-        phase_inject(sess)
-        phase_verify_login()
+        if run_phase('B', phase_inject, sess):
+            run_phase('C', phase_verify_login)
     else:
         L('[B/C] verify模式: 跳过注入(匿名管道验证)')
         # verify模式下直接复启继续(无需stop/start循环)
-        sh('am', 'start', '-n', '%s/.ui.activity.SplashActivity' % APP, timeout=15)
-    phase_traffic(TRAFFIC_SECS)
-    phase_extract()
+        try:
+            sh('am', 'start', '-n', '%s/.ui.activity.SplashActivity' % APP, timeout=15)
+        except Exception as e:
+            L('[B/C] am start 失败(隔离): %s' % str(e)[:80])
+    run_phase('D', phase_traffic, TRAFFIC_SECS)
+    run_phase('E', phase_extract)
+    VERDICT['ui_input_fails'] = dict(_UI_FAILS)
+    L('[UI] 输入兜底统计: %s (touch_dev=%s)' % (_UI_FAILS, _TOUCH_DEV or '未探测/不可用'))
     L('=== done (verdict: %s) ===' % json.dumps(VERDICT, ensure_ascii=False)[:400])
     return 0
 
