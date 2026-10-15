@@ -1,0 +1,227 @@
+name: qd-r1-keyhunt
+
+# r1 密钥攻坚采集 (2026-10-15): 登录态会话注入 × frida 被动 hook libknobs SetB 原语
+# 依据 (qidian_auto/RECON/r1_key_hunt.md, 全部 unidbg/静态实证):
+#   - r/i = AES-128-CFB-128 (libknobs SetB); key 不在 libknobs 内 (keyexp 0 内部调用者,
+#     无 init_array, .bss 192B init 后全零) → 由 VMP(l1.judian) 运行时经 dlsym 传入
+#   - keyexp(ctx,key,bits) ctx+8/+16 起 = 扩展调度且 sched[0:16]=原始key → hook CFB 即可回读 key
+#   - 触发窗: 登录态注入后 r1 自然发 ×10-14 (qd-mitm-login 实证); 匿名层不触发 (qd-collect-risk 教训)
+#   - 反检测盾 = hook_collect_cecelia.js v2 同款 (run2-run5 实证 attach 后自杀被拦)
+# 采集面 (纯被动零直调): SETA/SETB keyexp + CFB/CFB-NEON/CTR/CBC/GEN_ENCRYPT 入出参
+#   + .bss knobs_70861349 192B 轮询 + dlsym("knobs_*") + KI.intercept/NativeWrapper/okhttp r1 wire
+# 验收: ci/r1_gen.py harvest /tmp/keyhunt_collect.log → [HIT] + CONFIRMED (key,iv) 对
+#   (oracle = 语料 608B r 解密后出现本机 qimei36 / 高 printable; 语料已随仓 ci/r1_corpus.json)
+# 凭据纪律: QD_E7_SESSION 只在 env+runner 内存; ywkey/token 不进 log/artifact (driver scrub 管线);
+#   r1 key/IV/明文 = App 内嵌密码材料, 只落 artifact (job log 打 hash/形态), 与 collect-risk 先例一致
+# 派活: gh workflow run qd-r1-keyhunt --repo Ryfferty/qd-android-ci -f mode=login -f traffic_secs=240
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'login=注入QD_E7_SESSION触发登录态r1 / verify=纯匿名(不烧session, r1可能不触发)'
+        default: 'login'
+      traffic_secs:
+        description: 'Phase D 自然流量窗秒数'
+        default: '240'
+      guardian_secs:
+        description: 'frida 守护总窗秒数(覆盖driver全程)'
+        default: '620'
+
+permissions:
+  contents: read
+
+jobs:
+  r1-keyhunt:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup adb/sqlite3/mitmproxy/frida/binder
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) adb sqlite3 curl xz-utils unzip python3-pip || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q mitmproxy "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          mitmdump --version | head -2
+          frida --version
+          python3 ci/r1_gen.py selftest
+
+      - name: Start redroid (1080x2340@420) + root
+        run: |
+          set +e
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 12
+          B=localhost:5555
+          for i in $(seq 1 30); do
+            adb connect $B >/dev/null 2>&1
+            S=$(timeout 10 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 7
+          done
+          OK=0
+          for i in $(seq 1 10); do
+            timeout 25 adb -s $B root >/dev/null 2>&1; sleep 5
+            adb disconnect $B >/dev/null 2>&1; sleep 1
+            adb connect $B >/dev/null 2>&1; sleep 3
+            IDOUT=$(timeout 8 adb -s $B shell id 2>/dev/null | tr -d "\r")
+            echo "root轮$i: $IDOUT"
+            echo "$IDOUT" | grep -q "uid=0" && OK=1 && break
+            sleep 3
+          done
+          [ $OK = 0 ] && echo "ROOT_FAIL(继续, 但DB注入需要root)"
+          timeout 10 adb -s $B shell "setenforce 0" 2>/dev/null
+
+      - name: 下载q480 + 安装 + consent预写 + push frida-server(不启动)
+        run: |
+          set +e
+          B=localhost:5555
+          APP=com.qidian.QDReader
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/q480.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/q480.apk" || true
+            SZ=$(stat -c%s /tmp/q480.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"
+            [ "$SZ" -gt 10000000 ] && break
+            sleep 15
+          done
+          md5sum /tmp/q480.apk
+          for i in 1 2 3; do
+            timeout 300 adb -s $B install -r -t /tmp/q480.apk 2>&1 | tail -1
+            if timeout 30 adb -s $B shell pm list packages 2>/dev/null | tr -d '\r' | grep -q com.qidian.QDReader; then
+              echo "INSTALL_OK try $i"; break
+            fi
+            sleep 8; adb connect $B >/dev/null 2>&1
+          done
+          # consent 预写 (collect-risk 同款, uid 必须取对)
+          APP_UID=$(adb -s $B shell "stat -c '%u' /data/data/$APP" 2>/dev/null | tr -d '\r')
+          if [ -z "$APP_UID" ] || [ "$APP_UID" = "0" ] || [ "$APP_UID" -le 10000 ] 2>/dev/null; then
+            APP_UID=$(adb -s $B shell "cmd package list packages -U $APP" 2>/dev/null | tr -d '\r' | sed 's/.*uid://' | head -1)
+          fi
+          echo "app uid=$APP_UID"
+          adb -s $B shell "mkdir -p /data/data/$APP/shared_prefs"
+          adb -s $B shell "echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map><boolean name=\"is_agree_privacy\" value=\"true\" /></map>' > /data/data/$APP/shared_prefs/app_sp.xml"
+          if [ -n "$APP_UID" ] && [ "$APP_UID" -gt 10000 ] 2>/dev/null; then
+            adb -s $B shell "chown $APP_UID:$APP_UID /data/data/$APP/shared_prefs/app_sp.xml; chmod 660 /data/data/$APP/shared_prefs/app_sp.xml"
+          fi
+          # frida-server 推送 (自定义端口14771 避 27042 扫描; 名字 fs-srv; 此刻不启动)
+          FR=16.7.19
+          curl -sSL --max-time 180 -o /tmp/fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f /tmp/fs.xz 2>/dev/null || gunzip -f /tmp/fs.xz 2>/dev/null
+          mv -f /tmp/fs /tmp/fs-server 2>/dev/null; chmod +x /tmp/fs-server
+          adb -s $B push /tmp/fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          adb -s $B shell "chmod 755 /data/local/tmp/fs-srv"
+          echo "SETUP_DONE"
+
+      - name: "MITM接线 (wire对照: 同安装r密文×frida捕获key/明文 端到端验证)"
+        run: |
+          set +e
+          B=localhost:5555
+          sudo -S -p '' modprobe nf_conntrack nf_nat iptable_nat nf_nat_ipv4 xt_TCPMSS xt_comment 2>&1 | head -2
+          (timeout 8 mitmdump -p 8899 --set confdir=/tmp/mitm --set quiet=true >/dev/null 2>&1 &); sleep 8
+          CA=/tmp/mitm/mitmproxy-ca-cert.pem
+          HASH=$(openssl x509 -inform PEM -subject_hash_old -in $CA | head -1)
+          timeout 30 adb -s $B push $CA /data/local/tmp/cacert.pem >/dev/null 2>&1
+          timeout 30 adb -s $B shell "mount -o rw,remount / 2>/dev/null; mount -o rw,remount /system 2>/dev/null; cp /data/local/tmp/cacert.pem /system/etc/security/cacerts/$HASH.0; chmod 644 /system/etc/security/cacerts/$HASH.0" 2>&1 | tail -1
+          timeout 20 adb -s $B shell "cp /data/local/tmp/cacert.pem /apex/com.android.conscrypt/cacerts/$HASH.0 2>/dev/null && chmod 644 /apex/com.android.conscrypt/cacerts/$HASH.0 && echo APEX_OK || echo APEX_FAIL"
+          sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+          sudo iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 80  -j DNAT --to-destination 172.17.0.1:8899
+          sudo iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 443 -j DNAT --to-destination 172.17.0.1:8899
+          sudo iptables -A FORWARD -s 172.17.0.0/16 -p udp --dport 443 -j DROP
+          GW=$(timeout 8 adb -s $B shell "ip route | awk '/^default/{print \$3; exit}'" | tr -d '\r')
+          [ -z "$GW" ] && GW=172.17.0.1
+          timeout 10 adb -s $B shell "settings put global http_proxy $GW:8899"
+          nohup mitmdump --listen-host 0.0.0.0 -p 8899 --set confdir=/tmp/mitm \
+            --set block_global=false --set flow_detail=1 -w /tmp/all.flows \
+            > /tmp/mitm.log 2>&1 &
+          sleep 5
+          pgrep -f mitmdump >/dev/null && echo MITMDUMP_ALIVE || echo MITMDUMP_NOT_RUNNING
+
+      - name: frida守护 + 采集驱动 (匿名首启→注入→登录复启→自然流量)
+        env:
+          QD_E7_SESSION: ${{ secrets.QD_E7_SESSION }}
+          QD_MITM_MODE: ${{ inputs.mode || 'login' }}
+          QD_TRAFFIC_SECS: ${{ inputs.traffic_secs || '240' }}
+          GUARD_SECS: ${{ inputs.guardian_secs || '620' }}
+        run: |
+          set +e
+          B=localhost:5555
+          APP=com.qidian.QDReader
+          : > /tmp/keyhunt_collect.log
+          # ── frida 守护: 每个新稳定pid即attach (盾在attach后~100ms生效; driver管UI/生命周期, 守护零UI操作) ──
+          (
+            SESS_END=$(( $(date +%s) + ${GUARD_SECS:-620} ))
+            LAST_PID=""; FS_STARTED=0
+            while [ "$(date +%s)" -lt "$SESS_END" ]; do
+              P=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
+              if [ -n "$P" ] && [ "$P" != "$LAST_PID" ]; then
+                sleep 5
+                P2=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
+                if [ "$P" = "$P2" ]; then
+                  LAST_PID=$P
+                  if [ $FS_STARTED = 0 ]; then
+                    adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
+                    sleep 6
+                    adb -s $B forward tcp:14771 tcp:14771
+                    FS_STARTED=1
+                  fi
+                  pkill -f "frida -H" 2>/dev/null; sleep 1
+                  LEFT=$(( SESS_END - $(date +%s) ))
+                  [ $LEFT -lt 20 ] && break
+                  echo "[GUARD] $(date +%s) attach pid=$P window=${LEFT}s" >> /tmp/keyhunt_guard.log
+                  ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $P -l hook_r1_keyhunt.js >> /tmp/keyhunt_collect.log 2>&1 ) &
+                fi
+              elif [ -z "$P" ] && [ -n "$LAST_PID" ]; then
+                echo "[GUARD] $(date +%s) pid $LAST_PID gone (driver phase切换)" >> /tmp/keyhunt_guard.log
+                LAST_PID=""
+                pkill -f "frida -H" 2>/dev/null
+              fi
+              sleep 3
+            done
+            pkill -f "frida -H" 2>/dev/null
+          ) &
+          GUARD=$!
+          sleep 2
+          # ── 主驱动 (mitm-login 同款: Phase A匿名 → B注入 → C登录复启 → D流量 → E提取scrub) ──
+          python3 ci/mitm_login_capture.py 2>&1 | tee /tmp/driver_stdout.txt
+          EC=${PIPESTATUS[0]}
+          echo "driver exit=$EC"
+          sleep 20   # 尾部采集
+          kill $GUARD 2>/dev/null; pkill -f "frida -H" 2>/dev/null
+          # ── 设备侧材料: prefs(tt/s_d/leic) + mmkv ──
+          mkdir -p /tmp/out/prefs
+          adb -s $B exec-out "tar -c -C /data/data/$APP shared_prefs" > /tmp/out/prefs/shared_prefs.tar 2>/dev/null
+          adb -s $B exec-out "tar -c -C /data/data/$APP files" > /tmp/out/prefs/files.tar 2>/dev/null
+          adb -s $B shell "ls -la /data/data/$APP/files/ 2>/dev/null" > /tmp/out/prefs/files_listing.txt
+          # ── 现场收割: harvest → verdict (完整key只落artifact, job log打HIT行与指纹) ──
+          python3 ci/r1_gen.py harvest /tmp/keyhunt_collect.log 2>&1 | tee /tmp/out/keyhunt_verdict.txt
+          echo "=== 事件计数 ==="
+          for ev in keyexp cfb ctr bss genenc dlsym wire knw; do
+            printf '%-8s %s\n' "$ev" "$(grep -c "\"ev\": *\"$ev\"\|\"ev\":\"$ev\"" /tmp/keyhunt_collect.log 2>/dev/null)"
+          done
+          grep -c "R1KEY" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/R1KEY_total: /'
+          echo "=== 密扫(应全为0) ==="
+          for pat in $(cat /tmp/e7_secrets.txt 2>/dev/null | grep -v '^$' | head -3); do
+            printf 'hits(keyhunt/out): %s\n' "$(cat /tmp/keyhunt_collect.log /tmp/out/*.txt 2>/dev/null | grep -cF -- "$pat")"
+          done
+          exit 0
+
+      - name: Upload (scrubbed + keyhunt材料)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r1-keyhunt-capture
+          path: |
+            /tmp/keyhunt_collect.log
+            /tmp/keyhunt_guard.log
+            /tmp/out/
+            /tmp/driver_stdout.txt
+            /tmp/mitm.log
+          if-no-files-found: warn

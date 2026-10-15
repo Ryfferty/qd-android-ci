@@ -8,7 +8,8 @@
 #                          "f189adc92b816b3e9da29ea304d4a7e4" ) ) )
 #   si = canon(请求参数表) = sorted小写key kv串; GET取query参数, POST取form body参数,
 #        不透明日志body(unitelogreport/ywslogcpt)参数表为空 → si=""
-#   验证: 136组自然调用对 135/136 (残差=ostar嵌套编码body, 线上body≠签名所见形态)
+#   验证: 136组自然调用对 136/136 (2026-10-15闭合: 原残差=flow#28 body截断3000/4650B语料伪影, 非嵌套转码;
+#         签名视图=线上body的urldecoded参数表, ostar单参canon="data="+json原文(带\/转义))
 #   注: 抓包头里的QDSign每76字符有一个空格(MIME换行风格), 本生成器复刻
 #
 # ── gorgon (7.9.480 redroid档案) ──
@@ -122,5 +123,5 @@ if __name__ == "__main__":
         if g_want:
             n_g += 1
             ok_g += g_want == GORGON_480
-    print(f"[QDSign corpus] {ok_q}/{n_q} passed (预期135/136, 残差=ostar嵌套编码body)")
+    print(f"[QDSign corpus] {ok_q}/{n_q} passed (预期136/136, 残差已于2026-10-15闭合=语料截断伪影)")
     print(f"[gorgon corpus] {ok_g}/{n_g} 非空观测与常量一致")

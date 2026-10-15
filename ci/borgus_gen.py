@@ -5,8 +5,9 @@
 #   input = "&".join(f"{k}={v}" for k in sorted(d))
 #   d = {请求参数(query + urlencoded kv body, key小写)} ∪ {clienttype:1, qimei:qimei36,
 #        tstamp:ms, versioncode:1996}   (同键去重; 无参数请求退化为标准四字段形态)
-#   证据: 136组自然调用对(4次CI全新安装×80 + redroid抓包56) 135/136 精确复现
-#         (唯一残差=ostar嵌套编码body, 线上body≠签名时所见形态)
+#   证据: 136组自然调用对(4次CI全新安装×80 + redroid抓包56) 136/136 精确复现
+#         (2026-10-15闭合: 原1/136残差=cecelia_extract.py把flow#28 body截断到3000B(实4650B)的语料伪影,
+#          非"嵌套转码" — 签名视图=线上body本身; 全量body下cecelia/borgus/QDSign三头全中)
 #   旧结论修正: "标准形态只覆盖日志族" 不成立 —— 单一形态, 参数并入排序kv即覆盖全部端点
 #
 # v1 (2026-10-13): 算法逆向自 libfock.so v7a sn@0x6dd1 (360壳VMP'd FockUtil.getH→Fock.sn)
@@ -47,7 +48,7 @@ def borgus(tstamp_ms: int, qimei: str = "", versioncode: str = "1906",
 
 def borgus_param_map(params: dict, tstamp_ms: int, qimei: str = "",
                      versioncode: str = "1996", clienttype: str = "1") -> str:
-    """[v2核心] 排序kv合并形态 —— getH 实际签名口径 (7.9.480 实证 135/136)
+    """[v2核心] 排序kv合并形态 —— getH 实际签名口径 (7.9.480 实证 136/136)
 
     params: 请求参数表 (key会被小写化; query与form body参数合并; 不透明body传{})
     返回: fock_sn(排序kv串)
@@ -149,4 +150,4 @@ if __name__ == "__main__":
             params = params_of(url, None)
         got = borgus_param_map(params, ts, qid, '1996')
         ok2 += got == want
-    print(f"[v2 corpus] {ok2}/{len(corpus)} passed (预期135/136, 残差=ostar嵌套编码body)")
+    print(f"[v2 corpus] {ok2}/{len(corpus)} passed (预期136/136, 残差已于2026-10-15闭合=语料截断伪影)")
