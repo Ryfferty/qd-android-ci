@@ -78,7 +78,7 @@ jobs:
             sleep 3
           done
           [ $OK = 0 ] && echo "ROOT_FAIL(继续, 但DB注入需要root)"
-          timeout 10 adb -s $B shell "setenforce 0" 2>/dev/null
+          timeout 10 adb -s $B shell "setenforce 0" 2>/dev/null || true
 
       - name: 下载q480 + 安装 + consent预写 + push frida-server(不启动)
         run: |
