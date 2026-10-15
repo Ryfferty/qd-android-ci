@@ -171,7 +171,12 @@ jobs:
             while [ "$(date +%s)" -lt "$SESS_END" ]; do
               P=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
               if [ -n "$P" ] && [ "$P" != "$LAST_PID" ]; then
-                sleep 2
+                # R3修正: 稳判2s→8s双检(第二轮T+3-4s快attach撞360壳早窗→App 9连死+canary=0;
+                # 第一轮T+13s attach拿到643事件; r构建在T+24s后(saveKnobsEnvInfo@getconf响应+24.3s), T+11s attach来得及)
+                sleep 5
+                P2=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
+                [ "$P" != "$P2" ] && { sleep 1; continue; }
+                sleep 3
                 P2=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
                 if [ "$P" = "$P2" ]; then
                   LAST_PID=$P

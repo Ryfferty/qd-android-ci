@@ -52,6 +52,12 @@ var SEEN = { armor: {}, sched: {}, sbox: {}, memscan: {}, bss: {} };
 function L(s) { console.log(s); }
 function R1KEY(obj) { try { L("[R1KEY] " + JSON.stringify(obj)); } catch (e) { L("[R1KEY_ERR] " + e); } }
 
+// R3自诊断: 脚本加载标记(区分"没装上"vs"装上没命中") + 未捕获异常上报
+R1KEY({ ev: "script_loaded", t: Date.now(), frida: (typeof Frida !== "undefined" ? Frida.version : "?"), pid: Process.id, abi: Process.arch });
+if (typeof process !== "undefined" && process.setExceptionHandler) {
+  process.setExceptionHandler(function (d) { try { R1KEY({ ev: "native_exception", addr: String(d.address), type: d.type }); } catch (e) {} return false; });
+}
+
 // ═══ 0° 反检测盾 (cecelia v2 / keyhunt v1 同款, 最先执行) + app数据文件 fd 观测 ═══
 var FD_PATH = {};   // fd → path (仅 /data/data|user/0/com.qidian.QDReader 下)
 var FD_DONE = {};   // fd → 已捕获首次写入
