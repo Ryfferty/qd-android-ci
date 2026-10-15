@@ -229,7 +229,7 @@ def looks_b64(s, minlen=64):
 def load_corpus():
     c = json.load(open(CORPUS))
     out = []
-    for dev in ('d4da', 'K'):
+    for dev in list(c.keys()):
         seen = {}
         for x in c[dev]:
             r = bytes.fromhex(x['r'])
