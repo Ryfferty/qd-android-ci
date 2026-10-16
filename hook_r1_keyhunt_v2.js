@@ -66,6 +66,79 @@ if (typeof process !== "undefined" && process.setExceptionHandler) {
 
 // R7b: AES 表/调度状态提升到顶层 — BOOT 最开头的 t0 快扫(纯读内存, 无需任何hook)需要立即可用
 var LAST_SCAN = { full: 0, vmp: 0, medium: 0 };
+
+// R7c: CModule scan_sched — TinyCC 目标进程内编译; 直读内存无拷贝; 本地实测 ~168MB/s (JS版450ms/MB 的 ~85x)
+//   三层字节快筛(第3层 `p[o+16]==p[o]^SB[p[o+13]]^1` 拒绝全零区击穿) + 全验; 含 AES-256 i%nk==4 分支
+//   本地 frida 16.7.19 验证: 编译OK / 偏移0与123命中 / 全零与随机-1 / 16MB=95ms
+var CM_SRC = `
+static const unsigned char SB[256] = {
+0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
+0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
+0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
+0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
+0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
+0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
+0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
+0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
+0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
+0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
+0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
+0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
+0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
+0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
+0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
+0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
+};
+static const unsigned char RC[15] = {0x00,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36,0x6c,0xd8,0xab,0x00};
+
+long scan_sched(const unsigned char *p, long n, int nk) {
+    long o;
+    long need = (long)(nk + 7) * 16;
+    if (n < need) return -1;
+    for (o = 0; o + need <= n; o += 1) {
+        int i, b, ok;
+        if ((p[o+20] ^ p[o+4] ^ p[o+16]) != 0) continue;
+        if ((p[o+24] ^ p[o+8] ^ p[o+20]) != 0) continue;
+        if (p[o+16] != (unsigned char)(p[o] ^ SB[p[o+13]] ^ 0x01)) continue;
+        ok = 1;
+        for (i = nk; i < (nk + 7) * 4; i++) {
+            if (i % nk != 0) {
+                if (nk > 6 && i % nk == 4) {
+                    for (b = 0; b < 4; b++)
+                        if (p[o + i*4 + b] != (unsigned char)(p[o + (i-nk)*4 + b] ^ SB[p[o + (i-1)*4 + b]])) { ok = 0; break; }
+                } else {
+                    for (b = 0; b < 4; b++)
+                        if (p[o + i*4 + b] != (unsigned char)(p[o + (i-nk)*4 + b] ^ p[o + (i-1)*4 + b])) { ok = 0; break; }
+                }
+            } else {
+                int k = i / nk;
+                unsigned char t0 = (unsigned char)(SB[p[o + (i-1)*4 + 1]] ^ RC[k]);
+                unsigned char t1 = SB[p[o + (i-1)*4 + 2]];
+                unsigned char t2 = SB[p[o + (i-1)*4 + 3]];
+                unsigned char t3 = SB[p[o + (i-1)*4 + 0]];
+                if (p[o + i*4 + 0] != (unsigned char)(p[o + (i-nk)*4 + 0] ^ t0)) ok = 0;
+                else if (p[o + i*4 + 1] != (unsigned char)(p[o + (i-nk)*4 + 1] ^ t1)) ok = 0;
+                else if (p[o + i*4 + 2] != (unsigned char)(p[o + (i-nk)*4 + 2] ^ t2)) ok = 0;
+                else if (p[o + i*4 + 3] != (unsigned char)(p[o + (i-nk)*4 + 3] ^ t3)) ok = 0;
+            }
+            if (!ok) break;
+        }
+        if (ok) return o;
+    }
+    return -1;
+}
+`;
+var CMSCAN = { fn: null, err: null, cm: null };
+function ensureCM() {
+    if (CMSCAN.fn) return true;
+    if (CMSCAN.err) return false;
+    try {
+        CMSCAN.cm = new CModule(CM_SRC);   // ★必须保持引用: 局部cm被GC → 代码页unmap → fn野指针=access violation
+        CMSCAN.fn = new NativeFunction(CMSCAN.cm.scan_sched, 'long', ['pointer', 'long', 'int']);
+        L("[+] CModule scan_sched ready");
+        return true;
+    } catch (e) { CMSCAN.err = String(e).slice(0, 200); L("[CM_ERR] " + CMSCAN.err); return false; }
+}
 var SBOX = new Uint8Array([
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
     0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -833,6 +906,33 @@ setTimeout(function BOOT() {
   function scanRangeForSched(base, size, tag, lbl) {
       if (size < 176 || size > 268435456) return 0;
       var nFound = 0;
+      if (ensureCM()) {                                   // R7c: C 路径(直读内存, 无拷贝)
+          var fn = CMSCAN.fn;
+          var CH = 16777216;
+          var o0 = 0;
+          while (o0 < size) {
+              var cs = Math.min(CH, size - o0);
+              if (cs < 176) break;
+              var sub = 0;
+              while (sub + 176 <= cs) {
+                  var off = fn(base.add(o0 + sub), cs - sub, 4);
+                  if (off < 0) break;
+                  var abs = o0 + sub + off;
+                  nFound++; STAT.schedscan++;
+                  if (nFound > LIMITS.sched_uniq) return nFound;
+                  var sh = "";
+                  try { sh = hexlify(base.add(abs), 176); } catch (e) { sh = "<unread>"; }
+                  if (!SEEN.sched[sh]) {
+                      SEEN.sched[sh] = 1;
+                      R1KEY({ ev: "schedscan", tag: tag, bits: 128, key: sh.substring(0, 32), sched: sh,
+                              range: lbl, base: base.toString(), off: "0x" + abs.toString(16), t: Date.now() });
+                  }
+                  sub = sub + off + 1;
+              }
+              o0 += CH;
+          }
+          return nFound;
+      }
       var CHUNK = 16777216;
       for (var co = 0; co < size; co += CHUNK) {
           var cs = Math.min(CHUNK, size - co);
@@ -844,6 +944,7 @@ setTimeout(function BOOT() {
               // R7b 内联快筛(1.6%通过率; 免schedValidAt函数调用 = 主要提速): W[i]字最低字节关系
               if ((u8[off + 20] ^ u8[off + 4] ^ u8[off + 16]) !== 0) continue;
               if ((u8[off + 24] ^ u8[off + 8] ^ u8[off + 20]) !== 0) continue;
+              if (u8[off + 16] !== ((u8[off] ^ SBOX[u8[off + 13]] ^ 0x01) & 0xff)) continue;   // R7c: 第3层门(拒全零区击穿)
               var nk = schedValidAt(u8, off, 4) ? 4 : (schedValidAt(u8, off, 8) ? 8 : 0);
               if (!nk) continue;
               var total = 4 * (nk + 7) * 4;
@@ -871,7 +972,7 @@ setTimeout(function BOOT() {
       if (mode === "vmp") ranges = vmpRangeList();
       else ranges = Process.enumerateRanges("rw-");
       ranges.forEach(function(rg) {
-          var cap = (mode === "full") ? 536870912 : (mode === "medium" ? 67108864 : 33554432);
+          var cap = (mode === "full") ? 2147483648 : (mode === "medium" ? 67108864 : 33554432);   // R7c: full 2GB(C直读)
           if (rg.size > cap || rg.size < 176) return;
           if (rg.file && rg.file.path && /\.(ttf|otf|png|jpg|webp|mp4|zip|apk)$/.test(rg.file.path)) return;
           nRanges++; bytesScanned += rg.size;
@@ -881,25 +982,45 @@ setTimeout(function BOOT() {
         " found=" + nFound + " cost=" + (Date.now() - t0) + "ms");
   }
   function stackScan(tag) {
-      // R7: 线程栈扫描 — r1 加密时 key/schedule 大概率在当前线程栈; maps [stack*] 区(8MB×N) 远小于全内存
+      // R7c: 线程栈扫描升级 — 主线程 [stack*] 区(maps) + 所有线程 sp 向下 2MB 邻域(enumerateThreads;
+      //   Android maps 里非主线程栈=匿名区无[stack]标签, R7b 只扫到 1 区; JNI/池线程栈靠 sp 覆盖)
       var t0 = Date.now();
-      var txt = "";
+      var ranges = [];
       try {
           var f = new File("/proc/self/maps", "r");
+          var txt = "";
           try { txt = f.readText(4194304); } catch (e1) { try { txt = String(f.readAll()); } catch (e2) {} }
           f.close();
-      } catch (e) { L("[STACKSCAN] maps读取失败: " + e); return; }
-      if (!txt || txt.length < 64) { L("[STACKSCAN] maps为空, 跳过"); return; }
-      var nFound = 0, nR = 0, mb = 0;
-      txt.split("\n").forEach(function(line) {
-          if (line.indexOf("[stack") < 0) return;
-          var m = line.match(/([0-9a-f]+)-([0-9a-f]+) rw/);
-          if (!m) return;
-          var base = ptr("0x" + m[1]), size = parseInt(m[2], 16) - parseInt(m[1], 16);
-          nR++; mb += size / 1048576;
-          nFound += scanRangeForSched(base, size, tag, "stack");
+          if (txt && txt.length > 64) {
+              txt.split("\n").forEach(function(line) {
+                  if (line.indexOf("[stack") < 0) return;
+                  var m = line.match(/([0-9a-f]+)-([0-9a-f]+) rw/);
+                  if (!m) return;
+                  ranges.push({ base: ptr("0x" + m[1]), size: parseInt(m[2], 16) - parseInt(m[1], 16), lbl: "stack" });
+              });
+          }
+      } catch (e) { L("[STACKSCAN] maps失败: " + e); }
+      try {
+          Process.enumerateThreads().forEach(function(th) {
+              try {
+                  var sp = th.context ? th.context.sp : null;
+                  if (!sp) return;
+                  var rg = Process.findRangeByAddress(sp);
+                  if (!rg || rg.protection.indexOf("rw") < 0) return;
+                  var lo = sp.sub(2097152);
+                  if (lo.compare(rg.base) < 0) lo = rg.base;
+                  var sz = sp.sub(lo).toInt() + 4096;
+                  if (sz > 200000) ranges.push({ base: lo, size: sz, lbl: "tstack_" + th.id });
+              } catch (e2) {}
+          });
+      } catch (e) {}
+      var seen = {}, nFound = 0, nR = 0, mb = 0;
+      ranges.forEach(function(rg) {
+          var k = rg.base.toString(); if (seen[k]) return; seen[k] = 1;
+          nR++; mb += rg.size / 1048576;
+          nFound += scanRangeForSched(rg.base, rg.size, tag, rg.lbl);
       });
-      L("[STACKSCAN] tag=" + tag + " stacks=" + nR + " MB=" + Math.round(mb) + " found=" + nFound + " cost=" + (Date.now() - t0) + "ms");
+      L("[STACKSCAN] tag=" + tag + " ranges=" + nR + " MB=" + Math.round(mb) + " found=" + nFound + " cost=" + (Date.now() - t0) + "ms");
   }
   var VMP_SCAN_LAST = 0;
   function maybeScanNow(tag) {
@@ -1253,7 +1374,7 @@ setTimeout(function BOOT() {
       //   boot_sync=武装完立即(vmp模块段+栈); 波浪=setTimeout链(2s→84s, 覆盖r1首波~54s间隔多波)
       try { schedScan("boot_sync", "vmp", true); } catch (e) {}
       try { stackScan("boot_sync"); } catch (e) {}
-      try { schedScan("boot_med", "medium", true); } catch (e) { L("[SCAN_ERR] boot_med: " + e); }   // R7b: BOOT内同步medium(≤64MB区; 已扫部分实时落log; 中断亦保留)
+      try { schedScan("boot_full", "full", true); } catch (e) { L("[SCAN_ERR] boot_full: " + e); }   // R7c: C版全内存(1GB≈6s); 已扫部分实时落log
       var SCAN_WAVES = [150, 450, 800, 1200, 2500, 6000, 11000];   // R7b: 前四波压缩进存活窗(<t0+4s); 后三波=agent长寿兜底
       SCAN_WAVES.forEach(function(delay, i) {
           setTimeout(function() {
@@ -1265,7 +1386,7 @@ setTimeout(function BOOT() {
               } catch (e) { L("[SCAN_ERR] wave" + i + ": " + e); }
           }, delay);
       });
-      L("[READY] r1 keyhunt collection armed v3.1(t0/sync/shortwaves/full) " + Date.now());
+      L("[READY] r1 keyhunt collection armed v3.2(cmodule/t0/threadstacks/full) " + Date.now());
   });
 
   } catch (e) { R1KEY({ ev: "boot_error", msg: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
