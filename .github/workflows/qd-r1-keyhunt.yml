@@ -172,10 +172,22 @@ jobs:
           # 每个新稳定pid即attach; 若attach引发早夭, 守护对下一个pid自动重来(driver有App看门狗重启)
           (
             SESS_END=$(( $(date +%s) + ${GUARD_SECS:-780} ))
-            LAST_PID=""; FS_STARTED=0
+            LAST_PID=""; FS_STARTED=0; EARLY_DONE=0
+            # R7f: frida-server 预启动(不等首个pid — 让早attach最快到 T+2-3s)
+            adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &" 2>/dev/null
+            sleep 4
+            adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
+            FS_STARTED=1
             while [ "$(date +%s)" -lt "$SESS_END" ]; do
               P=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
               if [ -n "$P" ] && [ "$P" != "$LAST_PID" ]; then
+                # R7f: 首个pid=EARLY attach scan_only(≈T+3-4s; R7e实证 r1首波在稳判attach(T+8-11s)前9.5-11.5s)
+                #   不装hook极简扫描器, 连续全内存快照覆盖0~25s; 独立会话(主脚本 attach 不冲突)
+                if [ $EARLY_DONE = 0 ]; then
+                  EARLY_DONE=1
+                  echo "[GUARD] $(date +%s) EARLY-attach scan_only pid=$P" >> /tmp/keyhunt_guard.log
+                  ( sleep 2; (sleep 40; echo) | timeout 50 frida -H 127.0.0.1:14771 -p $P -l hook_r1_scanonly.js >> /tmp/keyhunt_collect.log 2>&1 ) &
+                fi
                 # R3修正: 稳判2s→8s双检(第二轮T+3-4s快attach撞360壳早窗→App 9连死+canary=0;
                 # 第一轮T+13s attach拿到643事件; r构建在T+24s后(saveKnobsEnvInfo@getconf响应+24.3s), T+11s attach来得及)
                 sleep 5
@@ -191,14 +203,14 @@ jobs:
                     adb -s $B forward tcp:14771 tcp:14771
                     FS_STARTED=1
                   fi
-                  pkill -f "frida -H" 2>/dev/null; sleep 1
+                  pkill -f "hook_r1_keyhunt_v2" 2>/dev/null; sleep 1   # R7f: 只杀主脚本会话(不动scan_only)
                   LEFT=$(( SESS_END - $(date +%s) ))
                   [ $LEFT -lt 20 ] && break
                   echo "[GUARD] $(date +%s) attach pid=$P window=${LEFT}s" >> /tmp/keyhunt_guard.log
                   ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $P -l hook_r1_keyhunt_v2.js >> /tmp/keyhunt_collect.log 2>&1 ) &
                   # R7d: attach失败检测(frida早退=Failed to attach)→回退LAST_PID允许重试(R7c: alloc-crash失败后4420被误标已attach→永不重试)
                   sleep 3
-                  if ! pgrep -f "frida -H .* -p $P" >/dev/null 2>&1; then
+                  if ! pgrep -f "hook_r1_keyhunt_v2" >/dev/null 2>&1; then   # R7f: 简单pattern(原正则误判→R7e每13s重置重挂)
                     echo "[GUARD] attach fail pid=$P — reset for retry" >> /tmp/keyhunt_guard.log
                     LAST_PID=""
                   fi
