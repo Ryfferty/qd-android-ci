@@ -37,6 +37,12 @@
 //   块原语 arm64 反汇编: x0=ctx(ldr [x0,#8]=schedPtr), x1=in16 → 输出疑 in-place/x2, 原始dump+onLeave回读双保险
 // arm32 对照: 0x9fb0/0xbb80/0xb690/0xce68/0xd07c/0xd118/0xd1cc/0x2112c/0xc81c/0xc210/0xc020/0xb290/0x??(armor)
 //
+// R7 (2026-10-16 傍晚) 关键修正 — R5 复盘发现: [HB]/[SCHEDSCAN]/[MEMSCAN] 在 R5 collect 中 0 次出现,
+//   而会话(guard)寿命 40-80s 足够 → 结论=壳反杀(blocked _exit + CANARY_ERR access violation)饿死
+//   agent 的 setInterval, 定时扫描从未执行("schedscan=0"=从未运行, 非"未命中")。R7 对策:
+//   a. BOOT 武装完立即同步扫描(boot_sync: vmp模块段+线程栈) b. setTimeout 波浪链(2s..84s, 不依赖setInterval)
+//   c. vmp 回调(KI$Companion/KI)内防抖触发就近扫描(evt_*: r1调用时刻) d. 新增 stackScan(线程栈=[stack*]区)
+//   e. schedScan 分模式: vmp(壳/三库模块段+匿名exec邻域, 秒级) / full(全rw分块, 后台)
 // 输出纪律: 结构化行 [R1KEY] {json} (ev 字段区分), ci/r1_gen.py harvest 解析;
 //   完整材料只落 collect.log artifact; 本文件不含任何 secrets 值 (PUBLIC repo 纪律)。
 
@@ -622,7 +628,7 @@ setTimeout(function BOOT() {
               } catch (e) {}
               L("[CANARY] 自检直调完成 (r1_gen.py canary 子命令离线判定语义)");
           } catch (e) { L("[CANARY_ERR] " + e); }
-      }, 3000);
+      }, 800);   // R7: 3000→800ms (壳反杀前完成自检; R5 CANARY_ERR 发生在会话中段)
   }
   var knobsPoll = setInterval(function() {
       hookKnobs();
@@ -770,40 +776,120 @@ setTimeout(function BOOT() {
       scanNeedles(tag, needles);
   }
 
-  // ═══ ⑤ 采集点c2: AES 扩展调度全内存扫描 (VMP私有cipher的钥匙必留痕) ═══
-  function schedScan(tag) {
-      var now = Date.now();
-      if (now - LAST_SCHEDSCAN < 45000) { L("[SCHEDSCAN] 限速跳过 tag=" + tag); return; }
-      LAST_SCHEDSCAN = now;
-      var t0 = now, nFound = 0, nRanges = 0, bytesScanned = 0;
-      var ranges = Process.enumerateRanges("rw-");
-      ranges.forEach(function(rg) {
-          if (rg.size > 67108864 || rg.size < 176) return;   // >64MB 跳过(单遍≤~8s, 防JS线程长阻塞)
-          if (rg.file && rg.file.path && /\.(ttf|otf|png|jpg|webp|mp4|zip|apk)$/.test(rg.file.path)) return;
-          nRanges++;
+  // ═══ ⑤ 采集点c2: AES 扩展调度扫描 (VMP私有cipher的钥匙必留痕) ═══
+  // R7重构(R5实证: 壳反杀饿死 setInterval → 定时器从未tick; 扫描必须尽早+不依赖定时器):
+  //   scanRangeForSched 通用分块 + 分模式 schedScan(full/vmp) + stackScan(线程栈) + maybeScanNow(vmp回调触发)
+  var LAST_SCAN = { full: 0, vmp: 0 };
+  function execNeighborhoodRanges() {
+      var out = [];
+      try {
+          var f = new File("/proc/self/maps", "r"); var txt = f.readAll().toString(); f.close();
+          var execs = [], rws = [];
+          txt.split("\n").forEach(function(line) {
+              var m = line.match(/([0-9a-f]+)-([0-9a-f]+) (....)/);
+              if (!m) return;
+              var b = parseInt(m[1], 16), e = parseInt(m[2], 16), perm = m[3];
+              if (perm === "r-xp" && line.indexOf("/") < 0) execs.push([b, e]);
+              if (perm === "rw-p") rws.push([b, e]);
+          });
+          var seen = {};
+          execs.forEach(function(ex) {
+              rws.forEach(function(rw) {
+                  if (rw[0] <= ex[1] + 33554432 && rw[1] >= ex[0] - 33554432) {
+                      var k = "" + rw[0] + "_" + rw[1];
+                      if (seen[k]) return; seen[k] = 1;
+                      out.push({ base: ptr(rw[0]), size: rw[1] - rw[0], lbl: "exec_nbhd" });
+                  }
+              });
+          });
+      } catch (e) {}
+      return out;
+  }
+  function vmpRangeList() {
+      var out = [];
+      try {
+          Process.enumerateModules().forEach(function(m) {
+              if (/jiagu|shell|fock|knobs|nib|ostar|qidian/i.test(m.name)) {
+                  try { m.enumerateRanges("rw-").forEach(function(rg) { out.push({ base: rg.base, size: rg.size, lbl: m.name }); }); } catch (e) {}
+              }
+          });
+      } catch (e) {}
+      execNeighborhoodRanges().forEach(function(rg) { out.push(rg); });
+      return out;
+  }
+  function scanRangeForSched(base, size, tag, lbl) {
+      if (size < 176 || size > 268435456) return 0;
+      var nFound = 0;
+      var CHUNK = 16777216;
+      for (var co = 0; co < size; co += CHUNK) {
+          var cs = Math.min(CHUNK, size - co);
+          if (cs < 176) break;
           var u8;
-          try { u8 = new Uint8Array(Memory.readByteArray(rg.base, rg.size)); } catch (e) { return; }
-          bytesScanned += u8.length;
+          try { u8 = new Uint8Array(Memory.readByteArray(base.add(co), cs)); } catch (e) { continue; }
           var end = u8.length - 240;
           for (var off = 0; off < end; off += 4) {
-              var is128 = schedValidAt(u8, off, 4);
-              var nk = is128 ? 4 : (schedValidAt(u8, off, 8) ? 8 : 0);
+              var nk = schedValidAt(u8, off, 4) ? 4 : (schedValidAt(u8, off, 8) ? 8 : 0);
               if (!nk) continue;
               var total = 4 * (nk + 7) * 4;
               var schedHex = hexlifyBytes(u8.subarray(off, off + total));
               if (SEEN.sched[schedHex]) continue;
               SEEN.sched[schedHex] = 1;
               nFound++; STAT.schedscan++;
-              if (nFound > LIMITS.sched_uniq) return;
+              if (nFound > LIMITS.sched_uniq) return nFound;
               R1KEY({ ev: "schedscan", tag: tag, bits: nk * 32,
                       key: schedHex.substring(0, nk * 8),      // sched[0:keylen]=原始key
-                      sched: schedHex,
-                      range: rg.file && rg.file.path ? rg.file.path : "anon",
-                      base: rg.base.toString(), off: "0x" + off.toString(16), t: Date.now() });
+                      sched: schedHex, range: lbl,
+                      base: base.toString(), off: "0x" + (co + off).toString(16), t: Date.now() });
           }
+      }
+      return nFound;
+  }
+  function schedScan(tag, mode, force) {
+      mode = mode || "full";
+      var now = Date.now();
+      var minGap = (mode === "full") ? 20000 : 2000;
+      if (!force && now - (LAST_SCAN[mode] || 0) < minGap) { L("[SCHEDSCAN] 限速跳过 tag=" + tag + " mode=" + mode); return; }
+      LAST_SCAN[mode] = now;
+      var t0 = now, nFound = 0, nRanges = 0, bytesScanned = 0;
+      var ranges;
+      if (mode === "vmp") ranges = vmpRangeList();
+      else ranges = Process.enumerateRanges("rw-");
+      ranges.forEach(function(rg) {
+          if (rg.size > (mode === "full" ? 536870912 : 33554432) || rg.size < 176) return;
+          if (rg.file && rg.file.path && /\.(ttf|otf|png|jpg|webp|mp4|zip|apk)$/.test(rg.file.path)) return;
+          nRanges++; bytesScanned += rg.size;
+          nFound += scanRangeForSched(rg.base, rg.size, tag, (rg.lbl || (rg.file && rg.file.path ? rg.file.path : "anon")));
       });
-      L("[SCHEDSCAN] tag=" + tag + " ranges=" + nRanges + " MB=" + Math.round(bytesScanned / 1048576) +
+      L("[SCHEDSCAN] tag=" + tag + " mode=" + mode + " ranges=" + nRanges + " MB=" + Math.round(bytesScanned / 1048576) +
         " found=" + nFound + " cost=" + (Date.now() - t0) + "ms");
+  }
+  function stackScan(tag) {
+      // R7: 线程栈扫描 — r1 加密时 key/schedule 大概率在当前线程栈; maps [stack*] 区(8MB×N) 远小于全内存
+      var t0 = Date.now();
+      var txt = "";
+      try { var f = new File("/proc/self/maps", "r"); txt = f.readAll().toString(); f.close(); }
+      catch (e) { L("[STACKSCAN] maps读取失败: " + e); return; }
+      var nFound = 0, nR = 0, mb = 0;
+      txt.split("\n").forEach(function(line) {
+          if (line.indexOf("[stack") < 0) return;
+          var m = line.match(/([0-9a-f]+)-([0-9a-f]+) rw/);
+          if (!m) return;
+          var base = ptr("0x" + m[1]), size = parseInt(m[2], 16) - parseInt(m[1], 16);
+          nR++; mb += size / 1048576;
+          nFound += scanRangeForSched(base, size, tag, "stack");
+      });
+      L("[STACKSCAN] tag=" + tag + " stacks=" + nR + " MB=" + Math.round(mb) + " found=" + nFound + " cost=" + (Date.now() - t0) + "ms");
+  }
+  var VMP_SCAN_LAST = 0;
+  function maybeScanNow(tag) {
+      // R7: vmp 回调内触发(r1 调用时刻就近) — 防抖2s
+      //   ★同步执行(不依赖 setTimeout: R5 只证明 setInterval 被壳饿死; 回调本身已被证明活着(R5 42事件))
+      //   vmp 模式限 32MB → 百ms级; 回调在 App 线程, 短阻塞可控; 宁可慢不可漏
+      var now = Date.now();
+      if (now - VMP_SCAN_LAST < 2000) return;
+      VMP_SCAN_LAST = now;
+      try { schedScan("evt_" + tag, "vmp", true); } catch (e) { L("[SCAN_ERR] evt: " + e); }
+      try { stackScan("evt_" + tag); } catch (e) { L("[SCAN_ERR] evt_stack: " + e); }
   }
 
   // ═══ ⑥ AES 常量表扫描 (定位一切 AES 实现, 含 VMP 解密后的私有副本) ═══
@@ -926,6 +1012,8 @@ setTimeout(function BOOT() {
                                       ret: rs !== null && rs.length > 8192 ? rs.substring(0, 8192) + "…(" + rs.length + ")" : rs,
                                       ret_is_null: ret === null, err: err,
                                       ms: Date.now() - t0, t: t0 });
+                              // R7: r1 相关 VMP 调用时刻就近扫描(防抖2s; 异步防阻塞App线程)
+                              if (tag === "KI$Companion" || tag === "KI") { try { maybeScanNow(tag + ":" + methodName); } catch (e3) {} }
                               // uh.j.e/f(JSONObject) 入参 = envJSON 全量 → 专事件(采集点a-5主产出)
                               if (tag === "uh.j" && args.length > 0 && args[0] && args[0].charAt(0) === "{") {
                                   STAT.envjson++;
@@ -1140,7 +1228,22 @@ setTimeout(function BOOT() {
             " hooked=" + KNOBS_HOOKED +
             " shield(exit=" + SHIELD.exit + ",kill=" + SHIELD.kill + ",maps=" + SHIELD.maps + ",jexit=" + SHIELD.jexit + ")");
       }, 15000);
-      L("[READY] r1 keyhunt collection armed v2");
+      // ═══ R7: 立即扫描 + 波浪链 (不依赖 setInterval — R5实证: 壳反杀饿死定时器, [HB]/[SCHEDSCAN] 0次) ═══
+      //   boot_sync=武装完立即(vmp模块段+栈); 波浪=setTimeout链(2s→84s, 覆盖r1首波~54s间隔多波)
+      try { schedScan("boot_sync", "vmp", true); } catch (e) {}
+      try { stackScan("boot_sync"); } catch (e) {}
+      var SCAN_WAVES = [2000, 6000, 11000, 17000, 24000, 32000, 42000, 54000, 68000, 84000];
+      SCAN_WAVES.forEach(function(delay, i) {
+          setTimeout(function() {
+              try {
+                  schedScan("w" + i, (i < 4 ? "vmp" : "full"), true);
+                  if (i % 3 === 0) stackScan("w" + i);
+                  if (i === 0 || i === 5 || i === 9) { try { sboxScan("w" + i); } catch (e) {} }
+                  if (i === 2 || i === 7) { try { doMemScan("w" + i); } catch (e) {} }
+              } catch (e) { L("[SCAN_ERR] wave" + i + ": " + e); }
+          }, delay);
+      });
+      L("[READY] r1 keyhunt collection armed v3(+sync/waves/stack) " + Date.now());
   });
 
   } catch (e) { R1KEY({ ev: "boot_error", msg: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
