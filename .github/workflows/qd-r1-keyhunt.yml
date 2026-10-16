@@ -183,10 +183,11 @@ jobs:
               if [ -n "$P" ] && [ "$P" != "$LAST_PID" ]; then
                 # R7f: 首个pid=EARLY attach scan_only(≈T+3-4s; R7e实证 r1首波在稳判attach(T+8-11s)前9.5-11.5s)
                 #   不装hook极简扫描器, 连续全内存快照覆盖0~25s; 独立会话(主脚本 attach 不冲突)
-                if [ $EARLY_DONE = 0 ]; then
-                  EARLY_DONE=1
-                  echo "[GUARD] $(date +%s) EARLY-attach scan_only pid=$P" >> /tmp/keyhunt_guard.log
-                  ( sleep 2; (sleep 40; echo) | timeout 50 frida -H 127.0.0.1:14771 -p $P -l hook_r1_scanonly.js >> /tmp/keyhunt_collect.log 2>&1 ) &
+                # R7g: 前2个新pid都EARLY attach(R7f教训: 首个pid 1944=瞬态已死"process not found", 真身2587晚出现; 无sleep立即attach)
+                if [ $EARLY_DONE -lt 2 ]; then
+                  EARLY_DONE=$((EARLY_DONE + 1))
+                  echo "[GUARD] $(date +%s) EARLY-attach scan_only(#$EARLY_DONE) pid=$P" >> /tmp/keyhunt_guard.log
+                  ( (sleep 25; echo) | timeout 35 frida -H 127.0.0.1:14771 -p $P -l hook_r1_scanonly.js >> /tmp/keyhunt_collect.log 2>&1 ) &
                 fi
                 # R3修正: 稳判2s→8s双检(第二轮T+3-4s快attach撞360壳早窗→App 9连死+canary=0;
                 # 第一轮T+13s attach拿到643事件; r构建在T+24s后(saveKnobsEnvInfo@getconf响应+24.3s), T+11s attach来得及)
