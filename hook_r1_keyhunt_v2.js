@@ -173,8 +173,8 @@ setTimeout(function BOOT() {
   try { schedScan("t0", "vmp", true); } catch (e) { L("[SCAN_ERR] t0_vmp: " + e); }
   [150, 450, 800, 1200].forEach(function(d, i) {   // 短波: BOOT结束后依次入队(压缩进存活窗)
       setTimeout(function() {
-          try { stackScan("s" + i); } catch (e) {}
-          try { schedScan("s" + i, "vmp", true); } catch (e) {}
+          try { stackScan("s" + i); } catch (e) { L("[SCAN_ERR] s" + i + "_stack: " + e); }
+          try { schedScan("s" + i, "vmp", true); } catch (e) { L("[SCAN_ERR] s" + i + ": " + e); }
       }, d);
   });
   // ═══ 0° 反检测盾 (cecelia v2 / keyhunt v1 同款, 最先执行) + app数据文件 fd 观测 ═══
@@ -1001,16 +1001,28 @@ setTimeout(function BOOT() {
           }
       } catch (e) { L("[STACKSCAN] maps失败: " + e); }
       try {
+          // R7d: 每线程只扫 sp 向下 512KB(活跃栈区) + 总量 64MB 预算 + 首尾探针 + 上界 clamp
+          //   R7c 卡死根因: 全线程×2MB≈200MB @334ms/MB≈67s → BOOT 永卡([READY]0次)
+          var tBudget = 67108864, tUsed = 0;
           Process.enumerateThreads().forEach(function(th) {
+              if (tUsed >= tBudget) return;
               try {
                   var sp = th.context ? th.context.sp : null;
                   if (!sp) return;
                   var rg = Process.findRangeByAddress(sp);
                   if (!rg || rg.protection.indexOf("rw") < 0) return;
-                  var lo = sp.sub(2097152);
+                  var lo = sp.sub(524288);
                   if (lo.compare(rg.base) < 0) lo = rg.base;
-                  var sz = sp.sub(lo).toInt() + 4096;
-                  if (sz > 200000) ranges.push({ base: lo, size: sz, lbl: "tstack_" + th.id });
+                  var hi = sp.add(4096);
+                  var rgEnd = rg.base.add(rg.size);
+                  if (hi.compare(rgEnd) > 0) hi = rgEnd;
+                  var sz = hi.sub(lo).toInt();
+                  if (sz > 8192) {
+                      try { Memory.readByteArray(lo, 16); } catch (e3) { return; }
+                      try { Memory.readByteArray(hi.sub(16), 16); } catch (e4) { return; }
+                      ranges.push({ base: lo, size: sz, lbl: "tstack_" + th.id });
+                      tUsed += sz;
+                  }
               } catch (e2) {}
           });
       } catch (e) {}
@@ -1372,8 +1384,9 @@ setTimeout(function BOOT() {
       }, 15000);
       // ═══ R7: 立即扫描 + 波浪链 (不依赖 setInterval — R5实证: 壳反杀饿死定时器, [HB]/[SCHEDSCAN] 0次) ═══
       //   boot_sync=武装完立即(vmp模块段+栈); 波浪=setTimeout链(2s→84s, 覆盖r1首波~54s间隔多波)
-      try { schedScan("boot_sync", "vmp", true); } catch (e) {}
-      try { stackScan("boot_sync"); } catch (e) {}
+      L("[READY] r1 keyhunt collection armed v3.3(ready-first/cmodule/stackbudget) " + Date.now());
+      try { schedScan("boot_sync", "vmp", true); } catch (e) { L("[SCAN_ERR] boot_sync: " + e); }
+      try { stackScan("boot_sync"); } catch (e) { L("[SCAN_ERR] boot_sync_stack: " + e); }
       try { schedScan("boot_full", "full", true); } catch (e) { L("[SCAN_ERR] boot_full: " + e); }   // R7c: C版全内存(1GB≈6s); 已扫部分实时落log
       var SCAN_WAVES = [150, 450, 800, 1200, 2500, 6000, 11000];   // R7b: 前四波压缩进存活窗(<t0+4s); 后三波=agent长寿兜底
       SCAN_WAVES.forEach(function(delay, i) {
@@ -1386,7 +1399,7 @@ setTimeout(function BOOT() {
               } catch (e) { L("[SCAN_ERR] wave" + i + ": " + e); }
           }, delay);
       });
-      L("[READY] r1 keyhunt collection armed v3.2(cmodule/t0/threadstacks/full) " + Date.now());
+      L("[READY-DONE] scan chain complete " + Date.now());
   });
 
   } catch (e) { R1KEY({ ev: "boot_error", msg: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }

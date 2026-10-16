@@ -196,6 +196,12 @@ jobs:
                   [ $LEFT -lt 20 ] && break
                   echo "[GUARD] $(date +%s) attach pid=$P window=${LEFT}s" >> /tmp/keyhunt_guard.log
                   ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $P -l hook_r1_keyhunt_v2.js >> /tmp/keyhunt_collect.log 2>&1 ) &
+                  # R7d: attach失败检测(frida早退=Failed to attach)→回退LAST_PID允许重试(R7c: alloc-crash失败后4420被误标已attach→永不重试)
+                  sleep 3
+                  if ! pgrep -f "frida -H .* -p $P" >/dev/null 2>&1; then
+                    echo "[GUARD] attach fail pid=$P — reset for retry" >> /tmp/keyhunt_guard.log
+                    LAST_PID=""
+                  fi
                   # R6: [READY]出现=hook武装完成 → 放行driver隐私页门控(点同意→业务首启→r1首建落在hook就绪后)
                   ( for _hr in $(seq 1 90); do
                       grep -q '\[READY\]' /tmp/keyhunt_collect.log 2>/dev/null && { touch /tmp/hook_ready; break; }
