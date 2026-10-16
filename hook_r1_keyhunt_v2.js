@@ -171,6 +171,9 @@ setTimeout(function BOOT() {
   //   agent 存活窗口实测(R7): BOOT(≈2.5s)内同步 + post-BOOT ≤1s 定时器是唯一可靠执行面
   try { stackScan("t0"); } catch (e) { L("[SCAN_ERR] t0_stack: " + e); }
   try { schedScan("t0", "vmp", true); } catch (e) { L("[SCAN_ERR] t0_vmp: " + e); }
+  // R7e: 全内存扫描前置(在hook武装前做 — R7d实证[READY]后App秒被壳杀; R7b实证未武装扫描窗≥21s)
+  //   attach时刻=r1计算窗; full含App堆(唯一未覆盖面) — 1GB≈7s(C版)
+  try { schedScan("t0full", "full", true); } catch (e) { L("[SCAN_ERR] t0full: " + e); }
   [150, 450, 800, 1200].forEach(function(d, i) {   // 短波: BOOT结束后依次入队(压缩进存活窗)
       setTimeout(function() {
           try { stackScan("s" + i); } catch (e) { L("[SCAN_ERR] s" + i + "_stack: " + e); }
@@ -913,6 +916,8 @@ setTimeout(function BOOT() {
           while (o0 < size) {
               var cs = Math.min(CH, size - o0);
               if (cs < 176) break;
+              try { Memory.readByteArray(base.add(o0), 16); } catch (e0) { o0 += CH; continue; }          // R7e 块级探针
+              try { Memory.readByteArray(base.add(o0 + cs - 16), 16); } catch (e0b) { o0 += CH; continue; }
               var sub = 0;
               while (sub + 176 <= cs) {
                   var off = fn(base.add(o0 + sub), cs - sub, 4);
@@ -975,6 +980,10 @@ setTimeout(function BOOT() {
           var cap = (mode === "full") ? 2147483648 : (mode === "medium" ? 67108864 : 33554432);   // R7c: full 2GB(C直读)
           if (rg.size > cap || rg.size < 176) return;
           if (rg.file && rg.file.path && /\.(ttf|otf|png|jpg|webp|mp4|zip|apk)$/.test(rg.file.path)) return;
+          // R7e: 逐区3点探针(首/中/尾) — 防 exec 邻域不可读页让 C 直读崩(R7d t0_vmp access violation)
+          try { Memory.readByteArray(rg.base, 16); } catch (e1) { return; }
+          try { Memory.readByteArray(rg.base.add(Math.floor(rg.size / 2)), 16); } catch (e2) { return; }
+          try { Memory.readByteArray(rg.base.add(rg.size - 16), 16); } catch (e3) { return; }
           nRanges++; bytesScanned += rg.size;
           nFound += scanRangeForSched(rg.base, rg.size, tag, (rg.lbl || (rg.file && rg.file.path ? rg.file.path : "anon")));
       });
@@ -1384,7 +1393,7 @@ setTimeout(function BOOT() {
       }, 15000);
       // ═══ R7: 立即扫描 + 波浪链 (不依赖 setInterval — R5实证: 壳反杀饿死定时器, [HB]/[SCHEDSCAN] 0次) ═══
       //   boot_sync=武装完立即(vmp模块段+栈); 波浪=setTimeout链(2s→84s, 覆盖r1首波~54s间隔多波)
-      L("[READY] r1 keyhunt collection armed v3.3(ready-first/cmodule/stackbudget) " + Date.now());
+      L("[READY] r1 keyhunt collection armed v3.4(prehook-fullscan/probes) " + Date.now());
       try { schedScan("boot_sync", "vmp", true); } catch (e) { L("[SCAN_ERR] boot_sync: " + e); }
       try { stackScan("boot_sync"); } catch (e) { L("[SCAN_ERR] boot_sync_stack: " + e); }
       try { schedScan("boot_full", "full", true); } catch (e) { L("[SCAN_ERR] boot_full: " + e); }   // R7c: C版全内存(1GB≈6s); 已扫部分实时落log
