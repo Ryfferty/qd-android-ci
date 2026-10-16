@@ -41,6 +41,10 @@ SECRETS_FILE = '/tmp/e7_secrets.txt'   # runner /tmp, 只写值不写名
 
 MODE = (os.environ.get('QD_MITM_MODE') or 'login').strip().lower()
 TRAFFIC_SECS = int(os.environ.get('QD_TRAFFIC_SECS') or '300')
+# R6 fresh模式: pm clear清数据(覆盖r1缓存/consent) → 不预写consent(隐私弹窗停留) →
+#   等 /tmp/hook_ready(guardian frida attach+[READY]武装完成) → 才点"同意"放行业务首启
+#   (r1首建在getconf响应+24s后 → 必然落在hook就绪之后)
+FRESH = (os.environ.get('QD_FRESH_ATTACH') or '').strip() == '1'
 
 VERDICT = {'mode': MODE}
 SECRETS = []          # 精确待脱敏值(只在内存+/tmp)
@@ -293,17 +297,28 @@ def load_session():
 # ═════════════ Phase A: 匿名首启 ═════════════
 def phase_first_launch():
     L('═══ Phase A: 匿名首启(consent预写+登录屏跳过+匿名短窗) ═══')
-    # 隐私同意预写(qr-born v7实证, 免弹窗)
-    uid = app_uid()
-    sh('mkdir', '-p', '/data/data/%s/shared_prefs' % APP)
-    # 单串传远端shell(引号保真; 多参数会被远端shell拆掉XML引号)
-    sh("echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map>"
-       "<boolean name=\"is_agree_privacy\" value=\"true\" /></map>' "
-       "> /data/data/%s/shared_prefs/app_sp.xml" % APP)
-    if uid:
-        sh('chown', '%s:%s' % (uid, uid), '/data/data/%s/shared_prefs/app_sp.xml' % APP)
-        sh('chmod', '660', '/data/data/%s/shared_prefs/app_sp.xml' % APP)
-    L('[A] consent预写完成 uid=%s' % uid)
+    if FRESH:
+        # R6 fresh: 清数据(一切旧态, 含r1缓存) → 不预写consent → 隐私弹窗出现并停留
+        #   (config隐私弹窗在Shell初始化之后; r1首建在同意+getconf(+24s)之后 → hook就绪门控覆盖)
+        L('[A] ★fresh模式: pm clear清数据 + 隐私页门控(hook就绪前不放行业务首启)')
+        sh('pm', 'clear', APP, timeout=30)
+        try:
+            os.remove('/tmp/hook_ready')
+        except OSError:
+            pass
+        time.sleep(3)
+    else:
+        # 隐私同意预写(qr-born v7实证, 免弹窗)
+        uid = app_uid()
+        sh('mkdir', '-p', '/data/data/%s/shared_prefs' % APP)
+        # 单串传远端shell(引号保真; 多参数会被远端shell拆掉XML引号)
+        sh("echo '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?><map>"
+           "<boolean name=\"is_agree_privacy\" value=\"true\" /></map>' "
+           "> /data/data/%s/shared_prefs/app_sp.xml" % APP)
+        if uid:
+            sh('chown', '%s:%s' % (uid, uid), '/data/data/%s/shared_prefs/app_sp.xml' % APP)
+            sh('chmod', '660', '/data/data/%s/shared_prefs/app_sp.xml' % APP)
+        L('[A] consent预写完成 uid=%s' % uid)
 
     sh('am', 'start', '-n', '%s/.ui.activity.SplashActivity' % APP, timeout=15)
     # 等稳定pid
@@ -320,18 +335,37 @@ def phase_first_launch():
     if not stable:
         L('[A] ⚠ App未稳定起来 — 继续(可能慢启动)')
 
+    if FRESH:
+        # 隐私页停留窗口: 等 guardian attach+[READY](hook武装)后才放行业务首启
+        L('[A] 等 hook_ready(隐私页停留; guardian attach+[READY]武装完成后放行)…')
+        okr = False
+        wi = 0
+        for wi in range(150):
+            if os.path.exists('/tmp/hook_ready'):
+                okr = True
+                break
+            time.sleep(1)
+        L('[A] hook_ready=%s (等待%ds)' % (okr, wi))
+        try:
+            os.remove('/tmp/hook_ready')
+        except OSError:
+            pass
+
     # QDConfig DB出现(登录态注入的目标文件)
-    ok = wait_db(DB, 180)
-    L('[A] databases/QDConfig %s' % ('存在✓' if ok else '未出现⚠(注入将尝试创建)'))
+    #   注: fresh模式下DB在点"同意"后才创建 → 该等待移到登录屏循环之后(见下)
+    if not FRESH:
+        ok = wait_db(DB, 180)
+        L('[A] databases/QDConfig %s' % ('存在✓' if ok else '未出现⚠(注入将尝试创建)'))
 
     # 登录屏跳过(E实证: tvSkip; 1080x2340下兜底坐标=(63,104))
+    #   fresh模式: 此处点"同意并继续"=隐私页按钮 → 放行业务首启(r1首建在hook就绪之后)
     for attempt in range(6):
         xml = dump_ui()
         if not xml:
             time.sleep(6)
             continue
         hit = tap_id(xml, 'tvSkip', 'ivSkip', 'btnAgree') or \
-              tap_text(xml, '跳过', '立即体验', '同意并继续', '开始使用')
+              tap_text(xml, '同意并继续', '同意', '跳过', '立即体验', '开始使用')
         if not hit:
             hit = 'coord(63,104)'
             ui_tap(63, 104)
@@ -342,11 +376,16 @@ def phase_first_launch():
             L('[A] 已到主界面(匿名)')
             break
 
-    # 匿名短窗60s(匿名基线流量; ostar/qimei初始化收尾)
+    if FRESH:
+        ok = wait_db(DB, 180)
+        L('[A] databases/QDConfig %s (fresh: 同意后创建)' % ('存在✓' if ok else '未出现⚠(注入将尝试创建)'))
+
+    # 匿名短窗(fresh: 120s覆盖r1首建(getconf响应+24s语义)+首波上报; 旧路径60s)
+    ANON_SECS = 120 if FRESH else 60
     _fb = lambda: os.path.getsize(FLOWS) if os.path.exists(FLOWS) else 0
-    L('[A] 匿名窗60s(顺带匿名基线) flows=%dB' % _fb())
+    L('[A] 匿名窗%ds(顺带匿名基线) flows=%dB' % (ANON_SECS, _fb()))
     t0 = time.time()
-    while time.time() - t0 < 60:
+    while time.time() - t0 < ANON_SECS:
         ui_swipe(540, 1700, 540, 700)   # 第一轮崩点: 原 sh('input','swipe',...,timeout=10) 无兜底
         time.sleep(9)
     L('[A] 匿名窗结束 flows=%dB' % _fb())

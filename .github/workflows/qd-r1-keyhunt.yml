@@ -34,6 +34,9 @@ on:
       guardian_secs:
         description: 'frida 守护总窗秒数(覆盖driver全程; 第二轮全Phase实跑≈660s+余量)'
         default: '780'
+      fresh:
+        description: '1=R6全新模式(pm clear清r1缓存+隐私页门控: attach[READY]后再点同意放行业务首启) / 0=旧consent预写行为'
+        default: '1'
 
 permissions:
   contents: read
@@ -158,13 +161,15 @@ jobs:
           QD_MITM_MODE: ${{ inputs.mode || 'login' }}
           QD_TRAFFIC_SECS: ${{ inputs.traffic_secs || '240' }}
           GUARD_SECS: ${{ inputs.guardian_secs || '780' }}
+          QD_FRESH_ATTACH: ${{ inputs.fresh || '1' }}
         run: |
           set +e
           B=localhost:5555
           APP=com.qidian.QDReader
           : > /tmp/keyhunt_collect.log
-          # ── frida 守护: 快attach(1s轮询+2s稳判, ≈T+3-4s; 第一轮T+13s会漏 uh.j delay=0 的首建窗) ──
-          # 每个新稳定pid即attach; 若快attach引发早夭, 守护对下一个pid自动重来(driver有App看门狗重启)
+          # ── frida 守护: 快attach(1s轮询+2s稳判) ── R6: driver fresh模式(pm clear+隐私页门控) →
+          #    业务首启被延后到 [READY] 武装完成之后, attach时序不再是与r1首建赛跑的关键路径
+          # 每个新稳定pid即attach; 若attach引发早夭, 守护对下一个pid自动重来(driver有App看门狗重启)
           (
             SESS_END=$(( $(date +%s) + ${GUARD_SECS:-780} ))
             LAST_PID=""; FS_STARTED=0
@@ -191,6 +196,11 @@ jobs:
                   [ $LEFT -lt 20 ] && break
                   echo "[GUARD] $(date +%s) attach pid=$P window=${LEFT}s" >> /tmp/keyhunt_guard.log
                   ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $P -l hook_r1_keyhunt_v2.js >> /tmp/keyhunt_collect.log 2>&1 ) &
+                  # R6: [READY]出现=hook武装完成 → 放行driver隐私页门控(点同意→业务首启→r1首建落在hook就绪后)
+                  ( for _hr in $(seq 1 90); do
+                      grep -q '\[READY\]' /tmp/keyhunt_collect.log 2>/dev/null && { touch /tmp/hook_ready; break; }
+                      sleep 1
+                    done ) &
                 fi
               elif [ -z "$P" ] && [ -n "$LAST_PID" ]; then
                 echo "[GUARD] $(date +%s) pid $LAST_PID gone (driver phase切换)" >> /tmp/keyhunt_guard.log
