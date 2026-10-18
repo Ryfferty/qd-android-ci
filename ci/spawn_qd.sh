@@ -7,9 +7,10 @@
 #   + Phase C 登录窗 r1 (648族checkEnv/keyexp) 双覆盖。
 # 用法: ci/spawn_qd.sh [hold_secs]   (脚本=hook_r1_keyhunt_v2.js, 输出追加到 /tmp/keyhunt_collect.log)
 HOLD=${1:-4800}
+SCRIPT=${SPAWN_SCRIPT:-hook_r1_keyhunt_v2.js}   # R12: 可env覆盖(scanonly诊断=判"钩子死锁"vs"壳冻结")
 DIR=$(cd "$(dirname "$0")/.." && pwd)
-echo "[SPAWN] $(date +%s) frida -f gate (hold=${HOLD}s)" >> /tmp/keyhunt_collect.log
+echo "[SPAWN] $(date +%s) frida -f gate (hold=${HOLD}s script=$SCRIPT)" >> /tmp/keyhunt_collect.log
 ( (sleep $HOLD; echo) | timeout $((HOLD+10)) \
-    frida -H 127.0.0.1:14771 -f com.qidian.QDReader -l "$DIR/hook_r1_keyhunt_v2.js" \
+    frida -H 127.0.0.1:14771 -f com.qidian.QDReader -l "$DIR/$SCRIPT" \
     >> /tmp/keyhunt_collect.log 2>&1 )
 echo "[SPAWN] $(date +%s) gate session ended" >> /tmp/keyhunt_collect.log

@@ -37,6 +37,9 @@ on:
       fresh:
         description: '1=R6全新模式(pm clear清r1缓存+隐私页门控: attach[READY]后再点同意放行业务首启) / 0=旧consent预写行为'
         default: '1'
+      spawn_script:
+        description: 'R12: spawn门控装载的脚本(默认v2; 诊断可传 hook_r1_scanonly.js=无钩判别"钩子死锁"vs"壳冻结")'
+        default: 'hook_r1_keyhunt_v2.js'
 
 permissions:
   contents: read
@@ -162,6 +165,7 @@ jobs:
           QD_TRAFFIC_SECS: ${{ inputs.traffic_secs || '240' }}
           GUARD_SECS: ${{ inputs.guardian_secs || '780' }}
           QD_FRESH_ATTACH: ${{ inputs.fresh || '1' }}
+          SPAWN_SCRIPT: ${{ inputs.spawn_script || 'hook_r1_keyhunt_v2.js' }}
         run: |
           set +e
           B=localhost:5555
