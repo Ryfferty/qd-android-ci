@@ -1,4 +1,4 @@
-// hook_r1_keyhunt_min.js — R17 零内联钩版 (2026-10-18)
+// hook_r1_keyhunt_min.js — R17 零内联钩版 (2026-10-18; R17b 修订见下)
 // 判别链: R12(scanonly无钩=app全速跑通) vs R14/15(有libc/linker内联钩=壳120-200ms杀) vs
 //   R16(kill全封堵=活30s+但壳改"拒绝注册native"→UnsatisfiedLinkError→SIGSEGV)。
 //   ⇒ 检测触发器=内联钩蹦(壳CRC libc/linker代码完整性); 阻断杀路径只换来降级响应(拒注册)。
@@ -10,6 +10,9 @@
 //   ③ 定时器轮询挂 knobs/libssl(R16 心跳证 JS 定时器活着, R10/11"饿死"实为进程早死误判)。
 // 拿钥件不变: libknobs全点位(keyexp=目标) + bss192 + SSL_write(r1 wire)。
 // 输出同v2格式([R1KEY] ev 事件), ci/r1_gen.py harvest 兼容。
+// R17b (A2复盘R16工件后修订): ①comm改名SEQ全局化(R16 logcat实锤: 被改名线程的子线程继承comm,
+//   每pass重置SEQ会产生重名Thread-901=签名) ②seccomp/NNP预态诊断(读/proc/self/status, 判无痕性)
+//   ③武装轮询500→200ms(无dlopen钩, libknobs出现→首次keyexp盲窗压窄), 重操作降频600ms ④TICK前移。
 
 var STAT = { keyexpA: 0, keyexpB: 0, cfb: 0, ctr: 0, cbc: 0, genenc: 0, blk: 0, bss: 0,
              canary: 0, sslwire: 0, knobs_hooked: 0 };
@@ -39,8 +42,9 @@ setTimeout(function BOOT() {
   };
   var FRIDA_RE = /gum|frida|gmain|gdbus|linjector|pool-frida/i;
   var LAST_THREADS = -1;
+  var REN_SEQ = 0;   // R17b: 全局序号 — 每pass重置会产生重复Thread-901(被改名线程的子线程继承comm, 重名=签名)
   function commPass(tag) {
-      var REN = 0, SEQ = 0, report = [];
+      var REN = 0, report = [];
       try {
           var taskp = Memory.allocUtf8String("/proc/self/task");
           var dp = libc.opendir(taskp);
@@ -77,8 +81,8 @@ setTimeout(function BOOT() {
               if (!name) name = "<empty>";
               report.push(tid + ":" + name);
               if (FRIDA_RE.test(name)) {
-                  SEQ++;
-                  var neu = "Thread-9" + ("0" + SEQ).slice(-2) + "\n";
+                  REN_SEQ++;
+                  var neu = "Thread-9" + ("0" + REN_SEQ).slice(-2) + "\n";
                   var wfd = libc.open(commp, 1 /*O_WRONLY*/, 0);
                   if (wfd >= 0) {
                       var nb = Memory.allocUtf8String(neu);
@@ -103,6 +107,24 @@ setTimeout(function BOOT() {
   //    (sig∈{4,6,9,11,15}) 与 exit_group → ERRNO(EPERM)。覆盖 libc raise/kill(内部裸SVC)、
   //    syscall() wrapper、壳裸SVC 全部路径。frida 线程suspend用SIGRTMIN不受影响。
   try {
+      // R17b: 预态诊断 — 装 filter 前读 /proc/self/status (Android app 由 zygote 预装 seccomp+NNP;
+      // 若 NoNewPrivs 已=1, 我们的 prctl 是无痕 no-op; 若=0 则状态可观测, 需在 postmortem 里排查)
+      try {
+          var stp = Memory.allocUtf8String("/proc/self/status");
+          var sfd = libc.open(stp, 0, 0);
+          if (sfd >= 0) {
+              var sbuf = Memory.alloc(4096);
+              var sn = Number(libc.read(sfd, sbuf, 4095));
+              libc.close(sfd);
+              if (sn > 0) {
+                  sbuf.add(sn < 4095 ? sn : 4094).writeU8(0);
+                  var stxt = String(Memory.readCString(sbuf));
+                  var secline = (stxt.match(/Seccomp:\s*\d+(?:\s+\(\w+\))?/i) || [])[0] || "Seccomp:?";
+                  var nnsline = (stxt.match(/NoNewPrivs:\s*\d+/i) || [])[0] || "NoNewPrivs:?";
+                  L("[R17] seccomp prestate: " + secline + " " + nnsline + " (zygote默认)");
+              }
+          }
+      } catch (e0) {}
       var prctlFn = new NativeFunction(Module.findExportByName(null, "prctl"), 'int', ['int','long','long','long','long']);
       var syscallFn = new NativeFunction(Module.findExportByName(null, "syscall"), 'int', ['int','long','long','pointer']);
       var A64s = (Process.arch === "arm64");
@@ -158,8 +180,10 @@ setTimeout(function BOOT() {
       }
   } catch (e) { L("[R17_ERR] seccomp: " + e); }
 
-  // ③ 存活时间线心跳(前80s) + 统一挂载轮询(500ms: knobs/libssl出现即挂钩 — 零dlopen钩)
+  // ③ 存活时间线心跳(前80s) + 统一挂载轮询(R17b: 200ms快查knobs — 无dlopen钩, 盲窗压窄;
+  //    commPass/reArmSsl 是重操作(枚举/遍历线程), 每3 tick=600ms 跑一次)
   var HB = 0;
+  var TICK = 0;
   var hbTimer = setInterval(function() {
       HB++;
       L("[R17_HB] t+" + (HB * 2) + "s keyexpB=" + STAT.keyexpB + " cfb=" + STAT.cfb + " blk=" + STAT.blk +
@@ -528,17 +552,18 @@ setTimeout(function BOOT() {
       }, 800);   // R7: 3000→800ms (壳反杀前完成自检; R5 CANARY_ERR 发生在会话中段)
   }
   // R17: 挂载轮询 — R16 心跳已证 JS 定时器活着(R10/11 "定时器饿死"实为进程早死误判),
-  //   不再钩 dlopen(壳CRC检测触发器)。500ms 轮询: libknobs.so 出现→挂钩; libssl 出现→SSL_write 补挂;
-  //   comm 再扫描(新浮现的 pool-frida 线程即时改名)。
-  var TICK = 0;
+  //   不再钩 dlopen(壳CRC检测触发器)。R17b: 200ms 快查 libknobs.so(出现→立即挂钩, 盲窗压窄),
+  //   commPass/reArmSsl 每 3 tick(600ms); 窗口 360s(覆盖 Phase D 流量窗)。
   hookKnobs();   // 立即试(attach模式兼容)
   var armTimer = setInterval(function() {
       TICK++;
-      try { commPass("t" + TICK); } catch (e) {}
       try { if (!KNOBS_HOOKED) hookKnobs(); } catch (e) {}
-      try { reArmSsl(); } catch (e) {}
-      if (TICK >= 600) clearInterval(armTimer);   // 300s 采集窗
-  }, 500);
+      if (TICK % 3 === 0) {
+          try { commPass("t" + TICK); } catch (e) {}
+          try { reArmSsl(); } catch (e) {}
+      }
+      if (TICK >= 1800) clearInterval(armTimer);   // 200ms×1800 = 360s 采集窗
+  }, 200);
 
   // ═══ ③ SSL_write 线路捕获 (第一轮硬教训: r1 绕开 Java okhttp → 下移到 TLS 层) ═══
   var SSL_ACCUM = {};      // sslPtr → {buf:[bytes], len:int}
