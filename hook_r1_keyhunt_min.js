@@ -1,4 +1,4 @@
-// hook_r1_keyhunt_min.js — R17 零内联钩版 (2026-10-18; R17b 修订见下)
+// hook_r1_keyhunt_min.js — R18 真零内联钩版 (2026-10-18; R17b→R18 修订见下)
 // 判别链: R12(scanonly无钩=app全速跑通) vs R14/15(有libc/linker内联钩=壳120-200ms杀) vs
 //   R16(kill全封堵=活30s+但壳改"拒绝注册native"→UnsatisfiedLinkError→SIGSEGV)。
 //   ⇒ 检测触发器=内联钩蹦(壳CRC libc/linker代码完整性); 阻断杀路径只换来降级响应(拒注册)。
@@ -642,22 +642,28 @@ setTimeout(function BOOT() {
   }
   var SSL_ARMED_ADDRS = {};
   function reArmSsl() {
+      // R18: 只挂非系统路径的 libssl(壳解包后的 app 自带 TLS 库, 出现于 unpack 之后)。
+      //   R17b 教训(致命): 名字过滤 "libssl.so" 连 /system/lib64/libssl.so(boot 期已在内存)也匹配,
+      //   [R17] SSL_write armed @ .../system/lib64/libssl.so 在壳武装前就打了系统库代码补丁 —
+      //   这是 R14~R17b 所有被检测轮次里恒存的唯一 boot 期内联钩(R12 scanonly 零钩=唯一干净对照)。
+      //   系统 libssl 概不碰(MITM 已是 wire 对照来源, 进程内 SSL 捕获纯冗余)。
       try {
           Process.enumerateModules().forEach(function(m) {
               if (m.name !== "libssl.so") return;
+              if (/^\/(system|apex|vendor|product)\//.test(m.path)) return;   // 系统库=禁区
               var p = Module.findExportByName(m.path, "SSL_write");
               if (!p || SSL_ARMED_ADDRS[p.toString()]) return;
               SSL_ARMED_ADDRS[p.toString()] = 1;
               Interceptor.attach(p, {
                   onEnter: function(args) { feedSsl(args[0], args[1], args[2].toInt32()); }
               });
-              L("[R17] SSL_write armed @ " + p + " (" + m.path + ")");
+              L("[R18] SSL_write armed @ " + p + " (" + m.path + ")");
           });
       } catch (e) {}
   }
   try { reArmSsl(); } catch (e) { L("[E] reArmSsl: " + e); }
 
 
-      L("[READY] r1 keyhunt MIN armed (R17 零内联钩+seccomp) " + Date.now());
+      L("[READY] r1 keyhunt MIN armed (R18 真零内联钩: 系统libssl禁碰+seccomp) " + Date.now());
   } catch (e) { R1KEY({ ev: "boot_error", msg: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
 }, 0);
