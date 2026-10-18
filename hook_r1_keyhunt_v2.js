@@ -409,28 +409,38 @@ setTimeout(function BOOT() {
       return true;
   }
 
-  // ═══ ① dlsym 观测 (放宽: 记录全部符号名, 不只 knobs 前缀 — 第一轮0命中, 需排除过滤误伤) ═══
+  // ═══ ① dlsym 观测 ═══
+  // R13(10-18) 重写: R12判别实证(无钩scanonly spawn下app完整运行) ⇒ 挂死=我方钩子所致;
+  //   头号嫌疑=本钩原版 onLeave 对每个新符号调 Process.findModuleByAddress(重型, 遍历全部模块),
+  //   壳init的dlsym风暴期(数千个不同符号)在app初始化线程上跑JS+模块反查 → 与frida内部锁成环死锁。
+  //   修法: ①重入护栏(frida内部解析再进dlsym时直放行) ②名字先判(knobs前缀才走重路径)
+  //   ③模块归属反查只在knobs命中时做一次(诊断性module匹配/jiagu观察让位于不死锁)。
   try {
       var pDlsym = Module.findExportByName(null, "dlsym");
       if (pDlsym) {
           var DLSYM_SEEN = {};
+          var IN_DLSYM = false;
           Interceptor.attach(pDlsym, {
-              onEnter: function(args) { this._n = args[1]; },
+              onEnter: function(args) { this._n = (IN_DLSYM ? null : args[1]); },
               onLeave: function(ret) {
+                  if (IN_DLSYM || !this._n) return;
+                  IN_DLSYM = true;
                   try {
                       var nm = this._n.readCString();
                       if (!nm || DLSYM_SEEN[nm]) return;
                       DLSYM_SEEN[nm] = 1;
-                      var m = Process.findModuleByAddress(ret);
-                      if (nm.indexOf("knobs") === 0 || (m && /knobs|jiagu|fock|nib/.test(m.name))) {
+                      if (nm.indexOf("knobs") === 0 || nm.indexOf("SetB") >= 0 || nm.indexOf("keyexp") >= 0) {
+                          var m = null;
+                          try { m = Process.findModuleByAddress(ret); } catch (e) {}
                           STAT.dlsym++;
                           R1KEY({ ev: "dlsym", sym: nm, ret: ret.toString(),
                                   mod: m ? m.name + "+0x" + ret.sub(m.base).toString(16) : null });
                       }
                   } catch (e) {}
+                  finally { IN_DLSYM = false; }
               }
           });
-          L("[+] dlsym watcher armed (放宽过滤)");
+          L("[+] dlsym watcher armed (R13轻量+重入护栏)");
       }
   } catch (e) { L("[E] dlsym: " + e); }
 
