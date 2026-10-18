@@ -19,6 +19,82 @@ if (typeof process !== "undefined" && process.setExceptionHandler) {
 
 setTimeout(function BOOT() {
   try {
+  // ═══ R15 stealth-lite: 零热路径钩的存活件 ═══
+  // ① 一次性改名 agent 线程(gum-js-loop/gmain/pool-frida-*) — 直调 libc(open/read/write/opendir),
+  //    不挂任何钩, 无convoy; 壳读/proc/self/task/*/comm 时已见不到frida痕迹。
+  try {
+      var libc = {
+          open: new NativeFunction(Module.findExportByName(null, "open"), 'int', ['pointer','int','int']),
+          read: new NativeFunction(Module.findExportByName(null, "read"), 'long', ['int','pointer','long']),
+          write: new NativeFunction(Module.findExportByName(null, "write"), 'long', ['int','pointer','long']),
+          close: new NativeFunction(Module.findExportByName(null, "close"), 'int', ['int']),
+          opendir: new NativeFunction(Module.findExportByName(null, "opendir"), 'pointer', ['pointer']),
+          readdir: new NativeFunction(Module.findExportByName(null, "readdir"), 'pointer', ['pointer'])
+      };
+      var RENAMED = 0;
+      var taskp = Memory.allocUtf8String("/proc/self/task");
+      var dp = libc.opendir(taskp);
+      if (!dp.isNull()) {
+          var NAMEMAX = 256;
+          var dent = Memory.alloc(NAMEMAX + 16);
+          // d_name 偏移: arm64 struct dirent = d_ino(8)+d_off(8)+d_reclen(2)+d_type(1)+pad(5) → d_name@24
+          var NAME_OFF = (Process.arch === "arm64") ? 24 : 8;
+          var buf = Memory.alloc(64);
+          var NEUTRAL = Memory.allocUtf8String("Thread-42\n");
+          while (true) {
+              var r = libc.readdir(dp);
+              if (r.isNull()) break;
+              Memory.copy(dent, r, NAMEMAX + 16);
+              var tid = Memory.readCString(dent.add(NAME_OFF));
+              if (!tid || tid === "." || tid === ".." || !/^\d+$/.test(tid)) continue;
+              var commp = Memory.allocUtf8String("/proc/self/task/" + tid + "/comm");
+              var fd = libc.open(commp, 0 /*O_RDONLY*/, 0);
+              if (fd < 0) continue;
+              var n = libc.read(fd, buf, 63);
+              libc.close(fd);
+              var name = (n > 0) ? Memory.readCString(buf) : "";
+              if (/gum|frida|gmain|pool/i.test(name)) {
+                  var wfd = libc.open(commp, 1 /*O_WRONLY*/, 0);
+                  if (wfd >= 0) { libc.write(wfd, NEUTRAL, 9); libc.close(wfd); RENAMED++; }
+              }
+          }
+      }
+      L("[R15] agent线程改名×" + RENAMED);
+  } catch (e) { L("[R15_ERR] rename: " + e); }
+
+  // ② 冷门杀路径拦截(exit/kill族=正常运行期几乎不被调用, 无convoy) — 壳杀进程时被挡
+  try {
+      var mypid = Process.id;
+      var fnc_usleep = new NativeFunction(Module.findExportByName(null, "usleep"), 'void', ['uint64']);
+      var fnc_gettid = new NativeFunction(Module.findExportByName(null, "gettid"), 'int', []);
+      ["exit", "_exit", "abort"].forEach(function(fn) {
+          try {
+              var p = Module.findExportByName(null, fn);
+              if (p) Interceptor.replace(p, new NativeCallback(function(a) {
+                  try { if (fnc_gettid() !== mypid) fnc_usleep(30000000); } catch (e) {}
+              }, 'void', ['int']));
+          } catch (e) {}
+      });
+      [["kill", 0, 1], ["tgkill", 2, 3], ["raise", 0, 0], ["pthread_kill", 1, 1]].forEach(function(spec) {
+          try {
+              var p = Module.findExportByName(null, spec[0]);
+              if (!p) return;
+              Interceptor.attach(p, {
+                  onEnter: function(args) {
+                      try {
+                          var sig = args[spec[2]].toInt32();
+                          if (sig === 9 || sig === 15 || sig === 6 || sig === 4 || sig === 11) {
+                              args[spec[2]] = ptr(0);
+                              L("[R15] neutralized " + spec[0] + " sig=" + sig);
+                          }
+                      } catch (e) {}
+                  }
+              });
+          } catch (e) {}
+      });
+      L("[R15] kill-blockers armed");
+  } catch (e) { L("[R15_ERR] blockers: " + e); }
+
 
   // ═══ 工具 ═══
   function hexlify(p, n) {
