@@ -347,6 +347,17 @@ setTimeout(function BOOT() {
       } catch (e) { L("[BSSFAIL] " + e); }
 
       // --- canary 自检直调 (证明 Interceptor 存活 + 语义离线可判) ---
+      // R6(2026-10-19): R5 实证 canary 直调=会话杀手 — run 39144212644 collect log 铁序:
+      //   canary keyexp PASS(ret=0事件已发) → [CANARY_ERR] access violation 0x1f2c8f45ffc40
+      //   → 0.6s 后 Process terminated — 4800s hold 活窗被砍成 1.6s, 其后 553s 流量全为
+      //   系统重启的无钩裸进程(r-wire 加密从未处于被钩活窗 ⇒ cfb 事件=0 的真因, 覆盖无缺口)。
+      //   死因细读: "step":"cfb" 事件从未发出 ⇒ fault 发生在 CFB 直调体内(keyexp 直调已
+      //   正常返回; BLK 直调排在 CFB 之后从未执行) — 472 CFB 签名/语义与 480 表不符,
+      //   直调传错参即坏指针。
+      //   修复: 直调全部开关化 — keyexp 直调 R5 PASS 保留默认开(存活探针);
+      //   cfb/blk 直调默认关(凡有直调风险一律加开关默认关; Interceptor 挂钩本体不受影响,
+      //   事件捕获照常)。
+      var CANARY_DIRECT = { keyexp: true, cfb: false, blk: false };
       setTimeout(function() {
           try {
               var ctx = Memory.alloc(256);
@@ -359,33 +370,39 @@ setTimeout(function BOOT() {
               var ctBuf = Memory.alloc(32);
               var regBuf = Memory.alloc(16);   // IV=0
               var numBuf = Memory.alloc(4); numBuf.writeU32(0);
-              var fKeyexp = new NativeFunction(KNOBS_ADDR.SETB_KEYEXP, 'int', ['pointer', 'pointer', 'int']);
-              var r0 = fKeyexp(ctx, keyBuf, 128);
-              STAT.canary++;
-              R1KEY({ ev: "canary", step: "keyexp", ret: r0, key: KEY_HEX,
-                      ctx: hexlify(ctx, 192), pt: PT_HEX });
-              var fCfb = new NativeFunction(KNOBS_ADDR.CFB, 'int',
-                  ['pointer', 'int', 'int', 'pointer', 'pointer', 'pointer', 'pointer']);
-              var r1 = fCfb(ctx, 1, 16, numBuf, regBuf, ptBuf, ctBuf);
-              STAT.canary++;
-              R1KEY({ ev: "canary", step: "cfb", ret: r1, ct: hexlify(ctBuf, 16),
-                      reg_out: hexlify(regBuf, 16), expect: "cfb_enc(KEY,IV=0,R1KEYHUNT_CANARY)" });
-              try {
-                  var blkIn = Memory.alloc(16);
-                  blkIn.writeByteArray(Array.prototype.slice.call(new Uint8Array(Memory.readByteArray(ctBuf, 16))));
-                  var blkOut = Memory.alloc(16);
-                  [["SETB_BLKENC", 2], ["SETB_BLK", 2]].forEach(function(bs) {
-                      try {
-                          if (!KNOBS_ADDR[bs[0]]) return;
-                          var fB = new NativeFunction(KNOBS_ADDR[bs[0]], 'int', ['pointer', 'pointer', 'pointer']);
-                          var rb = fB(ctx, blkIn, blkOut);
-                          STAT.canary++;
-                          R1KEY({ ev: "canary", step: bs[0], ret: rb, in16: hexlify(blkIn, 16),
-                                  out16: hexlify(blkOut, 16), inplace: hexlify(blkIn, 16) });
-                      } catch (e2) { R1KEY({ ev: "canary", step: bs[0], err: String(e2) }); }
-                  });
-              } catch (e) {}
-              L("[CANARY] 自检直调完成 (r1_gen.py canary 子命令离线判定语义)");
+              if (CANARY_DIRECT.keyexp && KNOBS_ADDR.SETB_KEYEXP) {
+                  var fKeyexp = new NativeFunction(KNOBS_ADDR.SETB_KEYEXP, 'int', ['pointer', 'pointer', 'int']);
+                  var r0 = fKeyexp(ctx, keyBuf, 128);
+                  STAT.canary++;
+                  R1KEY({ ev: "canary", step: "keyexp", ret: r0, key: KEY_HEX,
+                          ctx: hexlify(ctx, 192), pt: PT_HEX });
+              }
+              if (CANARY_DIRECT.cfb && KNOBS_ADDR.CFB) {
+                  var fCfb = new NativeFunction(KNOBS_ADDR.CFB, 'int',
+                      ['pointer', 'int', 'int', 'pointer', 'pointer', 'pointer', 'pointer']);
+                  var r1 = fCfb(ctx, 1, 16, numBuf, regBuf, ptBuf, ctBuf);
+                  STAT.canary++;
+                  R1KEY({ ev: "canary", step: "cfb", ret: r1, ct: hexlify(ctBuf, 16),
+                          reg_out: hexlify(regBuf, 16), expect: "cfb_enc(KEY,IV=0,R1KEYHUNT_CANARY)" });
+              }
+              if (CANARY_DIRECT.blk) {
+                  try {
+                      var blkIn = Memory.alloc(16);
+                      blkIn.writeByteArray(Array.prototype.slice.call(new Uint8Array(Memory.readByteArray(ctBuf, 16))));
+                      var blkOut = Memory.alloc(16);
+                      [["SETB_BLKENC", 2], ["SETB_BLK", 2]].forEach(function(bs) {
+                          try {
+                              if (!KNOBS_ADDR[bs[0]]) return;
+                              var fB = new NativeFunction(KNOBS_ADDR[bs[0]], 'int', ['pointer', 'pointer', 'pointer']);
+                              var rb = fB(ctx, blkIn, blkOut);
+                              STAT.canary++;
+                              R1KEY({ ev: "canary", step: bs[0], ret: rb, in16: hexlify(blkIn, 16),
+                                      out16: hexlify(blkOut, 16), inplace: hexlify(blkIn, 16) });
+                          } catch (e2) { R1KEY({ ev: "canary", step: bs[0], err: String(e2) }); }
+                      });
+                  } catch (e) {}
+              }
+              L("[CANARY] 自检直调完成 (direct=" + JSON.stringify(CANARY_DIRECT) + "; r1_gen.py canary 子命令离线判定语义)");
           } catch (e) { L("[CANARY_ERR] " + e); }
       }, 800);
   }
