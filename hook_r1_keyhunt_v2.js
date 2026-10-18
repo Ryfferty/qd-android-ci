@@ -282,6 +282,11 @@ setTimeout(function BOOT() {
                           if (p === null) return;
                           if (p.indexOf("/proc/") === 0) {
                               if (p.indexOf("/maps") >= 0 || p.indexOf("/smaps") >= 0) {
+                                  // R11(10-18): 每次重定向前现刷假maps — R10实测(run 39113208189):
+                                  //   spawn门控下shield在恢复前武装, refreshFakeMaps只在arm时刻写过一次
+                                  //   (setInterval被壳饿死从不tick) → 恢复后壳读maps拿到"空快照"
+                                  //   → 自检挂死(app 8分钟不进前台, filewrite=0)。
+                                  try { refreshFakeMaps(); } catch (e) {}
                                   args[idx] = FAKE_MAPS; SHIELD.maps++;
                               } else if (p.indexOf("/comm") >= 0) {
                                   args[idx] = FAKE_COMM; SHIELD.comm++;
