@@ -1,12 +1,14 @@
-// hook_r1_keyhunt_min.js — R16 syscall-kill 封堵版 (2026-10-18)
-// 判别链: R12(无钩scanonly=app活) vs R10/11/13(v2全钩=app挂死) ⇒ convoy效应(syscall级钩拖死壳init)。
-//   R14 min版=app全速跑通但 spawn进程被壳120-200ms杀; R15 raise(SIGKILL)被中和但进程仍死于 signal 9
-//   (logcat: "Process 3346 exited due to signal 9") ⇒ 第二杀路径=绕 libc 的 kill(裸SVC或syscall() wrapper)。
-// R16 三层封堵:
-//   ① libc syscall() wrapper 钩(冷门) — kill/tkill/tgkill sig→0, exit_group nr→getpid;
-//   ② seccomp BPF(TSYNC) — 裸 SVC 路径: kill/tkill(sig==9)/tgkill(sig==9)与 exit_group → ERRNO(EPERM);
-//   ③ 线程改名修复 — R15×0根因=arm64 dirent d_name偏移应为19(非24), 全dump comm+白名单改名中性名。
-// 拿钥件不变: ②libknobs全点位(keyexp=目标) + bss192 + ③SSL_write(r1 wire) + dlopen触发挂载。
+// hook_r1_keyhunt_min.js — R17 零内联钩版 (2026-10-18)
+// 判别链: R12(scanonly无钩=app全速跑通) vs R14/15(有libc/linker内联钩=壳120-200ms杀) vs
+//   R16(kill全封堵=活30s+但壳改"拒绝注册native"→UnsatisfiedLinkError→SIGSEGV)。
+//   ⇒ 检测触发器=内联钩蹦(壳CRC libc/linker代码完整性); 阻断杀路径只换来降级响应(拒注册)。
+//   ⇒ R17: 进程内零 Interceptor 钩直到 knobs/SSL 出现 — 存活件只剩 seccomp(无代码补丁, CRC不可见)。
+// R17 存活件:
+//   ① seccomp BPF(TSYNC): kill/tkill/tgkill(sig∈{4,6,9,11,15}) + exit_group → ERRNO(EPERM)
+//     — 覆盖 libc raise/kill 内部裸SVC、syscall() wrapper、壳裸SVC 全部路径(内核层拦截);
+//   ② comm 轮询改名(只改 frida 痕迹名 gum/frida/gmain/pool-frida, 不碰 main/ART 线程名);
+//   ③ 定时器轮询挂 knobs/libssl(R16 心跳证 JS 定时器活着, R10/11"饿死"实为进程早死误判)。
+// 拿钥件不变: libknobs全点位(keyexp=目标) + bss192 + SSL_write(r1 wire)。
 // 输出同v2格式([R1KEY] ev 事件), ci/r1_gen.py harvest 兼容。
 
 var STAT = { keyexpA: 0, keyexpB: 0, cfb: 0, ctr: 0, cbc: 0, genenc: 0, blk: 0, bss: 0,
@@ -23,29 +25,29 @@ if (typeof process !== "undefined" && process.setExceptionHandler) {
 
 setTimeout(function BOOT() {
   try {
-  // ═══ R16 存活件: 三层杀路径封堵 + 线程隐形(修复R15 dirent偏移bug) ═══
-  // ① 直调 libc(open/read/write/opendir/readdir) 零钩枚举/proc/self/task — R15×0根因:
-  //    arm64 struct dirent d_name 在偏移 19 (d_ino8+d_off8+d_reclen2+d_type1), 脚本旧值24读空。
-  //    本版: 全量dump comm(诊断) + 白名单外线程改中性名(壳读comm时无frida痕迹)。
+  // ═══ R17 存活件: 零内联钩(壳CRC检测触发器=钩蹦) — 只留 seccomp + comm改名 + 定时器 ═══
+  // ① 直调 libc 枚举/proc/self/task(零钩): 只改 frida 痕迹线程名(gum-js-loop/gmain/pool-frida-*),
+  //    不碰 main(qidian.QDReader)/ART 线程名(R16 曾把 main 改名=comm与cmdline不符=可疑特征)。
   var libc = {
       open: new NativeFunction(Module.findExportByName(null, "open"), 'int', ['pointer','int','int']),
       read: new NativeFunction(Module.findExportByName(null, "read"), 'long', ['int','pointer','long']),
       write: new NativeFunction(Module.findExportByName(null, "write"), 'long', ['int','pointer','long']),
       close: new NativeFunction(Module.findExportByName(null, "close"), 'int', ['int']),
       opendir: new NativeFunction(Module.findExportByName(null, "opendir"), 'pointer', ['pointer']),
-      readdir: new NativeFunction(Module.findExportByName(null, "readdir"), 'pointer', ['pointer'])
+      readdir: new NativeFunction(Module.findExportByName(null, "readdir"), 'pointer', ['pointer']),
+      errno: new NativeFunction(Module.findExportByName(null, "__errno"), 'pointer', [])
   };
-  // 白名单=任何Android app都有的线程名(缺失反而可疑); 其余(含gum-js-loop/gmain/pool-frida-*)全改Thread-9NN
-  var BENIGN = /^(main|RenderThread|binder:|Thread-\d+|pool-\d+|Jit |Heap |Finalizer|Reference|queued|GLThread|RenderThread)/;
+  var FRIDA_RE = /gum|frida|gmain|gdbus|linjector|pool-frida/i;
+  var LAST_THREADS = -1;
   function commPass(tag) {
       var REN = 0, SEQ = 0, report = [];
       try {
           var taskp = Memory.allocUtf8String("/proc/self/task");
           var dp = libc.opendir(taskp);
-          if (dp.isNull()) { L("[R16] commPass(" + tag + "): opendir fail"); return 0; }
+          if (dp.isNull()) { L("[R17] commPass(" + tag + "): opendir fail"); return 0; }
           var NAMEMAX = 256;
           var dent = Memory.alloc(NAMEMAX + 16);
-          var NAME_OFFS = (Process.arch === "arm64") ? [19, 24] : [11, 19, 24];
+          var NAME_OFFS = (Process.arch === "arm64") ? [19, 24] : [11, 19, 24];   // R16修复: d_name@19
           var buf = Memory.alloc(64);
           var seen = {};
           while (true) {
@@ -62,13 +64,19 @@ setTimeout(function BOOT() {
               seen[tid] = 1;
               var commp = Memory.allocUtf8String("/proc/self/task/" + tid + "/comm");
               var fd = libc.open(commp, 0 /*O_RDONLY*/, 0);
-              if (fd < 0) continue;
+              if (fd < 0) {
+                  var ecode = -1; try { ecode = libc.errno().readS32(); } catch (e3) {}
+                  report.push(tid + ":E" + ecode);
+                  continue;
+              }
               var n = libc.read(fd, buf, 63);
               libc.close(fd);
-              var name = (n > 0) ? String(Memory.readCString(buf)).replace(/\0.*$/,"").trim() : "";
+              var nn = Number(n);
+              if (nn > 0) { try { buf.add(nn < 63 ? nn : 62).writeU8(0); } catch (e4) {} }   // NUL 终结(R16读脏)
+              var name = (nn > 0) ? String(Memory.readCString(buf)).trim() : "";
               if (!name) name = "<empty>";
               report.push(tid + ":" + name);
-              if (!BENIGN.test(name)) {
+              if (FRIDA_RE.test(name)) {
                   SEQ++;
                   var neu = "Thread-9" + ("0" + SEQ).slice(-2) + "\n";
                   var wfd = libc.open(commp, 1 /*O_WRONLY*/, 0);
@@ -81,87 +89,22 @@ setTimeout(function BOOT() {
                   }
               }
           }
-          L("[R16] comm(" + tag + ") threads=" + report.length + " renamed=" + REN + " :: " + report.join(" | "));
-      } catch (e) { L("[R16_ERR] commPass: " + e); }
+          var nThreads = report.length;
+          if (tag === "boot" || REN > 0 || nThreads !== LAST_THREADS) {
+              L("[R17] comm(" + tag + ") threads=" + nThreads + " renamed=" + REN + " :: " + report.join(" | "));
+              LAST_THREADS = nThreads;
+          }
+      } catch (e) { L("[R17_ERR] commPass: " + e); }
       return REN;
   }
   commPass("boot");
 
-  // ② 冷门杀路径拦截(libc层: exit/kill族=正常运行期几乎不被调用, 无convoy) — 壳杀进程时被挡+留观测
-  try {
-      var mypid = Process.id;
-      var fnc_usleep = new NativeFunction(Module.findExportByName(null, "usleep"), 'void', ['uint64']);
-      var fnc_gettid = new NativeFunction(Module.findExportByName(null, "gettid"), 'int', []);
-      ["exit", "_exit", "abort"].forEach(function(fn) {
-          try {
-              var p = Module.findExportByName(null, fn);
-              if (p) Interceptor.replace(p, new NativeCallback(function(a) {
-                  try { if (fnc_gettid() !== mypid) fnc_usleep(30000000); } catch (e) {}
-              }, 'void', ['int']));
-          } catch (e) {}
-      });
-      [["kill", 0, 1], ["tgkill", 2, 3], ["raise", 0, 0], ["pthread_kill", 1, 1]].forEach(function(spec) {
-          try {
-              var p = Module.findExportByName(null, spec[0]);
-              if (!p) return;
-              Interceptor.attach(p, {
-                  onEnter: function(args) {
-                      try {
-                          var sig = args[spec[2]].toInt32();
-                          if (sig === 9 || sig === 15 || sig === 6 || sig === 4 || sig === 11) {
-                              args[spec[2]] = ptr(0);
-                              L("[R15] neutralized " + spec[0] + " sig=" + sig);
-                          }
-                      } catch (e) {}
-                  }
-              });
-          } catch (e) {}
-      });
-      L("[R15] kill-blockers armed");
-  } catch (e) { L("[R15_ERR] blockers: " + e); }
-
-  // ③ R16 syscall() wrapper 钩 — 第二杀路径候选A(壳经libc syscall()发kill绕过kill/raise符号):
-  //    kill(pid,sig)/tkill(tid,sig): sig→0; tgkill(tgid,tid,sig): sig→0; exit_group: nr→getpid(壳继续跑)。
-  //    syscall()在bionic中仅被冷门路径调用, 无convoy风险。onEnter改x0(=nr)在wrapper prologue移位前生效。
-  try {
-      var pSys = Module.findExportByName(null, "syscall");
-      if (pSys) {
-          var A64 = (Process.arch === "arm64");
-          var NR = A64 ? { kill: 129, tkill: 130, tgkill: 131, exit_group: 94, getpid: 172 }
-                       : { kill: 37, tkill: 268, tgkill: 269, exit_group: 248, getpid: 20 };
-          Interceptor.attach(pSys, {
-              onEnter: function(args) {
-                  try {
-                      var nr = args[0].toInt32();
-                      if (nr === NR.kill || nr === NR.tkill) {
-                          var sig = args[2].toInt32();
-                          if (sig === 9 || sig === 6 || sig === 15 || sig === 4 || sig === 11) {
-                              args[2] = ptr(0);
-                              L("[R16] syscall(nr=" + nr + ") sig=" + sig + " neutralized tid=" + Process.getCurrentThreadId());
-                          }
-                      } else if (nr === NR.tgkill) {
-                          var sig2 = args[3].toInt32();
-                          if (sig2 === 9 || sig2 === 6 || sig2 === 15 || sig2 === 4 || sig2 === 11) {
-                              args[3] = ptr(0);
-                              L("[R16] syscall(tgkill) sig=" + sig2 + " neutralized tid=" + Process.getCurrentThreadId());
-                          }
-                      } else if (nr === NR.exit_group) {
-                          args[0] = ptr(NR.getpid);
-                          L("[R16] syscall(exit_group)→getpid tid=" + Process.getCurrentThreadId());
-                      }
-                  } catch (e) {}
-              }
-          });
-          L("[R16] syscall() wrapper hook armed @ " + pSys);
-      } else { L("[R16] libc syscall export 未找到"); }
-  } catch (e) { L("[R16_ERR] syscall hook: " + e); }
-
-  // ④ R16 seccomp BPF(TSYNC) — 第二杀路径候选B(壳裸SVC指令发kill, 任何用户态钩都拦不到):
-  //    过滤器: kill/tkill(sig==9)/tgkill(sig==9)/exit_group → SECCOMP_RET_ERRNO|EPERM, 其余全ALLOW。
-  //    仅封sig9(实证死因), 不碰frida线程suspend用的RT信号; TSYNC覆盖当前全部线程+后续fork继承。
+  // ② seccomp BPF(TSYNC) — 唯一存活防线(无代码补丁, 壳CRC不可见): 内核层封 kill/tkill/tgkill
+  //    (sig∈{4,6,9,11,15}) 与 exit_group → ERRNO(EPERM)。覆盖 libc raise/kill(内部裸SVC)、
+  //    syscall() wrapper、壳裸SVC 全部路径。frida 线程suspend用SIGRTMIN不受影响。
   try {
       var prctlFn = new NativeFunction(Module.findExportByName(null, "prctl"), 'int', ['int','long','long','long','long']);
-      var syscallFn = new NativeFunction(Module.findExportByName(null, "syscall"), 'long', ['long','long','long','pointer']);
+      var syscallFn = new NativeFunction(Module.findExportByName(null, "syscall"), 'int', ['int','long','long','pointer']);
       var A64s = (Process.arch === "arm64");
       var NR_KILL = A64s ? 129 : 37, NR_TKILL = A64s ? 130 : 268, NR_TGKILL = A64s ? 131 : 269, NR_EXITG = A64s ? 94 : 248;
       var NR_SECC = A64s ? 277 : 383;
@@ -170,24 +113,31 @@ setTimeout(function BOOT() {
       function fJEQ(k, jt, jf) { return [0x15, jt, jf, k]; } // BPF_JMP|BPF_JEQ|BPF_K
       function fRET(k) { return [0x06, 0, 0, k]; }      // BPF_RET|BPF_K
       var ALLOWK = 0x7FFF0000, ERRK = 0x00050001;       // SECCOMP_RET_ALLOW / SECCOMP_RET_ERRNO|EPERM
+      // 布局: 0 arch,1 archchk,2 nr,3 exit_group, 4 kill, 5 tkill, 6-11 kill/tkill sig块, 12 nr reload,
+      //       13 tgkill, 14-19 tgkill sig块, 20 ALLOW, 21 BLOCK
       var prog = [
           fLD(4),                    //  0 arch
-          fJEQ(ARCH, 0, 13),         //  1 非本arch→15 ALLOW
+          fJEQ(ARCH, 0, 18),         //  1 非本arch→20 ALLOW
           fLD(0),                    //  2 nr
-          fJEQ(NR_EXITG, 12, 0),     //  3 exit_group→16 BLOCK
-          fJEQ(NR_KILL, 0, 2),       //  4 kill→5; else→7
-          fLD(24),                   //  5 sig=arg1低32
-          fJEQ(9, 9, 8),             //  6 sig9→16; else→15
-          fLD(0),                    //  7 nr
-          fJEQ(NR_TKILL, 0, 2),      //  8 tkill→9; else→11
-          fLD(24),                   //  9 sig=arg1
-          fJEQ(9, 5, 4),             // 10 sig9→16; else→15
-          fLD(0),                    // 11 nr
-          fJEQ(NR_TGKILL, 0, 2),     // 12 tgkill→13; else→15
-          fLD(32),                   // 13 sig=arg2
-          fJEQ(9, 1, 0),             // 14 sig9→16; else→15
-          fRET(ALLOWK),              // 15
-          fRET(ERRK)                 // 16
+          fJEQ(NR_EXITG, 17, 0),     //  3 exit_group→21 BLOCK
+          fJEQ(NR_KILL, 1, 0),       //  4 kill→6; else→5
+          fJEQ(NR_TKILL, 0, 6),      //  5 tkill→6; else→12(跳过kill sig块)
+          fLD(24),                   //  6 sig=arg1低32 (kill/tkill)
+          fJEQ(9, 13, 0),            //  7 →21 BLOCK
+          fJEQ(6, 12, 0),            //  8 →21
+          fJEQ(15, 11, 0),           //  9 →21
+          fJEQ(4, 10, 0),            // 10 →21
+          fJEQ(11, 9, 8),            // 11 →21; else→20 ALLOW
+          fLD(0),                    // 12 nr reload
+          fJEQ(NR_TGKILL, 0, 6),     // 13 tgkill→14; else→20 ALLOW
+          fLD(32),                   // 14 sig=arg2低32 (tgkill)
+          fJEQ(9, 5, 0),             // 15 →21
+          fJEQ(6, 4, 0),             // 16 →21
+          fJEQ(15, 3, 0),            // 17 →21
+          fJEQ(4, 2, 0),             // 18 →21
+          fJEQ(11, 1, 0),            // 19 →21; else→20
+          fRET(ALLOWK),              // 20
+          fRET(ERRK)                 // 21
       ];
       var filt = Memory.alloc(prog.length * 8);
       for (var i = 0; i < prog.length; i++) {
@@ -200,22 +150,23 @@ setTimeout(function BOOT() {
       fprog.add(8).writePointer(filt);
       var rNnp = prctlFn(38 /*PR_SET_NO_NEW_PRIVS*/, 1, 0, 0, 0);
       var rSec = syscallFn(NR_SECC, 1 /*SECCOMP_SET_MODE_FILTER*/, 1 /*FLAG_TSYNC*/, fprog);
-      L("[R16] seccomp no_new_privs=" + rNnp + " install=" + rSec +
-        (rSec === 0 ? " (TSYNC OK: 裸SVC kill(sig9)/exit_group 已封)" : " FAIL errno=" + (-rSec)));
       if (rSec !== 0) {
-          var rSec2 = syscallFn(NR_SECC, 1, 0, fprog);   // 退化: 仅本线程+子线程继承
-          L("[R16] seccomp fallback no-TSYNC=" + rSec2);
+          var rSec2 = syscallFn(NR_SECC, 1, 0, fprog);   // TSYNC失败退化: 仅本线程+子线程继承
+          L("[R17] seccomp no_new_privs=" + rNnp + " tsync=" + rSec + " fallback=" + rSec2);
+      } else {
+          L("[R17] seccomp TSYNC OK: kill/tgkill(sig 4/6/9/11/15)/exit_group 内核层已封(裸SVC也拦)");
       }
-  } catch (e) { L("[R16_ERR] seccomp: " + e); }
+  } catch (e) { L("[R17_ERR] seccomp: " + e); }
 
-  // ⑤ 存活时间线心跳(前80s, 2s一跳) — 若壳改判"杀不死"则进程活, JS定时器恢复工作(R10/11"饿死"实为进程早死)
+  // ③ 存活时间线心跳(前80s) + 统一挂载轮询(500ms: knobs/libssl出现即挂钩 — 零dlopen钩)
   var HB = 0;
   var hbTimer = setInterval(function() {
       HB++;
-      L("[R16_HB] t+" + (HB * 2) + "s keyexpB=" + STAT.keyexpB + " cfb=" + STAT.cfb + " blk=" + STAT.blk +
-        " sslwire=" + STAT.sslwire + " dlopenPass=" + COMM_PASSES);
+      L("[R17_HB] t+" + (HB * 2) + "s keyexpB=" + STAT.keyexpB + " cfb=" + STAT.cfb + " blk=" + STAT.blk +
+        " sslwire=" + STAT.sslwire + " tick=" + TICK);
       if (HB >= 40) clearInterval(hbTimer);
   }, 2000);
+
 
 
   // ═══ 工具 ═══
@@ -576,31 +527,18 @@ setTimeout(function BOOT() {
           } catch (e) { L("[CANARY_ERR] " + e); }
       }, 800);   // R7: 3000→800ms (壳反杀前完成自检; R5 CANARY_ERR 发生在会话中段)
   }
-  // R14: dlopen 触发式挂载 — setInterval 被壳饿死(R10/11实证: 恢复后定时器全死, [KNOBS]从未出现;
-  //   拦截器回调仍活=dlsym/mprotect事件可证) ⇒ 挂钩时机改挂在库加载上(dlopen低频, 无convoy风险)。
-  // R16: dlopen onLeave 兼作 ①comm 再扫描(壳/app新线程浮现即改名) ②app libssl 的 SSL_write 补挂
-  //   (BOOT 时 findExportByName 可能命中 agent 自带 libssl —— 地址去重后 app 的 libssl 加载时补挂)。
-  var COMM_PASSES = 0;
+  // R17: 挂载轮询 — R16 心跳已证 JS 定时器活着(R10/11 "定时器饿死"实为进程早死误判),
+  //   不再钩 dlopen(壳CRC检测触发器)。500ms 轮询: libknobs.so 出现→挂钩; libssl 出现→SSL_write 补挂;
+  //   comm 再扫描(新浮现的 pool-frida 线程即时改名)。
+  var TICK = 0;
   hookKnobs();   // 立即试(attach模式兼容)
-  ["android_dlopen_ext", "dlopen", "__loader_dlopen", "__loader_android_dlopen_ext"].forEach(function(fn) {
-      try {
-          var p = Module.findExportByName(null, fn);
-          if (!p) return;
-          Interceptor.attach(p, {
-              onEnter: function(args) { try { this._p = (args[0] && !args[0].isNull()) ? args[0].readCString() : null; } catch (e) { this._p = null; } },
-              onLeave: function(ret) {
-                  try { if (COMM_PASSES < 8) { COMM_PASSES++; commPass("dl:" + (this._p || "?").split("/").pop().slice(0, 40)); } } catch (e) {}
-                  try { reArmSsl(); } catch (e) {}
-                  if (KNOBS_HOOKED) return;
-                  try {
-                      hookKnobs();
-                      if (KNOBS_HOOKED) L("[R14] knobs armed via dlopen(" + (this._p || "?") + ")");
-                  } catch (e) {}
-              }
-          });
-          L("[+] dlopen trigger armed: " + fn);
-      } catch (e) {}
-  });
+  var armTimer = setInterval(function() {
+      TICK++;
+      try { commPass("t" + TICK); } catch (e) {}
+      try { if (!KNOBS_HOOKED) hookKnobs(); } catch (e) {}
+      try { reArmSsl(); } catch (e) {}
+      if (TICK >= 600) clearInterval(armTimer);   // 300s 采集窗
+  }, 500);
 
   // ═══ ③ SSL_write 线路捕获 (第一轮硬教训: r1 绕开 Java okhttp → 下移到 TLS 层) ═══
   var SSL_ACCUM = {};      // sslPtr → {buf:[bytes], len:int}
@@ -688,24 +626,13 @@ setTimeout(function BOOT() {
               Interceptor.attach(p, {
                   onEnter: function(args) { feedSsl(args[0], args[1], args[2].toInt32()); }
               });
-              L("[R16] SSL_write armed @ " + p + " (" + m.path + ")");
+              L("[R17] SSL_write armed @ " + p + " (" + m.path + ")");
           });
       } catch (e) {}
   }
-  try {
-      var pSslWrite = Module.findExportByName("libssl.so", "SSL_write");
-      if (pSslWrite) {
-          SSL_ARMED_ADDRS[pSslWrite.toString()] = 1;
-          Interceptor.attach(pSslWrite, {
-              onEnter: function(args) { feedSsl(args[0], args[1], args[2].toInt32()); }
-          });
-          L("[+] SSL_write hooked (r1/sora wire 捕获 + memscan 触发器)");
-      } else {
-          L("[E] SSL_write 未找到 — r1 wire 触发器缺失(靠dlopen补挂+定时扫描兜底)");
-      }
-  } catch (e) { L("[E] SSL_write: " + e); }
+  try { reArmSsl(); } catch (e) { L("[E] reArmSsl: " + e); }
 
 
-      L("[READY] r1 keyhunt MIN armed (R16 syscall+seccomp 封堵) " + Date.now());
+      L("[READY] r1 keyhunt MIN armed (R17 零内联钩+seccomp) " + Date.now());
   } catch (e) { R1KEY({ ev: "boot_error", msg: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
 }, 0);
