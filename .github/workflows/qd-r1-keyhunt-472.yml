@@ -31,6 +31,9 @@ on:
       spawn_script:
         description: 'spawn门控装载的脚本(默认472版; 诊断可传 hook_r1_keyhunt_min.js 对照)'
         default: 'hook_r1_keyhunt_472.js'
+      spawn_mode:
+        description: 'spawn=frida -f 进程创建期注入 / attach=am start放行后frida -p(R2实证spawn期agent与LSPlant不两立, attach为历史验证模式)'
+        default: 'attach'
 
 permissions:
   contents: read
@@ -227,6 +230,7 @@ jobs:
           QD_TRAFFIC_SECS: ${{ inputs.traffic_secs || '240' }}
           GUARD_SECS: ${{ inputs.guardian_secs || '780' }}
           QD_FRESH_ATTACH: ${{ inputs.fresh || '1' }}
+          QD_SPAWN_MODE: ${{ inputs.spawn_mode || 'attach' }}
           SPAWN_SCRIPT: ${{ inputs.spawn_script || 'hook_r1_keyhunt_472.js' }}
         run: |
           set +e

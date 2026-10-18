@@ -65,9 +65,21 @@ def sh(*args, timeout=20):
 
 def spawn_app(reason='?', hold=4800):
     """R10: frida spawn 门控 — 进程创建瞬间装载 hook(壳武装之前; attach路线对后期主进程
-    恒败=R9三形态实证, 服务器重启无效)。失败兜底 am start。"""
+    恒败=R9三形态实证, 服务器重启无效)。失败兜底 am start。
+    R4(472线): QD_SPAWN_MODE=attach 时走 attach_qd.sh — am start 放行(LSPatch/LSPlant
+    先完整 init) → 轮询 pid → frida -p attach。R2实证 spawn 期 agent 与 LSPlant 不两立
+    (LSPlant Failed to init runtime → loader崩 → ClassNotFound), 而历史 attach 全跑通。"""
+    _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if (os.environ.get('QD_SPAWN_MODE') or '').strip() == 'attach':
+        try:
+            subprocess.Popen(['bash', os.path.join(_repo, 'ci', 'attach_qd.sh'), str(hold)],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            L('[ATTACH] frida -p 门控(%s) hold=%ss' % (reason, hold))
+        except Exception as e:
+            L('[ATTACH] 失败(%s) → am start兜底: %s' % (reason, str(e)[:80]))
+            sh('am', 'start', '-n', '%s/.ui.activity.SplashActivity' % APP, timeout=15)
+        return
     try:
-        _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         subprocess.Popen(['bash', os.path.join(_repo, 'ci', 'spawn_qd.sh'), str(hold)],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         L('[SPAWN] frida -f 门控(%s) hold=%ss' % (reason, hold))
