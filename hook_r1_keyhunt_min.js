@@ -1,4 +1,4 @@
-// hook_r1_keyhunt_min.js — R18 真零内联钩版 (2026-10-18; R17b→R18 修订见下)
+// hook_r1_keyhunt_min.js — R19 零干预boot版 (2026-10-18; R17b→R18→R19 修订见下)
 // 判别链: R12(scanonly无钩=app全速跑通) vs R14/15(有libc/linker内联钩=壳120-200ms杀) vs
 //   R16(kill全封堵=活30s+但壳改"拒绝注册native"→UnsatisfiedLinkError→SIGSEGV)。
 //   ⇒ 检测触发器=内联钩蹦(壳CRC libc/linker代码完整性); 阻断杀路径只换来降级响应(拒注册)。
@@ -103,82 +103,12 @@ setTimeout(function BOOT() {
   }
   commPass("boot");
 
-  // ② seccomp BPF(TSYNC) — 唯一存活防线(无代码补丁, 壳CRC不可见): 内核层封 kill/tkill/tgkill
-  //    (sig∈{4,6,9,11,15}) 与 exit_group → ERRNO(EPERM)。覆盖 libc raise/kill(内部裸SVC)、
-  //    syscall() wrapper、壳裸SVC 全部路径。frida 线程suspend用SIGRTMIN不受影响。
-  try {
-      // R17b: 预态诊断 — 装 filter 前读 /proc/self/status (Android app 由 zygote 预装 seccomp+NNP;
-      // 若 NoNewPrivs 已=1, 我们的 prctl 是无痕 no-op; 若=0 则状态可观测, 需在 postmortem 里排查)
-      try {
-          var stp = Memory.allocUtf8String("/proc/self/status");
-          var sfd = libc.open(stp, 0, 0);
-          if (sfd >= 0) {
-              var sbuf = Memory.alloc(4096);
-              var sn = Number(libc.read(sfd, sbuf, 4095));
-              libc.close(sfd);
-              if (sn > 0) {
-                  sbuf.add(sn < 4095 ? sn : 4094).writeU8(0);
-                  var stxt = String(Memory.readCString(sbuf));
-                  var secline = (stxt.match(/Seccomp:\s*\d+(?:\s+\(\w+\))?/i) || [])[0] || "Seccomp:?";
-                  var nnsline = (stxt.match(/NoNewPrivs:\s*\d+/i) || [])[0] || "NoNewPrivs:?";
-                  L("[R17] seccomp prestate: " + secline + " " + nnsline + " (zygote默认)");
-              }
-          }
-      } catch (e0) {}
-      var prctlFn = new NativeFunction(Module.findExportByName(null, "prctl"), 'int', ['int','long','long','long','long']);
-      var syscallFn = new NativeFunction(Module.findExportByName(null, "syscall"), 'int', ['int','long','long','pointer']);
-      var A64s = (Process.arch === "arm64");
-      var NR_KILL = A64s ? 129 : 37, NR_TKILL = A64s ? 130 : 268, NR_TGKILL = A64s ? 131 : 269, NR_EXITG = A64s ? 94 : 248;
-      var NR_SECC = A64s ? 277 : 383;
-      var ARCH = A64s ? 0xC00000B7 : 0x40000028;   // AUDIT_ARCH_AARCH64 / AUDIT_ARCH_ARM
-      function fLD(k) { return [0x20, 0, 0, k]; }        // BPF_LD|BPF_W|BPF_ABS
-      function fJEQ(k, jt, jf) { return [0x15, jt, jf, k]; } // BPF_JMP|BPF_JEQ|BPF_K
-      function fRET(k) { return [0x06, 0, 0, k]; }      // BPF_RET|BPF_K
-      var ALLOWK = 0x7FFF0000, ERRK = 0x00050001;       // SECCOMP_RET_ALLOW / SECCOMP_RET_ERRNO|EPERM
-      // 布局: 0 arch,1 archchk,2 nr,3 exit_group, 4 kill, 5 tkill, 6-11 kill/tkill sig块, 12 nr reload,
-      //       13 tgkill, 14-19 tgkill sig块, 20 ALLOW, 21 BLOCK
-      var prog = [
-          fLD(4),                    //  0 arch
-          fJEQ(ARCH, 0, 18),         //  1 非本arch→20 ALLOW
-          fLD(0),                    //  2 nr
-          fJEQ(NR_EXITG, 17, 0),     //  3 exit_group→21 BLOCK
-          fJEQ(NR_KILL, 1, 0),       //  4 kill→6; else→5
-          fJEQ(NR_TKILL, 0, 6),      //  5 tkill→6; else→12(跳过kill sig块)
-          fLD(24),                   //  6 sig=arg1低32 (kill/tkill)
-          fJEQ(9, 13, 0),            //  7 →21 BLOCK
-          fJEQ(6, 12, 0),            //  8 →21
-          fJEQ(15, 11, 0),           //  9 →21
-          fJEQ(4, 10, 0),            // 10 →21
-          fJEQ(11, 9, 8),            // 11 →21; else→20 ALLOW
-          fLD(0),                    // 12 nr reload
-          fJEQ(NR_TGKILL, 0, 6),     // 13 tgkill→14; else→20 ALLOW
-          fLD(32),                   // 14 sig=arg2低32 (tgkill)
-          fJEQ(9, 5, 0),             // 15 →21
-          fJEQ(6, 4, 0),             // 16 →21
-          fJEQ(15, 3, 0),            // 17 →21
-          fJEQ(4, 2, 0),             // 18 →21
-          fJEQ(11, 1, 0),            // 19 →21; else→20
-          fRET(ALLOWK),              // 20
-          fRET(ERRK)                 // 21
-      ];
-      var filt = Memory.alloc(prog.length * 8);
-      for (var i = 0; i < prog.length; i++) {
-          var ins = prog[i];
-          filt.add(i * 8).writeByteArray([ins[0] & 0xff, (ins[0] >> 8) & 0xff, ins[1], ins[2],
-              ins[3] & 0xff, (ins[3] >> 8) & 0xff, (ins[3] >> 16) & 0xff, (ins[3] >> 24) & 0xff]);
-      }
-      var fprog = Memory.alloc(16);
-      fprog.writeU16(prog.length);
-      fprog.add(8).writePointer(filt);
-      var rNnp = prctlFn(38 /*PR_SET_NO_NEW_PRIVS*/, 1, 0, 0, 0);
-      var rSec = syscallFn(NR_SECC, 1 /*SECCOMP_SET_MODE_FILTER*/, 1 /*FLAG_TSYNC*/, fprog);
-      if (rSec !== 0) {
-          var rSec2 = syscallFn(NR_SECC, 1, 0, fprog);   // TSYNC失败退化: 仅本线程+子线程继承
-          L("[R17] seccomp no_new_privs=" + rNnp + " tsync=" + rSec + " fallback=" + rSec2);
-      } else {
-          L("[R17] seccomp TSYNC OK: kill/tgkill(sig 4/6/9/11/15)/exit_group 内核层已封(裸SVC也拦)");
-      }
-  } catch (e) { L("[R17_ERR] seccomp: " + e); }
+  // ② (R19: seccomp 整体下掉) — R17b/R18 双轮实证: 零内联钩仍立即拒注册+<2s死, boot期
+  //    与 R12 scanonly(唯一干净对照)的剩余唯一 delta = seccomp+NNP 安装(本 redroid 预态
+  //    Seccomp:0/NoNewPrivs:0 → 装完翻转, 壳可用 prctl(PR_GET_SECCOMP/PR_GET_NO_NEW_PRIVS)
+  //    或 /proc/self/status 读出)。R16 seccomp 装失败反而活 28s 为旁证。
+  //    ⇒ "不被检测就无需防御"(R12 零干预=零杀)。防御件退役;
+  //    晚武装 libknobs 钩的存活有 attach 时代先例(历史轮挂满全套跑完 240s 采集窗)。
 
   // ③ 存活时间线心跳(前80s) + 统一挂载轮询(R17b: 200ms快查knobs — 无dlopen钩, 盲窗压窄;
   //    commPass/reArmSsl 是重操作(枚举/遍历线程), 每3 tick=600ms 跑一次)
@@ -664,6 +594,6 @@ setTimeout(function BOOT() {
   try { reArmSsl(); } catch (e) { L("[E] reArmSsl: " + e); }
 
 
-      L("[READY] r1 keyhunt MIN armed (R18 真零内联钩: 系统libssl禁碰+seccomp) " + Date.now());
+      L("[READY] r1 keyhunt MIN armed (R19 零干预boot+晚武装: 无seccomp无钩) " + Date.now());
   } catch (e) { R1KEY({ ev: "boot_error", msg: String(e), stack: String(e && e.stack || "").slice(0, 400) }); }
 }, 0);
