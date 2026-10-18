@@ -170,90 +170,30 @@ jobs:
           # ── frida 守护: 快attach(1s轮询+2s稳判) ── R6: driver fresh模式(pm clear+隐私页门控) →
           #    业务首启被延后到 [READY] 武装完成之后, attach时序不再是与r1首建赛跑的关键路径
           # 每个新稳定pid即attach; 若attach引发早夭, 守护对下一个pid自动重来(driver有App看门狗重启)
-          (
             SESS_END=$(( $(date +%s) + ${GUARD_SECS:-780} ))
-            LAST_PID=""; FS_STARTED=0; EARLY_DONE=0; ATTACH_FAILS=0
-            # R7f: frida-server 预启动(不等首个pid — 让早attach最快到 T+2-3s)
+            # R10: fs-srv 预启动(原guard块连带被替掉的 R7f 预启动, 补回)
             adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &" 2>/dev/null
             sleep 4
             adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
-            FS_STARTED=1
-            while [ "$(date +%s)" -lt "$SESS_END" ]; do
-              P=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
-              if [ -n "$P" ] && [ "$P" != "$LAST_PID" ]; then
-                # R7f: 首个pid=EARLY attach scan_only(≈T+3-4s; R7e实证 r1首波在稳判attach(T+8-11s)前9.5-11.5s)
-                #   不装hook极简扫描器, 连续全内存快照覆盖0~25s; 独立会话(主脚本 attach 不冲突)
-                # R7g: 前2个新pid都EARLY attach(R7f教训: 首个pid 1944=瞬态已死"process not found", 真身2587晚出现; 无sleep立即attach)
-                if [ $EARLY_DONE -lt 2 ]; then
-                  EARLY_DONE=$((EARLY_DONE + 1))
-                  echo "[GUARD] $(date +%s) EARLY-attach scan_only(#$EARLY_DONE) pid=$P" >> /tmp/keyhunt_guard.log
-                  ( (sleep 25; echo) | timeout 35 frida -H 127.0.0.1:14771 -p $P -l hook_r1_scanonly.js >> /tmp/keyhunt_collect.log 2>&1 ) &
-                fi
-                # R3修正: 稳判2s→8s双检(第二轮T+3-4s快attach撞360壳早窗→App 9连死+canary=0;
-                # 第一轮T+13s attach拿到643事件; r构建在T+24s后(saveKnobsEnvInfo@getconf响应+24.3s), T+11s attach来得及)
-                sleep 5
-                P2=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
-                [ "$P" != "$P2" ] && { sleep 1; continue; }
-                sleep 3
-                P2=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
-                if [ "$P" = "$P2" ]; then
-                  LAST_PID=$P
-                  if [ $FS_STARTED = 0 ]; then
-                    adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
-                    sleep 4
-                    adb -s $B forward tcp:14771 tcp:14771
-                    FS_STARTED=1
-                  fi
-                  pkill -f "hook_r1_keyhunt_v2" 2>/dev/null; sleep 1   # R7f: 只杀主脚本会话(不动scan_only)
-                  LEFT=$(( SESS_END - $(date +%s) ))
-                  [ $LEFT -lt 20 ] && break
-                  echo "[GUARD] $(date +%s) attach pid=$P window=${LEFT}s" >> /tmp/keyhunt_guard.log
-                  SL_BEFORE=$(grep -c '"ev":"script_loaded"' /tmp/keyhunt_collect.log 2>/dev/null || echo 0)
-                  ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $P -l hook_r1_keyhunt_v2.js >> /tmp/keyhunt_collect.log 2>&1 ) &
-                  # R9(10-18): 装载级验证 — CLI活着≠脚本装上。
-                  #   R8实测(run 39109502006): 主进程attach 'Attaching...'悬60s→'Failed to attach: timeout',
-                  #   pgrep 3s检测看不见→R8重启从未触发, 登录窗r1×11全裸奔(与10-16 alloc-crash同族=壳/服务器交互劣化)。
-                  #   两级检测: ①CLI 3s内早退 ②CLI活但20s内无新script_loaded → 都算失败, 立即重启frida-server。
-                  sleep 3
-                  FAIL=0; REASON=""
-                  if ! pgrep -f "hook_r1_keyhunt_v2" >/dev/null 2>&1; then
-                    FAIL=1; REASON=early-exit
-                  else
-                    sleep 17
-                    SL_NOW=$(grep -c '"ev":"script_loaded"' /tmp/keyhunt_collect.log 2>/dev/null || echo 0)
-                    if [ "${SL_NOW:-0}" -le "${SL_BEFORE:-0}" ]; then
-                      FAIL=1; REASON=script-load-hang
-                      pkill -f "hook_r1_keyhunt_v2" 2>/dev/null
-                    fi
-                  fi
-                  if [ $FAIL = 1 ]; then
-                    ATTACH_FAILS=$((ATTACH_FAILS + 1))
-                    echo "[GUARD] attach fail#$ATTACH_FAILS($REASON) pid=$P" >> /tmp/keyhunt_guard.log
-                    LAST_PID=""
-                    echo "[GUARD] $(date +%s) R9: restarting frida-server (fails=$ATTACH_FAILS)" >> /tmp/keyhunt_guard.log
-                    pkill -f "frida -H" 2>/dev/null
-                    adb -s $B shell "pkill -f fs-srv" 2>/dev/null
-                    sleep 2
-                    adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
-                    sleep 4
-                    adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
-                    ATTACH_FAILS=0
-                  fi
-                  # R6: [READY]出现=hook武装完成 → 放行driver隐私页门控(点同意→业务首启→r1首建落在hook就绪后)
-                  ( for _hr in $(seq 1 90); do
-                      grep -q '\[READY\]' /tmp/keyhunt_collect.log 2>/dev/null && { touch /tmp/hook_ready; break; }
-                      sleep 1
-                    done ) &
-                fi
-              elif [ -z "$P" ] && [ -n "$LAST_PID" ]; then
-                echo "[GUARD] $(date +%s) pid $LAST_PID gone (driver phase切换)" >> /tmp/keyhunt_guard.log
-                LAST_PID=""
-                pkill -f "frida -H" 2>/dev/null
+            # R10(10-18): attach 路线退役 → spawn 门控。
+            #   R9 实测(run 39111566448): script-load 级检测+frida-server 重启 5 轮仍失败
+            #   (script-load-hang / early-exit / alloc-crash 三形态) — 壳对后期主进程的反注入
+            #   与服务器无关=进程级 ⇒ 改由 driver 经 ci/spawn_qd.sh (frida -f) 在进程创建时
+            #   装载脚本(壳武装前): Phase A 冷启动 r1 突发 + C 登录窗 r1(648族keyexp) 双覆盖。
+            #   守望者职责缩为: ①fs-srv 存活自愈 ②[READY] 探测(fresh 隐私页门控)。
+            ( while [ "$(date +%s)" -lt "$SESS_END" ]; do
+              if ! adb -s $B shell "pidof fs-srv" >/dev/null 2>&1; then
+                echo "[GUARD] $(date +%s) R10: fs-srv died — restarting" >> /tmp/keyhunt_guard.log
+                adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
+                sleep 4
+                adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
               fi
-              sleep 1
-            done
-            pkill -f "frida -H" 2>/dev/null
-          ) &
+              sleep 10
+            done ) &
+            ( for _hr in $(seq 1 240); do
+                grep -q '\[READY\]' /tmp/keyhunt_collect.log 2>/dev/null && { touch /tmp/hook_ready; break; }
+                sleep 1
+              done ) &
           GUARD=$!
           sleep 2
           # ── 主驱动 (mitm-login 同款: Phase A匿名 → B注入 → C登录复启 → D流量 → E提取scrub) ──

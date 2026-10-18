@@ -63,6 +63,19 @@ def sh(*args, timeout=20):
     return adb('shell', *args, timeout=timeout)
 
 
+def spawn_app(reason='?', hold=4800):
+    """R10: frida spawn 门控 — 进程创建瞬间装载 hook(壳武装之前; attach路线对后期主进程
+    恒败=R9三形态实证, 服务器重启无效)。失败兜底 am start。"""
+    try:
+        _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        subprocess.Popen(['bash', os.path.join(_repo, 'ci', 'spawn_qd.sh'), str(hold)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        L('[SPAWN] frida -f 门控(%s) hold=%ss' % (reason, hold))
+    except Exception as e:
+        L('[SPAWN] 失败(%s) → am start兜底: %s' % (reason, str(e)[:80]))
+        sh('am', 'start', '-n', '%s/.ui.activity.SplashActivity' % APP, timeout=15)
+
+
 # ── UI 输入安全层 (第一轮教训: `input swipe` TimeoutExpired 未兜底直接崩掉整个 driver,
 #    登录态段(Phase B/C/D)全没跑到, 而 r1 648B 形态只在登录窗出现) ──
 # 兜底链: input(30s) → 重试1次 input → sendevent 裸协议 → 放弃并如实记录。任何一级都不抛。
@@ -320,7 +333,7 @@ def phase_first_launch():
             sh('chmod', '660', '/data/data/%s/shared_prefs/app_sp.xml' % APP)
         L('[A] consent预写完成 uid=%s' % uid)
 
-    sh('am', 'start', '-n', '%s/.ui.activity.SplashActivity' % APP, timeout=15)
+    spawn_app('A冷启动')
     # 等稳定pid
     stable = None
     for i in range(20):
@@ -485,7 +498,7 @@ LOAD_SIG = re.compile(r'loadUserSettingFromDB done.*ywKeyEmpty:(\w+)', re.I)
 def phase_verify_login():
     L('═══ Phase C: 复启→logcat等"ywKeyEmpty:false" ═══')
     sh('logcat', '-c', timeout=10)
-    sh('am', 'start', '-n', '%s/.ui.activity.SplashActivity' % APP, timeout=15)
+    spawn_app('C登录复启')
     t0 = time.time()
     load_line, logout_seen = None, False
     while time.time() - t0 < 100:
@@ -537,7 +550,7 @@ def phase_traffic(secs):
         try:
             if not pidof():
                 L('[D] t+%ds App死→重启' % el)
-                sh('am', 'start', '-n', '%s/.ui.activity.SplashActivity' % APP, timeout=15)
+                spawn_app('D看门狗复活', hold=900)
                 time.sleep(12)
                 continue
             # 滑动刷新(书城/发现列表)
