@@ -72,6 +72,9 @@ jobs:
             [ "$S" = "1" ] && echo "BOOT_OK try $i" && break
             sleep 7
           done
+          # R2教训(run 39128654779): BOOT_OK后19s就开抢root, adbd重启竞态→10轮全败且把设备打入offline,
+          #   安装/fs-srv推送全灭。先让系统沉淀30s再抢root。
+          sleep 30
           OK=0
           for i in $(seq 1 10); do
             timeout 25 adb -s $B root >/dev/null 2>&1; sleep 5
@@ -82,7 +85,46 @@ jobs:
             echo "$IDOUT" | grep -q "uid=0" && OK=1 && break
             sleep 3
           done
-          [ $OK = 0 ] && echo "ROOT_FAIL(继续, 但DB注入需要root)"
+          # R2: root失败三级恢复 — 软(disconnect/connect)→硬(kill-server)→redroid容器重启再抢
+          #   R1实证(run 39128654779): root竞态后设备offline, 10轮disconnect/connect无一恢复
+          #   (adbd重启竞态打进offline后adb server缓存死状态), 需要kill-server级以上手段。
+          if [ $OK = 0 ]; then
+            for i in $(seq 1 3); do
+              E=$(timeout 10 adb -s $B shell echo ADB_ALIVE 2>/dev/null | tr -d '\r')
+              [ "$E" = "ADB_ALIVE" ] && echo "soft-recover OK try $i" && break
+              echo "soft recycle $i"; adb disconnect $B >/dev/null 2>&1; sleep 4
+              adb connect $B >/dev/null 2>&1; sleep 4
+            done
+            for i in $(seq 1 3); do
+              E=$(timeout 10 adb -s $B shell echo ADB_ALIVE 2>/dev/null | tr -d '\r')
+              [ "$E" = "ADB_ALIVE" ] && echo "hard-recover OK try $i" && break
+              echo "hard recycle $i (kill-server)"; adb kill-server 2>/dev/null; sleep 2
+              adb start-server 2>/dev/null; sleep 3
+              adb connect $B >/dev/null 2>&1; sleep 5
+            done
+          fi
+          if [ $OK = 0 ]; then
+            # 终极兜底: redroid容器重启(容器配置保留, 本job数据本就一次性)
+            echo "ROOT_STILL_FAIL — redroid restart fallback"
+            sudo -S -p '' docker restart redroid 2>&1 | tail -1
+            adb kill-server 2>/dev/null; adb start-server 2>/dev/null; sleep 15
+            for i in $(seq 1 25); do
+              adb connect $B >/dev/null 2>&1
+              S=$(timeout 10 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              [ "$S" = "1" ] && echo "REBOOT_OK try $i" && break
+              sleep 8
+            done
+            sleep 20   # 再沉淀(adbd就绪)
+            for i in $(seq 1 5); do
+              timeout 25 adb -s $B root >/dev/null 2>&1; sleep 8
+              adb disconnect $B >/dev/null 2>&1; sleep 1; adb connect $B >/dev/null 2>&1; sleep 4
+              IDOUT=$(timeout 8 adb -s $B shell id 2>/dev/null | tr -d "\r")
+              echo "root轮2-$i: $IDOUT"
+              echo "$IDOUT" | grep -q "uid=0" && OK=1 && echo "ROOT_OK_AFTER_RESTART" && break
+            done
+          fi
+          [ $OK = 0 ] && echo "ROOT_FAIL_FINAL(fs-srv/app注入需要root — setup步fail-fast)"
+          echo "ROOTED=$OK" >> $GITHUB_ENV
           timeout 10 adb -s $B shell "setenforce 0" 2>/dev/null || true
 
       - name: 下载LSPatch472(base.apk) + 安装 + consent预写 + push frida-server(不启动)
@@ -101,13 +143,24 @@ jobs:
           done
           md5sum /tmp/lsp472.apk
           unzip -l /tmp/lsp472.apk | grep -c "lspatch" || true
+          # R2: 安装前adb健康复验(root步骤后设备可能offline)
+          for i in $(seq 1 6); do
+            E=$(timeout 10 adb -s $B shell echo ADB_OK 2>/dev/null | tr -d '\r')
+            [ "$E" = "ADB_OK" ] && break
+            echo "pre-install recycle $i"
+            adb disconnect $B >/dev/null 2>&1; sleep 3
+            adb connect $B >/dev/null 2>&1; sleep 4
+          done
           for i in 1 2 3; do
             timeout 300 adb -s $B install -r -t /tmp/lsp472.apk 2>&1 | tail -1
             if timeout 30 adb -s $B shell pm list packages 2>/dev/null | tr -d '\r' | grep -q com.qidian.QDReader; then
               echo "INSTALL_OK try $i"; break
             fi
-            sleep 8; adb connect $B >/dev/null 2>&1
+            echo "INSTALL_RETRY $i — adb recycle"
+            adb disconnect $B >/dev/null 2>&1; sleep 4
+            adb connect $B >/dev/null 2>&1; sleep 4
           done
+          timeout 30 adb -s $B shell pm list packages 2>/dev/null | tr -d '\r' | grep -c com.qidian.QDReader || echo "INSTALL_STILL_FAILED"
           # consent 预写 (collect-risk 同款, uid 必须取对)
           APP_UID=$(adb -s $B shell "stat -c '%u' /data/data/$APP" 2>/dev/null | tr -d '\r')
           if [ -z "$APP_UID" ] || [ "$APP_UID" = "0" ] || [ "$APP_UID" -le 10000 ] 2>/dev/null; then
@@ -120,13 +173,28 @@ jobs:
             adb -s $B shell "chown $APP_UID:$APP_UID /data/data/$APP/shared_prefs/app_sp.xml; chmod 660 /data/data/$APP/shared_prefs/app_sp.xml"
           fi
           # frida-server 推送 (自定义端口14771 避 27042 扫描; 名字 fs-srv; 此刻不启动)
+          # R2: 推送后落盘验证 + 烟测(--version) — R1教训: 设备offline时静默推空
           FR=16.7.19
           curl -sSL --max-time 180 -o /tmp/fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
           unxz -f /tmp/fs.xz 2>/dev/null || gunzip -f /tmp/fs.xz 2>/dev/null
           mv -f /tmp/fs /tmp/fs-server 2>/dev/null; chmod +x /tmp/fs-server
-          adb -s $B push /tmp/fs-server /data/local/tmp/fs-srv >/dev/null 2>&1
+          for i in 1 2 3; do
+            adb -s $B push /tmp/fs-server /data/local/tmp/fs-srv 2>&1 | tail -1
+            FSSZ=$(timeout 15 adb -s $B shell "stat -c%s /data/local/tmp/fs-srv" 2>/dev/null | tr -d '\r')
+            echo "fs-srv on-device size=$FSSZ (local $(stat -c%s /tmp/fs-server))"
+            [ -n "$FSSZ" ] && [ "$FSSZ" -gt 10000000 ] 2>/dev/null && break
+            sleep 5
+          done
           adb -s $B shell "chmod 755 /data/local/tmp/fs-srv"
-          echo "SETUP_DONE"
+          # R2 fail-fast: root终败/app未装/fs-srv不健康 → 后续driver必败(R1实证: 白等15分钟),
+          #   直接退出省时 — upload步 if:always() 仍会上传已产材料
+          POK=$(timeout 30 adb -s $B shell pm list packages 2>/dev/null | tr -d '\r' | grep -c "^package:com.qidian.QDReader")
+          [ "$ROOTED" = "1" ] || { echo "FATAL: ROOT_FAIL_FINAL — exit"; exit 1; }
+          [ "$POK" = "1" ] || { echo "FATAL: app未安装(install ${INSTALL_CNT:-?}轮) — exit"; exit 1; }
+          FVV=$(timeout 15 adb -s $B shell "/data/local/tmp/fs-srv --version" 2>&1 | tr -d '\r' | tail -1)
+          echo "fs-srv version probe: [$FVV]"
+          echo "$FVV" | grep -q "16\.7\.19" || { echo "FATAL: fs-srv二进制不健康 — exit"; exit 1; }
+          echo "SETUP_DONE(root=ok app=ok fs-srv=ok)"
 
       - name: "MITM接线 (wire对照: 同安装r密文×frida捕获key/明文 端到端验证)"
         run: |
@@ -165,6 +233,13 @@ jobs:
           B=localhost:5555
           APP=com.qidian.QDReader
           : > /tmp/keyhunt_collect.log
+          # R2: driver步前adb健康复验(MITM步的iptables/CA操作后设备可能再offline)
+          for i in 1 2 3; do
+            E=$(timeout 10 adb -s $B shell echo DRV_OK 2>/dev/null | tr -d '\r')
+            [ "$E" = "DRV_OK" ] && break
+            echo "driver前 recycle $i"; adb disconnect $B >/dev/null 2>&1; sleep 3
+            adb connect $B >/dev/null 2>&1; sleep 4
+          done
           # ── frida 守护: fs-srv 存活自愈 + [READY] 探测(fresh 隐私页门控) ──
           #   spawn 门控装载(ci/spawn_qd.sh, SPAWN_SCRIPT=hook_r1_keyhunt_472.js):
           #   Phase A 冷启动 r1 突发(R8/R14 实证11-12条r1在登录前)为主采集窗。
@@ -172,6 +247,19 @@ jobs:
           adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &" 2>/dev/null
           sleep 4
           adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
+          # R2: fs-srv 握手探活(frida-ps 能列进程才算活; R1实证起来即死会静默循环)
+          FSLIVE=0
+          for i in 1 2 3 4 5; do
+            if timeout 12 frida-ps -H 127.0.0.1:14771 >/dev/null 2>&1; then
+              FSLIVE=1; echo "FS_SRV_ALIVE try $i"; break
+            fi
+            echo "fs-srv not answering try $i — relaunch"
+            adb -s $B shell "pkill -f fs-srv" 2>/dev/null; sleep 2
+            adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &" 2>/dev/null
+            sleep 4
+            adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
+          done
+          [ $FSLIVE = 0 ] && echo "FS_SRV_DEAD_FINAL(后续spawn必败, 仅收尾材料)"
           ( while [ "$(date +%s)" -lt "$SESS_END" ]; do
               if ! adb -s $B shell "pidof fs-srv" >/dev/null 2>&1; then
                 echo "[GUARD] $(date +%s) fs-srv died — restarting" >> /tmp/keyhunt_guard.log
