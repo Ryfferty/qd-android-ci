@@ -208,26 +208,36 @@ jobs:
                   LEFT=$(( SESS_END - $(date +%s) ))
                   [ $LEFT -lt 20 ] && break
                   echo "[GUARD] $(date +%s) attach pid=$P window=${LEFT}s" >> /tmp/keyhunt_guard.log
+                  SL_BEFORE=$(grep -c '"ev":"script_loaded"' /tmp/keyhunt_collect.log 2>/dev/null || echo 0)
                   ( (sleep $LEFT; echo) | timeout $((LEFT+8)) frida -H 127.0.0.1:14771 -p $P -l hook_r1_keyhunt_v2.js >> /tmp/keyhunt_collect.log 2>&1 ) &
-                  # R7d: attach失败检测(frida早退=Failed to attach)→回退LAST_PID允许重试(R7c: alloc-crash失败后4420被误标已attach→永不重试)
+                  # R9(10-18): 装载级验证 — CLI活着≠脚本装上。
+                  #   R8实测(run 39109502006): 主进程attach 'Attaching...'悬60s→'Failed to attach: timeout',
+                  #   pgrep 3s检测看不见→R8重启从未触发, 登录窗r1×11全裸奔(与10-16 alloc-crash同族=壳/服务器交互劣化)。
+                  #   两级检测: ①CLI 3s内早退 ②CLI活但20s内无新script_loaded → 都算失败, 立即重启frida-server。
                   sleep 3
-                  if ! pgrep -f "hook_r1_keyhunt_v2" >/dev/null 2>&1; then   # R7f: 简单pattern(原正则误判→R7e每13s重置重挂)
-                    ATTACH_FAILS=$((ATTACH_FAILS + 1))
-                    echo "[GUARD] attach fail #$ATTACH_FAILS pid=$P — reset for retry" >> /tmp/keyhunt_guard.log
-                    LAST_PID=""
-                    # R8(10-18): 连败2次=alloc-crash劣化(run 38872764574: Phase C 新pid 6连败
-                    #  'unexpected crash while trying to allocate memory', 登录窗r1×3全裸奔=648/keyexp全错过)
-                    #   → 杀光会话重启frida-server再战
-                    if [ $ATTACH_FAILS -ge 2 ]; then
-                      echo "[GUARD] $(date +%s) R8: restarting frida-server (fails=$ATTACH_FAILS)" >> /tmp/keyhunt_guard.log
-                      pkill -f "frida -H" 2>/dev/null
-                      adb -s $B shell "pkill -f fs-srv" 2>/dev/null
-                      sleep 2
-                      adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
-                      sleep 4
-                      adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
-                      ATTACH_FAILS=0
+                  FAIL=0; REASON=""
+                  if ! pgrep -f "hook_r1_keyhunt_v2" >/dev/null 2>&1; then
+                    FAIL=1; REASON=early-exit
+                  else
+                    sleep 17
+                    SL_NOW=$(grep -c '"ev":"script_loaded"' /tmp/keyhunt_collect.log 2>/dev/null || echo 0)
+                    if [ "${SL_NOW:-0}" -le "${SL_BEFORE:-0}" ]; then
+                      FAIL=1; REASON=script-load-hang
+                      pkill -f "hook_r1_keyhunt_v2" 2>/dev/null
                     fi
+                  fi
+                  if [ $FAIL = 1 ]; then
+                    ATTACH_FAILS=$((ATTACH_FAILS + 1))
+                    echo "[GUARD] attach fail#$ATTACH_FAILS($REASON) pid=$P" >> /tmp/keyhunt_guard.log
+                    LAST_PID=""
+                    echo "[GUARD] $(date +%s) R9: restarting frida-server (fails=$ATTACH_FAILS)" >> /tmp/keyhunt_guard.log
+                    pkill -f "frida -H" 2>/dev/null
+                    adb -s $B shell "pkill -f fs-srv" 2>/dev/null
+                    sleep 2
+                    adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &"
+                    sleep 4
+                    adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
+                    ATTACH_FAILS=0
                   fi
                   # R6: [READY]出现=hook武装完成 → 放行driver隐私页门控(点同意→业务首启→r1首建落在hook就绪后)
                   ( for _hr in $(seq 1 90); do
