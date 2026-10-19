@@ -242,37 +242,46 @@ def keep_alive():
 
 
 # ═════════════ Phase A: 首启 + 弹窗点掉 ═════════════
+PRIVACY_MARK = '欢迎使用QQ阅读'   # 隐私弹窗的特征文本(R1实证: 挂在一切页面之上)
+
+
+def _privacy_up(xml):
+    return PRIVACY_MARK in (xml or '') or '隐私政策' in (xml or '')[:3000]
+
+
 def phase_launch():
-    L('═══ Phase A: 首启(monkey) + 隐私/权限弹窗处理 ═══')
+    L('═══ Phase A: 首启(am start+monkey) + 隐私/权限弹窗处理(R1教训: 冷启动>80s, 弹窗晚到, 必须长等) ═══')
     sh('logcat', '-c', timeout=10)
+    sh('am', 'start', '-n', '%s/%s' % (APP, 'com.qq.reader.activity.DefaultAliasActivity'), timeout=20)
+    time.sleep(6)
     sh('monkey', '-p', APP, '-c', 'android.intent.category.LAUNCHER', '1', timeout=25)
-    stable = None
-    for i in range(20):
-        time.sleep(4)
-        p1 = pidof()
-        if p1:
-            time.sleep(4)
-            if pidof() == p1:
-                stable = p1
-                break
-    L('[A] App稳定 pid=%s fg=%s' % (stable, foreground()[:90]))
-    if not stable:
-        VERDICT['phases']['A'] = 'app_not_stable'
-        return False
-    VERDICT['phases']['A'] = 'ok pid=%s' % stable
+
+    # 冷启动等待(pid 出现即继续, 最长 ~5min; R1实证 136MB App 冷启 > 80s)
+    pid = None
+    for i in range(60):
+        pid = pidof()
+        if pid:
+            break
+        time.sleep(5)
+    L('[A] pid=%s (等了%d轮) fg=%s' % (pid, i, foreground()[:90]))
+    VERDICT['phases']['A_pid'] = str(pid)
 
     # 弹窗循环: 白名单点, 黑名单绝不点; dump 全程留证
+    # R1教训: 不以 pid 稳定门控弹窗循环 — 弹窗可能在冷启动 2-4 分钟后才出现
     dismissed = []
-    for rnd in range(12):
+    quiet_rounds = 0
+    main_seen = False
+    for rnd in range(40):
         xml = dump_ui('consent%d' % rnd)
-        screenshot('shot_consent_%02d.png' % rnd)
+        if rnd % 3 == 0:
+            screenshot('shot_consent_%02d.png' % rnd)
         if not xml:
-            time.sleep(6)
+            time.sleep(8)
             continue
         ns = nodes(xml)
-        # 证据: 本屏全部文本
         texts = [t for t, d, *_ in ns if t][:25]
-        L('[A] 弹窗轮%d 可见文本: %s' % (rnd, json.dumps(texts, ensure_ascii=False)[:400]))
+        if rnd % 4 == 0:
+            L('[A] 弹窗轮%d 可见文本: %s' % (rnd, json.dumps(texts, ensure_ascii=False)[:400]))
         hit = None
         for t, d, rid, cx, cy, w, h in ns:
             hay = (t or d).strip()
@@ -292,18 +301,39 @@ def phase_launch():
             L('[A] 弹窗轮%d 点[%s] @(%d,%d)' % (rnd, hit[0], hit[1], hit[2]))
             ui_tap(hit[1], hit[2])
             dismissed.append(hit[0])
-            time.sleep(7)
+            quiet_rounds = 0
+            time.sleep(8)
             continue
-        # 无可点弹窗 → 可能已到主界面
+        # 无可点弹窗: 隐私弹窗还在吗? App活着吗? 主界面到了吗?
         fg = foreground()
-        L('[A] 弹窗轮%d 无目标 fg=%s' % (rnd, fg[:80]))
-        if rnd >= 2:
+        if _privacy_up(xml):
+            quiet_rounds = 0
+            L('[A] 弹窗轮%d 隐私弹窗在但按钮没匹配到(文本=%s)' % (rnd, json.dumps(texts, ensure_ascii=False)[:200]))
+            time.sleep(6)
+            continue
+        if not pidof():
+            L('[A] 弹窗轮%d App死→monkey复活' % rnd)
+            sh('monkey', '-p', APP, '-c', 'android.intent.category.LAUNCHER', '1', timeout=20)
+            time.sleep(12)
+            continue
+        # App活+无弹窗: 主界面特征?
+        main_hint = any(k in (t or d) for t, d, *_ in ns for k in ('书城', '书架', '搜索', '排行', '免费', '限免'))
+        if main_hint:
+            main_seen = True
+            L('[A] ✓主界面已到(轮%d) fg=%s' % (rnd, fg[:80]))
             break
-        time.sleep(5)
+        quiet_rounds += 1
+        L('[A] 弹窗轮%d 无目标(quiet=%d) fg=%s' % (rnd, quiet_rounds, fg[:70]))
+        if quiet_rounds >= 6:
+            L('[A] 6轮无弹窗无主界面特征 → 视为可继续(Flutter页dump文本少)')
+            break
+        time.sleep(7)
     VERDICT['consent_tapped'] = dismissed
-    L('[A] 弹窗处理完成: %s' % json.dumps(dismissed, ensure_ascii=False))
+    VERDICT['main_seen'] = main_seen
+    L('[A] 弹窗处理完成: 点过%s main=%s' % (json.dumps(dismissed, ensure_ascii=False), main_seen))
     screenshot('shot_after_consent.png')
-    return True
+    return main_seen or pidof() is not None
+
 
 
 # ═════════════ Phase B: 书城自然流量 ═════════════
@@ -388,14 +418,22 @@ def phase_book_detail():
     ns = [(t, d, cx, cy) for t, d, rid, cx, cy, w, h in nodes(xml)]
     L('[D] 书详情可见文本: %s' % json.dumps([t for t, *_ in ns][:30], ensure_ascii=False)[:500])
     hit = tap_text(xml, '开始阅读', '免费阅读', '立即阅读', '继续阅读', '免费读')
-    if not hit:
-        # Flutter 页兜底: 底部主按钮区(1080x2340: y≈2180)
-        L('[D] 文本未命中 → 坐标兜底 (540,2200)')
-        ui_tap(540, 2200)
-        hit = 'coord(540,2200)'
-    L('[D] 进阅读点了[%s]' % hit)
     time.sleep(12)
     fg = foreground()
+    if 'ReaderPage' not in fg:
+        if not hit:
+            L('[D] 文本未命中 → 坐标兜底 (540,2200)')
+            ui_tap(540, 2200)
+            hit = 'coord(540,2200)'
+        time.sleep(12)
+        fg = foreground()
+    if 'ReaderPage' not in fg:
+        # R1实证: deeplink 直达阅读页(绕过Flutter书详情的不确定性)
+        L('[D] 仍未进阅读页 → deeplink readepage?bid=%s' % BID)
+        deeplink('uniteqqreader://nativepage/client/readepage?bid=%s' % BID)
+        time.sleep(14)
+        fg = foreground()
+        hit = (hit or '') + '+readepage_dl'
     L('[D] 进阅读后 fg=%s' % fg[:100])
     dump_ui('reader_entered')
     screenshot('shot_reader_entered.png')
