@@ -123,6 +123,16 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
     var _sysc = new NativeFunction(Module.findExportByName('libc.so', 'syscall'),
                                    'long', ['long', 'long', 'long', 'pointer']);
     var r2 = _sysc(277, 1, 2, prog);       // seccomp(SET_MODE_FILTER, TSYNC, &fprog)
+    // R17: seccomp() 系统调用返回 0 但 /proc/self/status 实测 Seccomp: 0(R16c 判决) —
+    // 静默未挂载。加 prctl(PR_SET_SECCOMP, MODE_FILTER, prog) 老接口双保险(线程局部,
+    // 至少本线程可验机器是否可用; 探针在后面当庭裁决)。
+    var r3 = -999;
+    try {
+      var _prctl2 = new NativeFunction(Module.findExportByName('libc.so', 'prctl'),
+                                        'int', ['int', 'long', 'pointer', 'long', 'long']);
+      r3 = _prctl2(22, 1, prog, 0, 0);     // PR_SET_SECCOMP, SECCOMP_MODE_FILTER
+      L('[R17-PRCTL] PR_SET_SECCOMP install=' + r3);
+    } catch (e) { L('[R17-PRCTL] 异常: ' + e); }
     L('[R15-SECCOMP] NO_NEW_PRIVS=' + r1 + ' tsync_install=' + r2 +
       ' — exit/exit_group(任意码)+self-SIGKILL → ERRNO(EPERM), 全线程生效');
     // R16c: 双重直接验证 — ①/proc/self/status 的 Seccomp 行(2=filter模式) ②kill(self,9)
@@ -146,7 +156,7 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
       }
     } catch (e) { L('[R16c-VERIFY] status 读取失败: ' + e); }
     try {
-      var kr = _sysc(129, MAIN, 9, 0);   // kill(self, 9) 探针: 期望 EPERM(-1)
+      var kr = _sysc(129, MAIN, 9, ptr(0));   // kill(self, 9) 探针: 期望 EPERM(-1)
       L('[R16c-VERIFY] kill(self,9) 探针返回 ' + kr + ' (负值/EPERM=过滤器活着; 0=致命没拦住)');
     } catch (e) { L('[R16c-VERIFY] 探针异常: ' + e); }
   } catch (e) { L('[R15-SECCOMP] 装载异常: ' + e); }
