@@ -125,11 +125,30 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
     var r2 = _sysc(277, 1, 2, prog);       // seccomp(SET_MODE_FILTER, TSYNC, &fprog)
     L('[R15-SECCOMP] NO_NEW_PRIVS=' + r1 + ' tsync_install=' + r2 +
       ' — exit/exit_group(任意码)+self-SIGKILL → ERRNO(EPERM), 全线程生效');
-    if (r2 !== 0) {
-      var __errno = new NativeFunction(Module.findExportByName('libc.so', '__errno'),
-                                       'pointer', []);
-      L('[R15-SECCOMP] errno=' + Memory.readU32(__errno()) + ' (16=EBADF?13=EACCES…如实记录)');
-    }
+    // R16c: 双重直接验证 — ①/proc/self/status 的 Seccomp 行(2=filter模式) ②kill(self,9)
+    // 探针(过滤器活着→EPERM 无伤返回; 本行之后的日志存在=过滤器工作; 进程死=过滤器没挂上)
+    try {
+      var _fopen = new NativeFunction(Module.findExportByName('libc.so', 'fopen'),
+                                      'pointer', ['pointer', 'pointer']);
+      var _fgets = new NativeFunction(Module.findExportByName('libc.so', 'fgets'),
+                                      'pointer', ['pointer', 'int', 'pointer']);
+      var _fclose = new NativeFunction(Module.findExportByName('libc.so', 'fclose'),
+                                       'int', ['pointer']);
+      var fp = _fopen(Memory.allocUtf8String('/proc/self/status'),
+                      Memory.allocUtf8String('r'));
+      if (!fp.isNull()) {
+        var line = Memory.alloc(256);
+        while (!_fgets(line, 255, fp).isNull()) {
+          var txt = Memory.readUtf8String(line);
+          if (txt.indexOf('Seccomp') === 0) { L('[R16c-VERIFY] ' + txt.trim()); }
+        }
+        _fclose(fp);
+      }
+    } catch (e) { L('[R16c-VERIFY] status 读取失败: ' + e); }
+    try {
+      var kr = _sysc(129, MAIN, 9, 0);   // kill(self, 9) 探针: 期望 EPERM(-1)
+      L('[R16c-VERIFY] kill(self,9) 探针返回 ' + kr + ' (负值/EPERM=过滤器活着; 0=致命没拦住)');
+    } catch (e) { L('[R16c-VERIFY] 探针异常: ' + e); }
   } catch (e) { L('[R15-SECCOMP] 装载异常: ' + e); }
 })();
 L('[R13] script top-level executed (pid=' + Process.id + ' t=' + Date.now() + ')');
