@@ -67,6 +67,21 @@ def cfb_total():
         return 0
 
 
+def js_alive(pid):
+    """R10: 验证脚本真的在目标进程里跑起来了 (R9 教训: pid 4863 script.load() 返回
+    成功但零 console 输出 = '僵尸装载', 该进程的 armed 状态不可信)。只扫日志尾部 64KB。"""
+    try:
+        with open(LOG, 'rb') as f:
+            f.seek(0, 2)
+            sz = f.tell()
+            f.seek(max(0, sz - 65536))
+            tail = f.read().decode('utf-8', 'ignore')
+        return ('"ev":"script_loaded"' in tail or '"ev": "script_loaded"' in tail) \
+            and ('"pid":%s,' % pid) in tail
+    except Exception:
+        return False
+
+
 device = frida.get_device_manager().add_remote_device('127.0.0.1:14771')
 deadline = time.time() + HOLD
 log('fast watcher R8 up (hold=%ds script=%s early_delay=%.2fs adapt=%s skip_pid=%s)'
@@ -113,12 +128,36 @@ while time.time() < deadline:
         session.on('detached', lambda *a, **kw: detached.set())
         script.load()
         loaded = True
-        log('fast-attach pid=%s script_loaded ✓ (+%.2fs from catch, delay=%.2fs)'
-            % (pid, time.time() - t_catch, DELAY))
+        # R10: 等真实 script_loaded 事件 (最多 6s) — 区分"真武装"与 R9 式僵尸装载
+        t_alive = time.time()
+        alive = False
+        while time.time() - t_alive < 6:
+            if js_alive(pid):
+                alive = True
+                break
+            time.sleep(0.3)
+        log('fast-attach pid=%s script_loaded ✓ (+%.2fs from catch, delay=%.2fs, js_alive=%s)'
+            % (pid, time.time() - t_catch, DELAY, alive))
+        dead_miss = 0
         while not detached.is_set() and time.time() < deadline:
             time.sleep(0.3)
+            # R10: 挂死/换代会话检测 (R9 教训: 4863 挂满全程, watcher 干等 6 分钟) —
+            # 每 ~2s 查一次 pidof: 新 pid 出现(进程换代但 detach 未触发) → 切换;
+            # pid 消失且 16s 无 detach → 放弃该会话回主循环。
+            if int(time.time() * 2) % 4 == 0:
+                cur = pidof()
+                if cur and cur != pid:
+                    log('watch: pid %s 已被新 pid %s 替换(会话未detach) — 切换' % (pid, cur))
+                    break
+                if not cur:
+                    dead_miss += 1
+                    if dead_miss >= 8:
+                        log('watch: pid %s 已死但会话未detach — 放弃, 回主循环' % pid)
+                        break
+                else:
+                    dead_miss = 0
         if detached.is_set():
-            log('session(pid=%s) detached — 等复活(anti-frida exit(0)→JPush / am start)' % pid)
+            log('session(pid=%s) detached — 等复活(检测自杀被吞/系统杀)' % pid)
     except frida.ProcessNotFoundError:
         log('fast-attach pid=%s: process not found (中途死, delay=%.2fs) — 继续捕' % (pid, DELAY))
     except Exception as e:

@@ -339,6 +339,14 @@ jobs:
           grep -c "\[R15\] neutralized" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/r15_kills_neutralized: /'
           grep -c "\[KNOBS\] libknobs.so base=" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/knobs_module_seen: /'
           grep -c "\[SPAWN\]" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/spawn_gate_events: /'
+          echo "=== R10 检测中和判据 (EXITGUARD2 vfork-safe stub + jniCheck* 钩) ==="
+          grep -c "\[EXITGUARD2\] armed" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/exitguard2_armed: /'
+          grep -c "EXITGUARD2\] exit(" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/exit_swallowed_bt_lines: /'
+          grep -c "\"ev\": *\"exit_block\"\|\"ev\":\"exit_block\"" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/exit_block_events: /'
+          grep -c "\"ev\": *\"kill_block\"\|\"ev\":\"kill_block\"" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/kill_block_events: /'
+          grep -c "\"ev\": *\"jnicheck\"\|\"ev\":\"jnicheck\"" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/jnicheck_events: /'
+          grep -c "js_alive=True" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/js_alive_true: /'
+          grep -c "js_alive=False" /tmp/keyhunt_collect.log 2>/dev/null | sed 's/^/js_alive_false: /'
           echo "=== 密扫(应全为0; verify模式本无session) ==="
           for pat in $(cat /tmp/e7_secrets.txt 2>/dev/null | grep -v '^$' | head -3); do
             printf 'hits(keyhunt/out): %s\n' "$(cat /tmp/keyhunt_collect.log /tmp/out/*.txt 2>/dev/null | grep -cF -- "$pat")"
