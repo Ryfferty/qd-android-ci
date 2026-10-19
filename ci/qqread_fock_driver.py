@@ -243,10 +243,17 @@ def hook_events():
     return n
 
 
+def am_start():
+    """确定性拉起(主 Launcher activity)。r4 实证: monkey 复活会随机解析 LAUNCHER 类别里的
+    非活动组件(logcat: Start proc …{com.qq.reader/com.qq.reader.TypeContext})→秒崩死循环。"""
+    sh('am', 'start', '-n', '%s/%s' % (APP, 'com.qq.reader.activity.DefaultAliasActivity'), timeout=20)
+
+
 def keep_alive():
+    ensure_frida()
     if not pidof():
-        L('[WD] App死→monkey复活(注意: 复活进程不在 frida 钩内)')
-        sh('monkey', '-p', APP, '-c', 'android.intent.category.LAUNCHER', '1', timeout=20)
+        L('[WD] App死→am start复活')
+        am_start()
         time.sleep(12)
 
 
@@ -309,8 +316,8 @@ def phase_waitpid():
             time.sleep(6)
             continue
         if not pidof():
-            L('[A] 弹窗轮%d App死→monkey复活' % rnd)
-            sh('monkey', '-p', APP, '-c', 'android.intent.category.LAUNCHER', '1', timeout=20)
+            L('[A] 弹窗轮%d App死→am start复活' % rnd)
+            am_start()
             time.sleep(12)
             continue
         main_hint = any(k in (t or d) for t, d, *_ in ns for k in ('书城', '书架', '搜索', '排行', '免费', '限免'))
@@ -334,13 +341,36 @@ def phase_waitpid():
 # r2/r3 实证: attach 于 app init 期 → +23~35s 被反frida扫描杀; r2 流量实证 /sk→addKeys 与
 #   ChapBat→unlockData 都在阅读器启动(reader activity start)才触发 — attach 放在 consent 之后、
 #   开书之前, 既躲过 init 扫描又盖住全部 DRM 事件窗。
-def attach_frida():
-    L('═══ Phase A2: consent 后 attach frida(init 扫描已裸跑通过) ═══')
-    pid = pidof()
-    if not pid:
-        L('[A2] ✗无 pid, 无法 attach')
-        VERDICT['phases']['A2'] = 'no_pid'
-        return False
+# r4 实证: consent 后有"死循环窗"(app 反复死-复活数分钟才稳定) — A2 必须等一个存活≥20s 的稳定
+#   pid 才 attach(死循环期里 attach=白挂); pid 消失>25s 就 am start 复活再等。
+def _wait_stable_pid(timeout_s=240):
+    """等一个存活≥20s 的稳定 pid; 期间 pid 消失超过 25s → am start 拉起。返回 pid 或 None。"""
+    t0 = time.time()
+    cand, cand_t = None, 0.0
+    last_seen = time.time()
+    while time.time() - t0 < timeout_s:
+        pid = pidof()
+        now = time.time()
+        if pid:
+            last_seen = now
+            if cand == pid:
+                if now - cand_t >= 20:
+                    L('[A2] 稳定 pid=%s (存活%.0fs)' % (pid, now - cand_t))
+                    return pid
+            else:
+                cand, cand_t = pid, now
+                L('[A2] 新 pid=%s — 观察稳定性' % pid)
+        else:
+            cand = None
+            if now - last_seen > 25:
+                L('[A2] pid 消失>25s → am start 复活')
+                am_start()
+                last_seen = now
+        time.sleep(2)
+    return cand
+
+
+def _spawn_frida_cli(pid):
     try:
         lf = open(COLLECT, 'a', buffering=1)
         lf.write('[DRIVER] attach frida pid=%s t=%s\n' % (pid, time.strftime('%H:%M:%S')))
@@ -349,9 +379,26 @@ def attach_frida():
                                 stdout=lf, stderr=lf, stdin=subprocess.PIPE,
                                 cwd=os.path.dirname(HOOK))
         _FRIDA_PROC.append(proc)
+        return proc
     except Exception as e:
         L('[A2] ✗frida CLI 启动失败: %s' % str(e)[:150])
         VERDICT['phases']['A2'] = 'cli_fail: %s' % str(e)[:80]
+        return None
+
+
+def _frida_alive():
+    return bool(_FRIDA_PROC and _FRIDA_PROC[-1].poll() is None)
+
+
+def attach_frida():
+    L('═══ Phase A2: consent 后 attach frida(init 扫描已裸跑通过; 等稳定 pid) ═══')
+    pid = _wait_stable_pid()
+    if not pid:
+        L('[A2] ✗无稳定 pid, 无法 attach')
+        VERDICT['phases']['A2'] = 'no_stable_pid'
+        return False
+    proc = _spawn_frida_cli(pid)
+    if not proc:
         return False
     for i in range(90):
         time.sleep(1)
@@ -364,12 +411,32 @@ def attach_frida():
             VERDICT['phases']['A2'] = 'armed pid=%s +%ds' % (pid, i + 1)
             return True
         if proc.poll() is not None:
-            L('[A2] ✗frida CLI 提前退出(rc=%s) — app可能被杀' % proc.returncode)
+            L('[A2] ✗frida CLI 提前退出(rc=%s) — app可能又被杀' % proc.returncode)
             VERDICT['phases']['A2'] = 'cli_exit rc=%s' % proc.returncode
             return False
     L('[A2] ⚠90s 无 READY(脚本装载慢/Java VM 未起) — 继续驱动, 诚实记录')
     VERDICT['phases']['A2'] = 'ready_timeout'
     return False
+
+
+def ensure_frida():
+    """frida 会话死了但 app 活着 → 重挂一次(最多3次)。仅 A2 已 attach 过之后生效;
+    app 也死则走 am start 复活(下一轮 keep_alive 再挂)。"""
+    if not _FRIDA_PROC:
+        return
+    global _REATTACH_N
+    if _frida_alive() or not pidof():
+        return
+    if _REATTACH_N >= 3:
+        return
+    _REATTACH_N += 1
+    pid = pidof()
+    L('[WD] frida 会话已死而 app(pid=%s)活着 → 重挂#%d' % (pid, _REATTACH_N))
+    _spawn_frida_cli(pid)
+    time.sleep(8)
+
+
+_REATTACH_N = 0
 
 
 def stop_frida():
