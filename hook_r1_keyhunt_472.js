@@ -88,7 +88,7 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
   } catch (e) { L('[R14-EXIT] 替换失败: ' + e); }
 })();
 
-// ═══ R15: seccomp 拦裸 syscall exit_group(code=0) ═══
+// ═══ R15/R16: seccomp 拦裸 syscall 自杀族(exit/exit_group 任意码 + self-SIGKILL) ═══
 // R14 实证: App 自杀不走 libc exit/_exit(R9/R12b/R14 三轮 libc 级守卫全部零拦截)
 // = libmsaoaidsec VM 直接 raw syscall exit_group。libc 层不可见 ⇒ 唯一拦截层=
 // seccomp BPF。过滤器语义(9指令): 非 arm64→ALLOW; nr∉{93,94}→ALLOW;
@@ -96,17 +96,23 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
 // 且 code==0 → ERRNO(0)(调用失败, VM 继续跑)。装载: prctl(NO_NEW_PRIVS)+prctl(
 // SET_SECCOMP, MODE_FILTER)。指令字节由本地 python struct 预计算并逐跳转校验。
 (function SECCOMPGUARD() {
+  var MAIN = Process.id;
   try {
     var _prctl = new NativeFunction(Module.findExportByName('libc.so', 'prctl'),
                                     'int', ['int', 'long', 'long', 'long', 'long']);
-    var FILTER = [32, 4, 100663317, 3221225655, 32, 0, 65557, 94,
-                  50331669, 93, 32, 16, 16777237, 0, 6, 327680, 6, 2147418112];
-    var fbuf = Memory.alloc(72);
+    // R16 扩展: 任意码 exit/exit_group + kill/tgkill(打主pid且sig=9) 全拦。
+    // 18 指令(python struct 预排+跳转校验); word19/27 = 主pid占位, 装载时运行时嵌入。
+    var FILTER = [32, 4, 251658261, 3221225655, 32, 0, 786453, 93,
+                  720917, 94, 131093, 129, 168099861, 131, 6, 2147418112,
+                  32, 16, 117440533, MAIN, 32, 24, 84148245, 9,
+                  32, 16, 50331669, MAIN, 32, 32, 16777237, 9,
+                  6, 327680, 6, 2147418112];
+    var fbuf = Memory.alloc(144);
     for (var i = 0; i < FILTER.length; i++) {
       Memory.writeU32(fbuf.add(i * 4), FILTER[i]);
     }
     var prog = Memory.alloc(16);          // struct sock_fprog {u16 len; pad; sock_filter*}
-    Memory.writeU16(prog, 9);             // len = 9 条指令
+    Memory.writeU16(prog, 18);            // len = 18 条指令
     Memory.writePointer(prog.add(8), fbuf);
     var r1 = _prctl(38, 1, 0, 0, 0);      // PR_SET_NO_NEW_PRIVS(prctl 装载是线程局部,
                                           // 但 TSYNC 只要求调用线程已置位)

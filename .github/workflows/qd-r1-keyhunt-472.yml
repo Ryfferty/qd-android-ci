@@ -280,9 +280,17 @@ jobs:
             done ) &
           READY_W=$!
           # ── 主驱动 (mitm-login 同款 Phase A 匿名 → [B/C verify 跳过] → D 流量 → E 提取scrub) ──
+          # R16: 全程流式 logcat 存证 — 结尾-d dump 会被环形缓冲滚掉(consent 窗死法一直丢证据)
+          mkdir -p /tmp/out
+          adb -s $B shell "logcat -c" 2>/dev/null
+          ( adb -s $B logcat -v time > /tmp/out/logcat_stream.txt 2>/dev/null ) &
+          LOGCAT_STREAM=$!
           python3 ci/mitm_login_capture.py 2>&1 | tee /tmp/driver_stdout.txt
           EC=${PIPESTATUS[0]}
           echo "driver exit=$EC"
+          kill $LOGCAT_STREAM 2>/dev/null
+          sleep 1
+          echo "logcat_stream bytes=$(wc -c < /tmp/out/logcat_stream.txt)"
           sleep 20   # 尾部采集
           kill $GUARD $READY_W 2>/dev/null; pkill -f "frida -H" 2>/dev/null
           # ── 设备侧材料: prefs + files 全量tar (r1缓存/leic对照; QDConfig DB 不上传) ──
