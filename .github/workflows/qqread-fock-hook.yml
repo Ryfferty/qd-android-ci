@@ -1,0 +1,294 @@
+name: qqread-fock-hook
+
+# QQ阅读 fock DRM 解密链 frida hook 采集 (子代理, 2026-10-19)
+#   底稿: qqread-capture.yml 的 redroid/MITM/驱动骨架
+#        + qd-r1-keyhunt-472.yml 的 frida 基建经验(fs-srv@14771 自定义端口 + spawn 门控
+#          + fs-srv 落盘验证/探活 + root 竞态三级恢复 + R2 沉淀30s再抢root)。
+#   链路: redroid(arm64) → 装qqreader.apk → MITM 接线(留 flows 交叉证据)
+#   → fs-srv 起 → frida -f spawn 门控挂 hook_qqread_fock.js(壳武装之前; 类加载看门狗
+#   解 Fock 类加载→addKeys 毫秒级竞态) → ci/qqread_fock_driver.py 游客态驱动
+#   (弹窗→书详情→读第1章翻3页→目录第2章翻4页) → 停采 →
+#   拉 /data/data/com.qq.reader/files/fock_hook/(events.ndjson + h1_in/h1_out/h4_out bin)
+#   + collect log + flows + 截图 上传 artifacts。
+#   目标: ①明文(H4) ②ciphertext/additionalKey/userKey/pool 三元组(H1/H2) ③md5 对索引验证。
+#   App 全程游客态(不登录不注册); hook 脚本内带 R14 出口吞噬(360壳反frida惯用exit(0))。
+# 派活: gh workflow run qqread-fock-hook --repo Ryfferty/qd-android-ci
+on:
+  workflow_dispatch:
+    inputs:
+      bid:
+        description: '目标书 bid (大生意人)'
+        default: '54425396'
+      spawn_mode:
+        description: 'spawn=frida -f 进程创建期注入(能抓启动期 addKeys) / attach=am start 后 frida -p(补挂)'
+        default: 'spawn'
+
+permissions:
+  contents: read
+
+jobs:
+  qqread-fock:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup adb/mitmproxy/frida/binder"
+        run: |
+          set +e
+          sudo -S -p '' apt-get update -qq || true
+          sudo -S -p '' apt-get install -y -qq linux-modules-extra-$(uname -r) adb sqlite3 curl xz-utils || echo APT_PARTIAL
+          sudo -S -p '' modprobe binder_linux devices="binder,hwbinder,vndbinder" 2>&1 || echo MODPROBE_MAYBE
+          pip install -q mitmproxy "frida==16.7.19" "frida-tools<14" 2>&1 | tail -1
+          mitmdump --version | head -2
+          frida --version
+
+      - name: "Start redroid (1080x2340@420) + root"
+        run: |
+          set +e
+          sudo -S -p '' docker rm -f redroid 2>/dev/null || true
+          VOLS=""
+          for d in binder hwbinder vndbinder; do [ -e /dev/$d ] && VOLS="$VOLS -v /dev/$d:/dev/$d"; done
+          sudo -S -p '' docker run -d --privileged --name redroid $VOLS -p 5555:5555 \
+            redroid/redroid:11.0.0-latest \
+            androidboot.redroid_gpu_mode=guest androidboot.redroid_width=1080 \
+            androidboot.redroid_height=2340 androidboot.redroid_dpi=420 \
+            androidboot.redroid_adb=5555 2>&1 | tail -1
+          adb start-server >/dev/null 2>&1; sleep 12
+          B=localhost:5555
+          for i in $(seq 1 30); do
+            adb connect $B >/dev/null 2>&1
+            S=$(timeout 10 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+            [ "$S" = "1" ] && echo "BOOT_OK try $i" && break
+            sleep 7
+          done
+          # R2教训: BOOT_OK 后 19s 就抢 root 会踩 adbd 重启竞态 → 先沉淀 30s
+          sleep 30
+          OK=0
+          for i in $(seq 1 10); do
+            timeout 25 adb -s $B root >/dev/null 2>&1; sleep 5
+            adb disconnect $B >/dev/null 2>&1; sleep 1
+            adb connect $B >/dev/null 2>&1; sleep 3
+            IDOUT=$(timeout 8 adb -s $B shell id 2>/dev/null | tr -d "\r")
+            echo "root轮$i: $IDOUT"
+            echo "$IDOUT" | grep -q "uid=0" && OK=1 && break
+            sleep 3
+          done
+          if [ $OK = 0 ]; then
+            for i in 1 2 3; do
+              E=$(timeout 10 adb -s $B shell echo ADB_ALIVE 2>/dev/null | tr -d '\r')
+              [ "$E" = "ADB_ALIVE" ] && break
+              echo "soft recycle $i"; adb disconnect $B >/dev/null 2>&1; sleep 4
+              adb connect $B >/dev/null 2>&1; sleep 4
+            done
+            for i in 1 2 3; do
+              E=$(timeout 10 adb -s $B shell echo ADB_ALIVE 2>/dev/null | tr -d '\r')
+              [ "$E" = "ADB_ALIVE" ] && break
+              echo "hard recycle $i (kill-server)"; adb kill-server 2>/dev/null; sleep 2
+              adb start-server 2>/dev/null; sleep 3
+              adb connect $B >/dev/null 2>&1; sleep 5
+            done
+          fi
+          if [ $OK = 0 ]; then
+            echo "ROOT_STILL_FAIL — redroid restart fallback"
+            sudo -S -p '' docker restart redroid 2>&1 | tail -1
+            adb kill-server 2>/dev/null; adb start-server 2>/dev/null; sleep 15
+            for i in $(seq 1 25); do
+              adb connect $B >/dev/null 2>&1
+              S=$(timeout 10 adb -s $B shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              [ "$S" = "1" ] && echo "REBOOT_OK try $i" && break
+              sleep 8
+            done
+            sleep 20
+            for i in $(seq 1 5); do
+              timeout 25 adb -s $B root >/dev/null 2>&1; sleep 8
+              adb disconnect $B >/dev/null 2>&1; sleep 1; adb connect $B >/dev/null 2>&1; sleep 4
+              IDOUT=$(timeout 8 adb -s $B shell id 2>/dev/null | tr -d "\r")
+              echo "$IDOUT" | grep -q "uid=0" && OK=1 && echo "ROOT_OK_AFTER_RESTART" && break
+            done
+          fi
+          [ $OK = 0 ] && echo "ROOT_FAIL_FINAL(fs-srv/hook产物拉取需要root)"
+          echo "ROOTED=$OK" >> $GITHUB_ENV
+          timeout 10 adb -s $B shell "setenforce 0" 2>/dev/null || true
+          timeout 10 adb -s $B shell getprop ro.build.version.sdk | tr -d '\r'
+
+      - name: "下载 qqreader.apk + 安装 + push frida-server(不启动)"
+        run: |
+          set +e
+          B=localhost:5555
+          APP=com.qq.reader
+          for i in 1 2 3 4; do
+            curl -sSL --max-time 900 -o /tmp/qqreader.apk "https://github.com/Ryfferty/qd-android-ci/releases/download/apks-v1/qqreader.apk" || true
+            SZ=$(stat -c%s /tmp/qqreader.apk 2>/dev/null || echo 0)
+            echo "apk try $i size=$SZ"
+            [ "$SZ" -gt 100000000 ] && break
+            sleep 15
+          done
+          md5sum /tmp/qqreader.apk
+          for i in $(seq 1 6); do
+            E=$(timeout 10 adb -s $B shell echo ADB_OK 2>/dev/null | tr -d '\r')
+            [ "$E" = "ADB_OK" ] && break
+            echo "pre-install recycle $i"
+            adb disconnect $B >/dev/null 2>&1; sleep 3
+            adb connect $B >/dev/null 2>&1; sleep 4
+          done
+          for i in 1 2 3; do
+            timeout 600 adb -s $B install -r -t /tmp/qqreader.apk 2>&1 | tail -2
+            if timeout 30 adb -s $B shell pm list packages 2>/dev/null | tr -d '\r' | grep -q com.qq.reader; then
+              echo "INSTALL_OK try $i"; break
+            fi
+            sleep 8; adb connect $B >/dev/null 2>&1
+          done
+          timeout 20 adb -s $B shell "dumpsys package com.qq.reader | grep -E 'versionName|primaryCpuAbi' | head -2" 2>&1 || true
+          # frida-server 16.7.19 arm64 → fs-srv(自定义端口 14771 避 27042 扫描; 落盘验证+烟测)
+          FR=16.7.19
+          curl -sSL --max-time 180 -o /tmp/fs.xz "https://github.com/frida/frida/releases/download/${FR}/frida-server-${FR}-android-arm64.xz"
+          unxz -f /tmp/fs.xz 2>/dev/null || gunzip -f /tmp/fs.xz 2>/dev/null
+          mv -f /tmp/fs /tmp/fs-server 2>/dev/null; chmod +x /tmp/fs-server
+          for i in 1 2 3; do
+            adb -s $B push /tmp/fs-server /data/local/tmp/fs-srv 2>&1 | tail -1
+            FSSZ=$(timeout 15 adb -s $B shell "stat -c%s /data/local/tmp/fs-srv" 2>/dev/null | tr -d '\r')
+            echo "fs-srv on-device size=$FSSZ (local $(stat -c%s /tmp/fs-server))"
+            [ -n "$FSSZ" ] && [ "$FSSZ" -gt 10000000 ] 2>/dev/null && break
+            sleep 5
+          done
+          adb -s $B shell "chmod 755 /data/local/tmp/fs-srv"
+          # 清掉可能的旧 hook 产物(全新装机本应无; 保险)
+          adb -s $B shell "rm -rf /data/data/$APP/files/fock_hook" 2>/dev/null
+          # fail-fast 三查: root / app / fs-srv 健康
+          POK=$(timeout 30 adb -s $B shell pm list packages 2>/dev/null | tr -d '\r' | grep -c "^package:com.qq.reader")
+          [ "$ROOTED" = "1" ] || { echo "FATAL: ROOT_FAIL_FINAL — exit"; exit 1; }
+          [ "$POK" = "1" ] || { echo "FATAL: app未安装 — exit"; exit 1; }
+          FVV=$(timeout 15 adb -s $B shell "/data/local/tmp/fs-srv --version" 2>&1 | tr -d '\r' | tail -1)
+          echo "fs-srv version probe: [$FVV]"
+          echo "$FVV" | grep -q "16\.7\.19" || { echo "FATAL: fs-srv二进制不健康 — exit"; exit 1; }
+          echo "SETUP_DONE(root=ok app=ok fs-srv=ok)"
+
+      - name: "MITM接线 (CA系统证书 + iptables DNAT + 封QUIC + mitmdump -w)"
+        run: |
+          set +e
+          B=localhost:5555
+          sudo -S -p '' modprobe nf_conntrack nf_nat iptable_nat nf_nat_ipv4 xt_TCPMSS xt_comment 2>&1 | head -2
+          (timeout 8 mitmdump -p 8899 --set confdir=/tmp/mitm --set quiet=true >/dev/null 2>&1 &); sleep 8
+          CA=/tmp/mitm/mitmproxy-ca-cert.pem
+          HASH=$(openssl x509 -inform PEM -subject_hash_old -in $CA | head -1)
+          echo "CAHASH=$HASH"
+          timeout 30 adb -s $B push $CA /data/local/tmp/cacert.pem >/dev/null 2>&1
+          timeout 30 adb -s $B shell "mount -o rw,remount / 2>/dev/null; mount -o rw,remount /system 2>/dev/null; cp /data/local/tmp/cacert.pem /system/etc/security/cacerts/$HASH.0; chmod 644 /system/etc/security/cacerts/$HASH.0; ls -la /system/etc/security/cacerts/$HASH.0" 2>&1 | tail -1
+          timeout 20 adb -s $B shell "cp /data/local/tmp/cacert.pem /apex/com.android.conscrypt/cacerts/$HASH.0 2>/dev/null && chmod 644 /apex/com.android.conscrypt/cacerts/$HASH.0 && echo APEX_OK || echo APEX_FAIL"
+          sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+          sudo iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 80  -j DNAT --to-destination 172.17.0.1:8899
+          sudo iptables -t nat -A PREROUTING -s 172.17.0.0/16 -p tcp --dport 443 -j DNAT --to-destination 172.17.0.1:8899
+          sudo iptables -A FORWARD -s 172.17.0.0/16 -p udp --dport 443 -j DROP
+          GW=$(timeout 8 adb -s $B shell "ip route | awk '/^default/{print \$3; exit}'" | tr -d '\r')
+          [ -z "$GW" ] && GW=172.17.0.1
+          timeout 10 adb -s $B shell "settings put global http_proxy $GW:8899"
+          echo "PROXY=$(timeout 8 adb -s $B shell settings get global http_proxy | tr -d '\r') GW=$GW"
+          nohup mitmdump --listen-host 0.0.0.0 -p 8899 --set confdir=/tmp/mitm \
+            --set block_global=false --set flow_detail=1 -w /tmp/all.flows \
+            > /tmp/mitm.log 2>&1 &
+          sleep 5
+          pgrep -f mitmdump >/dev/null && echo MITMDUMP_ALIVE || echo MITMDUMP_NOT_RUNNING
+
+      - name: "frida spawn 挂钩 + 游客态读章驱动 (第1章+第2章)"
+        env:
+          QQREAD_BID: ${{ inputs.bid || '54425396' }}
+          SPAWN_MODE: ${{ inputs.spawn_mode || 'spawn' }}
+        run: |
+          set +e
+          B=localhost:5555
+          APP=com.qq.reader
+          : > /tmp/fock_collect.log
+          mkdir -p /tmp/out
+          for i in 1 2 3; do
+            E=$(timeout 10 adb -s $B shell echo DRV_OK 2>/dev/null | tr -d '\r')
+            [ "$E" = "DRV_OK" ] && break
+            echo "driver前 recycle $i"; adb disconnect $B >/dev/null 2>&1; sleep 3
+            adb connect $B >/dev/null 2>&1; sleep 4
+          done
+          # ── fs-srv 起动 + 探活(能列进程才算活) ──
+          adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &" 2>/dev/null
+          sleep 4
+          adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
+          FSLIVE=0
+          for i in 1 2 3 4 5; do
+            if timeout 12 frida-ps -H 127.0.0.1:14771 >/dev/null 2>&1; then
+              FSLIVE=1; echo "FS_SRV_ALIVE try $i"; break
+            fi
+            echo "fs-srv not answering try $i — relaunch"
+            adb -s $B shell "pkill -f fs-srv" 2>/dev/null; sleep 2
+            adb -s $B shell "setsid /data/local/tmp/fs-srv -D -l 127.0.0.1:14771 >/dev/null 2>&1 &" 2>/dev/null
+            sleep 4
+            adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
+          done
+          [ $FSLIVE = 0 ] && echo "FS_SRV_DEAD_FINAL"
+          # ── spawn 门控(壳武装之前装钩) / attach 兜底 ──
+          HOLD=1500
+          if [ "${SPAWN_MODE}" = "attach" ]; then
+            echo "[GATE] attach 模式: 先 am start 再 frida -p"
+            adb -s $B shell "am start -n $APP/com.qq.reader.activity.DefaultAliasActivity" 2>/dev/null
+            APID=""
+            for i in $(seq 1 40); do
+              APID=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
+              [ -n "$APID" ] && break
+              sleep 5
+            done
+            echo "[GATE] app pid=$APID"
+            ( (sleep $HOLD; echo) | timeout $((HOLD+10)) \
+              frida -H 127.0.0.1:14771 -p $APID -l hook_qqread_fock.js \
+              >> /tmp/fock_collect.log 2>&1 ) &
+          else
+            echo "[GATE] spawn 模式: frida -f 进程创建期注入"
+            ( (sleep $HOLD; echo) | timeout $((HOLD+10)) \
+              frida -H 127.0.0.1:14771 -f $APP -l hook_qqread_fock.js \
+              >> /tmp/fock_collect.log 2>&1 ) &
+          fi
+          GATE=$!
+          sleep 20
+          echo "=== collect 头40行(spawn+装钩状态) ==="
+          head -40 /tmp/fock_collect.log
+          # ── 主驱动(UI: 弹窗→书详情→第1章→第2章) ──
+          python3 ci/qqread_fock_driver.py 2>&1 | tee /tmp/driver_stdout.txt
+          EC=${PIPESTATUS[0]}
+          echo "driver exit=$EC (非0=异常; 证据照常上传)"
+          sleep 15
+          # ── 停采 ──
+          kill $GATE 2>/dev/null; pkill -f "frida -H" 2>/dev/null; sleep 2
+          adb -s $B shell "pkill -f fs-srv" 2>/dev/null
+          pkill -f mitmdump 2>/dev/null; sleep 3
+          # ── 拉取 hook 产物(/data/data/<pkg>/files/fock_hook/) ──
+          mkdir -p /tmp/fock_hook_pull
+          adb -s $B exec-out "tar -c -C /data/data/$APP/files fock_hook" > /tmp/fock_hook_pull/fock_hook.tar 2>/dev/null
+          tar -x -C /tmp/fock_hook_pull -f /tmp/fock_hook_pull/fock_hook.tar 2>/dev/null || echo "tar extract fail(可能无产物)"
+          rm -f /tmp/fock_hook_pull/fock_hook.tar
+          echo "=== hook 产物清单 ==="
+          ls -la /tmp/fock_hook_pull/fock_hook/ 2>/dev/null || echo "(无 fock_hook 目录)"
+          echo "=== hook 事件计数 ==="
+          for ev in h1 h2 h3 h4 setup keypool exit_swallowed; do
+            printf '%-16s %s\n' "$ev" "$(grep -c "\"ev\": *\"$ev\"\|\"ev\":\"$ev\"" /tmp/fock_collect.log 2>/dev/null)"
+          done
+          grep -c "FOCKHOOK_READY" /tmp/fock_collect.log 2>/dev/null | sed 's/^/ready_marker: /'
+          grep -c '"ev": *"hook_fail"\|"ev":"hook_fail"' /tmp/fock_collect.log 2>/dev/null | sed 's/^/hook_fail: /'
+          echo "=== ndjson(若有) ==="
+          head -c 3000 /tmp/fock_hook_pull/fock_hook/events.ndjson 2>/dev/null
+          echo ""
+          echo "=== collect 尾40行 ==="
+          tail -40 /tmp/fock_collect.log
+          cat /tmp/out/driver_verdict.json 2>/dev/null
+          ls -la /tmp/all.flows /tmp/out/ 2>/dev/null
+          exit 0
+
+      - name: "Upload (hook产物 + collect log + flows + 截图 + verdict)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qqread-fock-hook
+          path: |
+            /tmp/fock_hook_pull/
+            /tmp/fock_collect.log
+            /tmp/out/
+            /tmp/all.flows
+            /tmp/mitm.log
+            /tmp/driver_stdout.txt
+          if-no-files-found: warn
+          retention-days: 7
