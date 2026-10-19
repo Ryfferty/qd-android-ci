@@ -3,18 +3,20 @@
 #
 # 前置(runner 上由 workflow bash 完成):
 #   redroid(localhost:5555) + com.qq.reader 已安装 + MITM 已接线(mitmdump -w /tmp/all.flows)
-#   + fs-srv(frida-server, 127.0.0.1:14771 已 forward) + spawn 门控 frida 会话已在跑
-#   (frida -H 127.0.0.1:14771 -f com.qq.reader -l hook_qqread_fock.js, 输出 → /tmp/fock_collect.log)
-#   本 driver 只负责 UI: App 由 frida spawn 拉起(无需 am start), 只等 pid。
+#   + fs-srv(frida-server, 127.0.0.1:14771 已 forward) + App 已 am start(裸跑, 无 frida)。
+#   本 driver: A 裸跑 consent → A2 attach frida → C/D/E 读章 → G 收尾停 frida。
 #
-# 链路(全程不登录, 游客态是实验条件; 弹窗白名单点/黑名单绝不点同 qqread_driver.py):
-#   Phase A 等 pid(frida spawn resume 后出现; 冷启动>80s, 最长等5min) → 隐私/权限弹窗点掉
-#   Phase B 静置 ~25s(/sk 密钥池拉取 + addKeys 注入窗, hook 在旁记录)
+# 链路(r4: attach 时机改为 driver 内控 — r2/r3 实证 app init 期(attach后+23~35s)有反frida扫描
+#   会杀进程; 而 r2 流量实证 /sk→addKeys 与 ChapBat→unlockData 都在"阅读器启动时"才触发
+#   (reader activity start), 远晚于 init 扫描。⇒ Phase A 先裸跑 consent(init 扫描以无frida状态
+#   通过), Phase A2 再 attach(r1-r3 弹窗白名单点/黑名单绝不点同 qqread_driver.py):
+#   Phase A 等 pid(冷启动>80s) → 隐私/权限弹窗点掉 → A2 attach frida(等 FOCKHOOK_READY)
+#   Phase B 静置 ~25s
 #   Phase C deeplink 书详情(大生意人 bid=54425396)
-#   Phase D 点 开始阅读 → 进阅读页(兜底 readepage deeplink)
-#   Phase E1 第1章: 翻页×3 每页截图(unlockData/qdaf.search 触发窗)
+#   Phase D 点 开始阅读 → 进阅读页(兜底 readepage deeplink) ← /sk+addKeys+ChapBat+unlockData 触发窗
+#   Phase E1 第1章: 翻页×3 每页截图
 #   Phase E2 菜单→目录→第2章: 翻页×4(第2章明文样本)
-#   Phase G 收尾: logcat + hook 事件计数 + verdict
+#   Phase G 收尾: logcat + hook 事件计数 + verdict + 停frida
 #
 # 凭据纪律: 游客态无个人凭据; 与 hook 产物(flk 密钥材料)只落 artifact, 不入 log 明文。
 import os, sys, json, time, re, subprocess
@@ -26,8 +28,12 @@ COLLECT = '/tmp/fock_collect.log'
 OUT = '/tmp/out'
 DUMPS = os.path.join(OUT, 'ui_dumps')
 BID = os.environ.get('QQREAD_BID') or '54425396'
+HOOK = os.environ.get('FOCK_HOOK') or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'hook_qqread_fock.js')
+FRIDA_HOST = os.environ.get('FOCK_FRIDA_HOST') or '127.0.0.1:14771'
 
 VERDICT = {'bid': BID, 'phases': {}}
+_FRIDA_PROC = []   # [Popen] — driver 拉住的 frida CLI 会话
 
 CONSENT_OK = ['同意并继续', '同意并进入', '同意', '允许', '仅在使用中允许', '我知道了', '知道了',
               '稍后再说', '以后再说', '暂不', '跳过', '立即体验', '开始使用', '进入书城', '不了，谢谢',
@@ -324,6 +330,64 @@ def phase_waitpid():
     return main_seen or pidof() is not None
 
 
+# ═══ Phase A2: consent 后 attach frida ═══
+# r2/r3 实证: attach 于 app init 期 → +23~35s 被反frida扫描杀; r2 流量实证 /sk→addKeys 与
+#   ChapBat→unlockData 都在阅读器启动(reader activity start)才触发 — attach 放在 consent 之后、
+#   开书之前, 既躲过 init 扫描又盖住全部 DRM 事件窗。
+def attach_frida():
+    L('═══ Phase A2: consent 后 attach frida(init 扫描已裸跑通过) ═══')
+    pid = pidof()
+    if not pid:
+        L('[A2] ✗无 pid, 无法 attach')
+        VERDICT['phases']['A2'] = 'no_pid'
+        return False
+    try:
+        lf = open(COLLECT, 'a', buffering=1)
+        lf.write('[DRIVER] attach frida pid=%s t=%s\n' % (pid, time.strftime('%H:%M:%S')))
+        # stdin=PIPE 且不写不关 — 拉住 frida REPL 会话(driver 存活期间 hook 常驻)
+        proc = subprocess.Popen(['frida', '-H', FRIDA_HOST, '-p', str(pid), '-l', HOOK],
+                                stdout=lf, stderr=lf, stdin=subprocess.PIPE,
+                                cwd=os.path.dirname(HOOK))
+        _FRIDA_PROC.append(proc)
+    except Exception as e:
+        L('[A2] ✗frida CLI 启动失败: %s' % str(e)[:150])
+        VERDICT['phases']['A2'] = 'cli_fail: %s' % str(e)[:80]
+        return False
+    for i in range(90):
+        time.sleep(1)
+        try:
+            txt = open(COLLECT, 'r', errors='replace').read()
+        except Exception:
+            txt = ''
+        if 'FOCKHOOK_READY' in txt:
+            L('[A2] ✓frida attach + hooks armed (等了%ds) pid=%s' % (i + 1, pid))
+            VERDICT['phases']['A2'] = 'armed pid=%s +%ds' % (pid, i + 1)
+            return True
+        if proc.poll() is not None:
+            L('[A2] ✗frida CLI 提前退出(rc=%s) — app可能被杀' % proc.returncode)
+            VERDICT['phases']['A2'] = 'cli_exit rc=%s' % proc.returncode
+            return False
+    L('[A2] ⚠90s 无 READY(脚本装载慢/Java VM 未起) — 继续驱动, 诚实记录')
+    VERDICT['phases']['A2'] = 'ready_timeout'
+    return False
+
+
+def stop_frida():
+    if not _FRIDA_PROC:
+        return
+    proc = _FRIDA_PROC[0]
+    if proc.poll() is None:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        time.sleep(2)
+
+
 # ═══ Phase B: 静置(密钥池窗) ═══
 def phase_settle():
     L('═══ Phase B: 静置 25s (/sk→addKeys 注入窗) ═══')
@@ -495,6 +559,7 @@ def phase_teardown():
     VERDICT['hook_events_final'] = hook_events()
     VERDICT['foreground_final'] = foreground()[:120]
     VERDICT['ui_input_fails'] = dict(_UI_FAILS)
+    VERDICT['frida_alive_at_teardown'] = bool(_FRIDA_PROC and _FRIDA_PROC[0].poll() is None)
     try:
         v = open(COLLECT, 'r', errors='replace').read()
         VERDICT['collect_log_bytes'] = len(v)
@@ -524,10 +589,12 @@ def main():
     os.makedirs(DUMPS, exist_ok=True)
     L('=== qqread_fock_driver start (pid=%d bid=%s) ===' % (os.getpid(), BID))
     run_phase('A', phase_waitpid)
+    run_phase('A2', attach_frida)
     run_phase('B', phase_settle)
     run_phase('CD', phase_book)
     run_phase('E1', phase_read_ch1)
     run_phase('E2', phase_read_ch2)
+    stop_frida()
     run_phase('G', phase_teardown)
     L('=== done hook=%s ===' % hook_events())
     return 0

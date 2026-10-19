@@ -111,7 +111,9 @@ L('[FOCK] script loaded pid=' + Process.id + ' abi=' + Process.arch + ' frida=' 
     var r2 = _sysc(277, 1, 2, prog);      // seccomp(SET_MODE_FILTER=1, TSYNC=2, &fprog)
     L('[SECCOMP] NO_NEW_PRIVS=' + r1 + ' tsync_install=' + r2 +
       ' — exit/exit_group(任意码)+self-SIGKILL → ERRNO(EPERM), 全线程生效');
-    // 双重验证: /proc/self/status 的 Seccomp 行 + kill(self,9) 探针
+    // 验证: /proc/self/status 的 Seccomp 行(r4 教训: 该行在本基建上恒显示 0/0, qidian R16 同款
+    //   不可靠信号 — 只作记录, 真实判据=进程在后续壳扫描下存活)。不跑 kill(self,9) 探针 —
+    //   r3 实证探针会自杀(filter 未生效时) 或静默 throw(指针参传裸 0), 两头都是浪费一轮。
     try {
       var _fopen = new NativeFunction(Module.findExportByName('libc.so', 'fopen'),
                                       'pointer', ['pointer', 'pointer']);
@@ -128,10 +130,6 @@ L('[FOCK] script loaded pid=' + Process.id + ' abi=' + Process.arch + ' frida=' 
         }
         _fclose(fp);
       }
-    } catch (e) { }
-    try {
-      var kr = _sysc(129, MAIN, 9, 0);   // kill(self,9) 探针: 期望 EPERM(-1)
-      L('[SECCOMP-VERIFY] kill(self,9) probe=' + kr + ' (负值=过滤器活着; 0=致命没拦住)');
     } catch (e) { }
   } catch (e) { L('[SECCOMP] 装载异常: ' + e); }
 })();
