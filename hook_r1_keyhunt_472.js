@@ -66,7 +66,7 @@ if (typeof process !== "undefined" && process.setExceptionHandler) {
     Process.enumerateThreads().forEach(function (t) {
       try {
         var path = Memory.allocUtf8String('/proc/self/task/' + t.id + '/comm');
-        var fd = _open(path, 02, 0);   // O_RDWR
+        var fd = _open(path, 2, 0);   // O_RDWR (十进制: 严格模式禁八进制字面量)
         if (fd < 0) return;
         var buf = Memory.alloc(64);
         var n = _read(fd, buf, 63);
@@ -75,12 +75,13 @@ if (typeof process !== "undefined" && process.setExceptionHandler) {
         var isBad = false;
         for (var i = 0; i < BAD.length; i++) if (cur.indexOf(BAD[i]) >= 0) { isBad = true; break; }
         if (!isBad) return;
-        fd = _open(path, 01 | 01000, 0);   // O_WRONLY|O_TRUNC
+        fd = _open(path, 1 | 512, 0);   // O_WRONLY|O_TRUNC (十进制)
         if (fd < 0) return;
-        var nn = Memory.allocUtf8String('Thread-' + t.id);
-        _write(fd, nn, 9 + ('' + t.id).length);
+        var name = 'Thread-' + t.id;
+        var nn = Memory.allocUtf8String(name);
+        _write(fd, nn, name.length);
         _close(fd);
-        renamed.push(cur + '→Thread-' + t.id);
+        renamed.push(cur + '→' + name);
       } catch (e) {}
     });
     L('[R12-RENAME] frida线程隐身: ' + (renamed.length ? renamed.join(', ') : '(未发现可改名线程)'));
