@@ -20,8 +20,8 @@ on:
         description: '目标书 bid (大生意人)'
         default: '54425396'
       spawn_mode:
-        description: 'spawn=frida -f 进程创建期注入(能抓启动期 addKeys) / attach=am start 后 frida -p(补挂)'
-        default: 'spawn'
+        description: 'attach=am start 后立刻 frida -p(r1实证: frida -f spawn 出 root-uid 僵尸进程180ms即死, app被AM无钩重启) / spawn=诊断对照'
+        default: 'attach'
 
 permissions:
   contents: read
@@ -222,26 +222,38 @@ jobs:
             adb -s $B forward tcp:14771 tcp:14771 2>/dev/null
           done
           [ $FSLIVE = 0 ] && echo "FS_SRV_DEAD_FINAL"
-          # ── spawn 门控(壳武装之前装钩) / attach 兜底 ──
+          # ── attach 门控(r1 实证: frida -f spawn 出 root-uid 进程 180ms 即死 → AM 无钩重启, 全程零命中。
+          #    attach 用 am start 正常 uid 冷启动, pid 一出现立刻挂上(冷启动80s+ → 挂钩先于 initEncryptSdk
+          #    的 /sk 响应 → classwatch 在 Fock 类加载瞬间挂钩, addKeys 仍可捕获)。
+          #    spawn 分支留作诊断对照。) ──
           HOLD=1500
-          if [ "${SPAWN_MODE}" = "attach" ]; then
-            echo "[GATE] attach 模式: 先 am start 再 frida -p"
-            adb -s $B shell "am start -n $APP/com.qq.reader.activity.DefaultAliasActivity" 2>/dev/null
-            APID=""
-            for i in $(seq 1 40); do
-              APID=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
-              [ -n "$APID" ] && break
-              sleep 5
-            done
-            echo "[GATE] app pid=$APID"
-            ( (sleep $HOLD; echo) | timeout $((HOLD+10)) \
-              frida -H 127.0.0.1:14771 -p $APID -l hook_qqread_fock.js \
-              >> /tmp/fock_collect.log 2>&1 ) &
-          else
-            echo "[GATE] spawn 模式: frida -f 进程创建期注入"
+          if [ "${SPAWN_MODE}" = "spawn" ]; then
+            echo "[GATE] spawn 模式(诊断对照): frida -f 进程创建期注入"
             ( (sleep $HOLD; echo) | timeout $((HOLD+10)) \
               frida -H 127.0.0.1:14771 -f $APP -l hook_qqread_fock.js \
               >> /tmp/fock_collect.log 2>&1 ) &
+          else
+            echo "[GATE] attach 模式: am start → 紧轮询 pid → frida -p 立刻挂"
+            adb -s $B shell "am start -n $APP/com.qq.reader.activity.DefaultAliasActivity" 2>/dev/null
+            APID=""
+            for i in $(seq 1 240); do
+              APID=$(timeout 8 adb -s $B shell pidof $APP 2>/dev/null | tr -d '\r' | awk '{print $1}')
+              [ -n "$APID" ] && break
+              sleep 0.5
+            done
+            echo "[GATE] app pid=$APID (等了$i×0.5s)"
+            if [ -n "$APID" ]; then
+              ( (sleep $HOLD; echo) | timeout $((HOLD+10)) \
+                frida -H 127.0.0.1:14771 -p $APID -l hook_qqread_fock.js \
+                >> /tmp/fock_collect.log 2>&1 ) &
+              # 等脚本装载(script loaded/classwatch armed 出现在 collect log)
+              for i in $(seq 1 30); do
+                grep -q 'classwatch armed\|script loaded' /tmp/fock_collect.log 2>/dev/null && break
+                sleep 1
+              done
+            else
+              echo "[GATE] ★app pid 未出现 — 无法 attach"
+            fi
           fi
           GATE=$!
           sleep 20

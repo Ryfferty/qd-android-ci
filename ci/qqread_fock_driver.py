@@ -30,8 +30,11 @@ BID = os.environ.get('QQREAD_BID') or '54425396'
 VERDICT = {'bid': BID, 'phases': {}}
 
 CONSENT_OK = ['同意并继续', '同意并进入', '同意', '允许', '仅在使用中允许', '我知道了', '知道了',
-              '稍后再说', '以后再说', '暂不', '跳过', '立即体验', '开始使用', '进入书城', '不了，谢谢']
-LOGIN_BLACK = ['登录', '注册', '手机号', '一键开通', '购买', '支付', '开通会员', '立即充值', '充值']
+              '稍后再说', '以后再说', '暂不', '跳过', '立即体验', '开始使用', '进入书城', '不了，谢谢',
+              '我都爱看']   # r1实证: 冷启动中途弹"选择阅读口味"推荐浮层(挡阅读页), 点"我都爱看"即收起
+LOGIN_BLACK = ['登录', '注册', '手机号', '一键开通', '购买', '支付', '开通会员', '立即充值', '充值',
+               '扫码登录', '阅文账号']
+TASTE_MARKS = ('选择阅读口味', '我都爱看', '为你推荐专属好书')   # 推荐浮层特征(r1: 挡在阅读页之上)
 
 _UI_FAILS = {'input': 0, 'sendevent': 0}
 
@@ -370,11 +373,23 @@ def phase_book():
     return 'ReaderPage' in fg or 'reader' in fg.lower()
 
 
+def dismiss_taste(xml):
+    """r1 实证: "选择阅读口味"推荐浮层会挡在阅读页上吃掉翻页手势 — 见到就点掉。"""
+    if xml and any(m in xml for m in TASTE_MARKS):
+        got = tap_text(xml, '我都爱看', '进入书城', '知道了')
+        if got:
+            L('[TASTE] 点掉推荐浮层[%s]' % got)
+            time.sleep(4)
+            return True
+    return False
+
+
 # ═══ Phase E1: 第1章翻页 ═══
 def phase_read_ch1():
     L('═══ Phase E1: 第1章 翻页×3 (解密触发窗) ═══')
     for i in range(3):
         keep_alive()
+        dismiss_taste(dump_ui('ch1_p%d' % (i + 1)))
         ui_swipe(900, 1170, 150, 1170)
         time.sleep(6)
         screenshot('shot_ch1_page%d.png' % (i + 1))
@@ -385,13 +400,26 @@ def phase_read_ch1():
 
 
 # ═══ Phase E2: 目录→第2章 翻页 ═══
+# r1 教训: 点"目录"后落在登录页(QRLoginActivity) — 目录点进了登录入口。本轮: dump 一见登录词
+#   立即 BACK 退出绝不点, 换菜单"下一章"或直接翻页兜底; 目标节点也按 LOGIN_BLACK 过滤。
+def _on_login_page(xml):
+    hits = [t for t, d, rid, cx, cy, w, h in nodes(xml) if any(b in (t or d) for b in LOGIN_BLACK)]
+    return hits[:4]
+
+
 def phase_read_ch2():
     L('═══ Phase E2: 菜单→目录→第2章 翻页×4 ═══')
     keep_alive()
+    dismiss_taste(dump_ui('e2_start'))
     ui_tap(540, 1170)
     time.sleep(3)
     xml = dump_ui('reader_menu')
     screenshot('shot_reader_menu.png')
+    logins = _on_login_page(xml)
+    if logins:
+        L('[E2] 菜单页有登录词%s → BACK 退出' % logins)
+        ui_key(4)
+        time.sleep(3)
     hit = tap_text(xml, '目录') or tap_id(xml, 'tvCatalog', 'btnCatalog')
     L('[E2] 点目录[%s]' % hit)
     target = None
@@ -399,25 +427,40 @@ def phase_read_ch2():
         time.sleep(5)
         xml = dump_ui('chapter_list')
         screenshot('shot_chapter_list.png')
-        ns = [(t, d, cx, cy) for t, d, rid, cx, cy, w, h in nodes(xml)]
-        L('[E2] 目录前30项: %s' % json.dumps([t for t, *_ in ns][:30], ensure_ascii=False)[:600])
-        for t, d, cx, cy in ns:
-            hay = (t or d).strip()
-            if re.match(r'^第\s*2\s*章', hay) or re.match(r'^0?2[\s\.、]', hay):
-                target = (cx, cy)
-                break
-        if target is None:
-            items = sorted(cy for t, d, cx, cy in ns if t and 250 < cy < 1600)
-            if len(items) >= 2:
-                target = (540, items[1])
+        logins = _on_login_page(xml)
+        if logins:
+            L('[E2] ✗目录页=登录页%s → BACK 退出, 不点任何项' % logins)
+            ui_key(4)
+            time.sleep(3)
+            xml = ''
+        else:
+            ns = [(t, d, cx, cy) for t, d, rid, cx, cy, w, h in nodes(xml)
+                  if not any(b in (t or d) for b in LOGIN_BLACK)]
+            L('[E2] 目录前30项: %s' % json.dumps([t for t, *_ in ns][:30], ensure_ascii=False)[:600])
+            for t, d, cx, cy in ns:
+                hay = (t or d).strip()
+                if re.match(r'^第\s*2\s*章', hay) or re.match(r'^0?2[\s\.、]', hay):
+                    target = (cx, cy)
+                    break
+            if target is None:
+                items = sorted(cy for t, d, cx, cy in ns if t and 250 < cy < 1600)
+                if len(items) >= 2:
+                    target = (540, items[1])
     if target is None:
-        # 兜底: 菜单里点"下一章"
+        # 兜底1: 菜单里点"下一章"
         ui_tap(540, 1170)
         time.sleep(2)
         xml = dump_ui('nextch_menu')
-        hit2 = tap_text(xml, '下一章', '下一页') or tap_id(xml, 'tvNextChapter', 'btnNext')
-        L('[E2] 下一章兜底: %s' % hit2)
-        target = (0, 0) if hit2 else None
+        if _on_login_page(xml):
+            L('[E2] 菜单又有登录词 → 不点, 走翻页兜底')
+        else:
+            hit2 = tap_text(xml, '下一章', '下一页') or tap_id(xml, 'tvNextChapter', 'btnNext')
+            L('[E2] 下一章兜底: %s' % hit2)
+            target = (0, 0) if hit2 else None
+    if target is None:
+        # 兜底2: 直接翻页(章末翻页通常自动进下一章)
+        L('[E2] 翻页兜底(不依赖菜单)')
+        target = (0, 0)
     if target:
         if target != (0, 0):
             L('[E2] 点第2章 @%s' % (target,))
@@ -425,11 +468,12 @@ def phase_read_ch2():
         time.sleep(10)
         for i in range(4):
             keep_alive()
+            dismiss_taste(dump_ui('ch2_p%d' % (i + 1)))
             ui_swipe(900, 1170, 150, 1170)
             time.sleep(6)
             screenshot('shot_ch2_page%d.png' % (i + 1))
         dump_ui('ch2_after')
-        VERDICT['phases']['E2'] = 'ok hook=%s' % hook_events()
+        VERDICT['phases']['E2'] = 'ok fg=%s hook=%s' % (foreground()[:60], hook_events())
     else:
         L('[E2] ✗没找到第2章入口')
         VERDICT['phases']['E2'] = 'no_entry'
