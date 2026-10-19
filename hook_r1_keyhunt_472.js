@@ -46,6 +46,59 @@ if (typeof process !== "undefined" && process.setExceptionHandler) {
   process.setExceptionHandler(function (d) { try { R1KEY({ ev: "native_exception", addr: String(d.address), type: d.type }); } catch (e) {} return false; });
 }
 
+// ═══ R12: 线程名隐身 + libmsaoaidsec 装载监视 (2026-10-19) ═══
+// R11 僵尸栈铁证(debuggerd): 主线程卡死在 libmsaoaidsec.so 构造函数的
+// System.loadLibrary→dlopen→call_constructors 里(0x14824→0x95c8→0x11f38→
+// 0x20bdc 链表等待环=等一个永不到来的信号——其工作线程检测到 frida 后不回信)。
+// MSA 安全联盟 OAID 安全校验库, VM 混淆(魔常量调度), 深挖代价高 ⇒ 先打通用暴露面:
+// frida 线程名 gum-js-loop/gmain/gdbus 是最著名的指纹(libknobs jniCheckFridaByTask
+// 已实证扫 /proc/self/task/*/status 的这两个名字; libmsaoaidsec 大概率同款)。
+// 脚本装载即改写全部 frida 线程的 comm(同进程写 /proc/self/task/<tid>/comm 合法),
+// 时机在 libmsaoaidsec 装载(+~1s, TuringFD init +0.97s 后)之前。
+(function THREADRENAME() {
+  try {
+    var _open = new NativeFunction(Module.findExportByName('libc.so', 'open'), 'int', ['pointer', 'int', 'int']);
+    var _read = new NativeFunction(Module.findExportByName('libc.so', 'read'), 'long', ['int', 'pointer', 'long']);
+    var _write = new NativeFunction(Module.findExportByName('libc.so', 'write'), 'long', ['int', 'pointer', 'long']);
+    var _close = new NativeFunction(Module.findExportByName('libc.so', 'close'), 'int', ['int']);
+    var BAD = ['gum-js-loop', 'gmain', 'gdbus', 'pool-frida', 'frida'];
+    var renamed = [];
+    Process.enumerateThreads().forEach(function (t) {
+      try {
+        var path = Memory.allocUtf8String('/proc/self/task/' + t.id + '/comm');
+        var fd = _open(path, 02, 0);   // O_RDWR
+        if (fd < 0) return;
+        var buf = Memory.alloc(64);
+        var n = _read(fd, buf, 63);
+        var cur = n > 0 ? Memory.readUtf8String(buf, Math.min(n, 15)) : '';
+        _close(fd);
+        var isBad = false;
+        for (var i = 0; i < BAD.length; i++) if (cur.indexOf(BAD[i]) >= 0) { isBad = true; break; }
+        if (!isBad) return;
+        fd = _open(path, 01 | 01000, 0);   // O_WRONLY|O_TRUNC
+        if (fd < 0) return;
+        var nn = Memory.allocUtf8String('Thread-' + t.id);
+        _write(fd, nn, 9 + ('' + t.id).length);
+        _close(fd);
+        renamed.push(cur + '→Thread-' + t.id);
+      } catch (e) {}
+    });
+    L('[R12-RENAME] frida线程隐身: ' + (renamed.length ? renamed.join(', ') : '(未发现可改名线程)'));
+  } catch (e) { L('[R12-RENAME] 失败: ' + e); }
+  // libmsaoaidsec 装载监视(它先于 libknobs 装载; 装载即阻塞主线程——看到本行=时机对上)
+  var msaoaidSeen = false;
+  var msTimer = setInterval(function () {
+    try {
+      if (msaoaidSeen) { clearInterval(msTimer); return; }
+      if (Process.findModuleByName('libmsaoaidsec.so')) {
+        msaoaidSeen = true;
+        L('[R12-MSAOAID] libmsaoaidsec.so 装载于 t=' + Date.now() + ' (构造器等待环在下游)');
+        clearInterval(msTimer);
+      }
+    } catch (e) {}
+  }, 100);
+})();
+
 // ═══ R10: EXITGUARD2 — vfork-safe 原生 stub 自杀中和 (2026-10-19) ═══
 // R9 教训定案: R9 的 NativeCallback 式 exit/_exit 替换 = 会话杀手 —
 //   472 libfock 的反调试 (arm64 0x97cc pipe → 0x97d8 vfork → 子进程把 8B 结果码
