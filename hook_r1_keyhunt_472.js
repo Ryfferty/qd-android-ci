@@ -96,7 +96,14 @@ if (typeof process !== "undefined" && process.setExceptionHandler) {
     exitBlocked++;
     if (exitBlocked <= 3) {
       var bt = '(bt失败)';
-      try { bt = Thread.backtrace().map(DebugSymbol.fromAddress).slice(0, 10).join(' | '); } catch (e) {}
+      try {
+        // R11: 回溯不用 DebugSymbol(其符号解析走 loader 锁 — ABBA 风险); 用模块名+偏移
+        // (findModuleByAddress 走 /proc maps 缓存, 零锁) — 定位调用者模块足够。
+        bt = Thread.backtrace().slice(0, 10).map(function (a) {
+            var m = Process.findModuleByAddress(a);
+            return m ? (m.name + '+0x' + a.sub(m.base).toString(16)) : a.toString();
+        }).join(' | ');
+      } catch (e) {}
       L('[EXITGUARD2] exit(' + code + ') 已吞 #' + exitBlocked + ' bt=' + bt);
     } else if (exitBlocked % 200 === 0) {
       R1KEY({ ev: 'exit_block', n: exitBlocked });
@@ -638,26 +645,27 @@ setTimeout(function BOOT() {
           } catch (e) { L("[CANARY_ERR] " + e); }
       }, 800);
   }
-  // dlopen 触发式挂载 — LSPatch loader 在进程内解 origin.apk 后 System.loadLibrary(libknobs),
-  //   时序晚于 frida spawn 装载点 → 挂钩时机挂在库加载上(dlopen低频, 无convoy风险)。
+  // hookKnobs 装载触发 — R11: dlopen Interceptor 钩全撤, 改 JS 线程轮询。
+  // R10 尸检定案: 早武装进程的挂死 (2068 ANR/gathererga) 与"僵尸装载" (script.load()
+  //   返回✓但零 console 输出) 都指向 init 期 frida JS 引擎楔死; 头号嫌疑 = dlopen 钩的
+  //   onEnter/onLeave 在【调用者持有 linker/loader 锁】时进 JS —— JS 线程侧的模块/符号
+  //   查询也拿 loader 锁 → 经典 ABBA (app线程: loader锁→JS锁 vs JS线程: JS锁→loader锁)。
+  //   R8 无守卫版 209 载全通无僵尸, R9/R10 守卫版必现僵尸+挂死; R5/R6 晚挂没赶上 init 期
+  //   dlopen 风暴。撤 dlopen 钩 = 斩断唯一"loader 锁→JS"边; hookKnobs 轮询化 (JS 线程
+  //   自查, 无 app 线程新增 JS 入口)。r 加密 +1.3~2.2s vs 轮询 200ms — 捕获窗不受影响。
   hookKnobs();   // 立即试(attach模式兼容)
-  ["android_dlopen_ext", "dlopen", "__loader_dlopen", "__loader_android_dlopen_ext"].forEach(function(fn) {
-      try {
-          var p = Module.findExportByName(null, fn);
-          if (!p) return;
-          Interceptor.attach(p, {
-              onEnter: function(args) { try { this._p = (args[0] && !args[0].isNull()) ? args[0].readCString() : null; } catch (e) { this._p = null; } },
-              onLeave: function(ret) {
-                  if (KNOBS_HOOKED) return;
-                  try {
-                      hookKnobs();
-                      if (KNOBS_HOOKED) L("[R14] knobs armed via dlopen(" + (this._p || "?") + ")");
-                  } catch (e) {}
-              }
-          });
-          L("[+] dlopen trigger armed: " + fn);
-      } catch (e) {}
-  });
+  var knobsPollCnt = 0;
+  var knobsPoll = setInterval(function () {
+      knobsPollCnt++;
+      if (!KNOBS_HOOKED) { try { hookKnobs(); } catch (e) {} }
+      if (KNOBS_HOOKED) {
+          clearInterval(knobsPoll);
+          L("[KNOBS] 轮询命中 (第 " + knobsPollCnt + " 轮, " + (knobsPollCnt * 0.2).toFixed(1) + "s)");
+      } else if (knobsPollCnt >= 900) {
+          clearInterval(knobsPoll);
+          L("[KNOBS] 900 轮询(180s)未见 libknobs — 停");
+      }
+  }, 200);
 
   // ═══ ③ SSL_write 线路捕获 (r1 绕开 Java okhttp → 下移到 TLS 层; 472 wire 端点同款 /client/r1) ═══
   var SSL_ACCUM = {};      // sslPtr → {buf:[bytes], len:int}

@@ -292,6 +292,10 @@ jobs:
           adb -s $B shell "ls -la /data/data/$APP/files/ 2>/dev/null" > /tmp/out/prefs/files_listing.txt
           adb -s $B exec-out "cat /data/data/$APP/files/r_key_info 2>/dev/null" > /tmp/out/prefs/r_key_info.bin
           adb -s $B exec-out "tar -c -C /data/data/$APP files/mmkv 2>/dev/null" > /tmp/out/prefs/mmkv.tar
+          # ── R11: ANR trace 收集 (R10 的 2068 挂死形态 = ANR-SIGKILL; trace 在
+          #    /data/anr/ 只有系统能写, root 拉回离线尸检全线程栈) ──
+          adb -s $B shell "ls -la /data/anr/ 2>/dev/null" > /tmp/out/prefs/anr_listing.txt 2>/dev/null
+          adb -s $B exec-out "cat /data/anr/* 2>/dev/null | head -c 1500000" > /tmp/out/prefs/anr_traces.txt 2>/dev/null
           adb -s $B shell "ls -la /data/data/$APP/databases/ /data/data/$APP/files/mmkv/ 2>/dev/null" > /tmp/out/prefs/dbs_mmkv_listing.txt
           # ── R7: databases 取证(r 缓存定位) — 全库拉回 runner, 剔除 QDConfig*(含
           #    凭据, 绝不上传), e7 密扫兜底剔除残留, r 密文字节定位(路径只入日志) ──

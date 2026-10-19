@@ -82,6 +82,36 @@ def js_alive(pid):
         return False
 
 
+DUMPED = set()
+
+
+def dump_thread_state(pid, tag):
+    """R11: 挂死/僵尸诊断 — debuggerd -b (全线程 native 栈) + /proc task 状态。
+    只对疑似楔死进程调用 (不影响健康进程); 输出写 collect log 供 artifact 离线尸检。"""
+    if pid in DUMPED:
+        return
+    DUMPED.add(pid)
+    try:
+        out = subprocess.run(['adb', '-s', 'localhost:5555', 'shell', 'debuggerd', '-b', pid],
+                             capture_output=True, timeout=90).stdout.decode('utf-8', 'ignore')
+        with open(LOG, 'a') as f:
+            f.write('[THREADDUMP %s pid=%s debuggerd]\n%s\n[/THREADDUMP]\n'
+                    % (tag, pid, out[:60000]))
+    except Exception as e:
+        with open(LOG, 'a') as f:
+            f.write('[THREADDUMP %s pid=%s debuggerd 失败: %s]\n' % (tag, pid, str(e)[:120]))
+    try:
+        out = subprocess.run(['adb', '-s', 'localhost:5555', 'shell',
+                              'for t in /proc/%s/task/*; do echo "$t $(cat $t/comm 2>/dev/null) '
+                              'wchan=$(cat $t/wchan 2>/dev/null) state=$(cat $t/stat 2>/dev/null | cut -d\' \' -f3)"; done' % pid],
+                             capture_output=True, timeout=30).stdout.decode('utf-8', 'ignore')
+        with open(LOG, 'a') as f:
+            f.write('[THREADDUMP %s pid=%s proc]\n%s\n[/THREADDUMP]\n'
+                    % (tag, pid, out[:30000]))
+    except Exception as e:
+        pass
+
+
 device = frida.get_device_manager().add_remote_device('127.0.0.1:14771')
 deadline = time.time() + HOLD
 log('fast watcher R8 up (hold=%ds script=%s early_delay=%.2fs adapt=%s skip_pid=%s)'
@@ -107,8 +137,23 @@ seen = set()
 if OLD:
     seen.add(OLD)
 fail_streak = 0
+stall_mark = None
 while time.time() < deadline:
     pid = pidof()
+    # R11: 首挂进程(OLD)长时间活着但日志零增长 = 挂死嫌疑 (R10 的 2068 形态: ANR 前零事件
+    # 零输出) → 抓一次全线程栈。90s 窗避开门控等待期的正常静默。
+    if pid and pid == OLD:
+        try:
+            sz = os.path.getsize(LOG)
+        except Exception:
+            sz = 0
+        now = time.time()
+        if stall_mark is None or sz != stall_mark[0]:
+            stall_mark = (sz, now)
+        elif now - stall_mark[1] > 90:
+            log('stall: 首挂 pid %s 活着但日志 90s 零增长 — 抓线程栈 (debuggerd)' % pid)
+            dump_thread_state(pid, 'stall-first')
+            stall_mark = (sz, now)
     if not pid or pid in seen:
         time.sleep(0.12)
         continue
@@ -138,6 +183,9 @@ while time.time() < deadline:
             time.sleep(0.3)
         log('fast-attach pid=%s script_loaded ✓ (+%.2fs from catch, delay=%.2fs, js_alive=%s)'
             % (pid, time.time() - t_catch, DELAY, alive))
+        if not alive:
+            # R11: 僵尸装载 = 引擎楔死嫌疑 → 立即抓全线程栈 (debuggerd -b)
+            dump_thread_state(pid, 'zombie-script')
         dead_miss = 0
         while not detached.is_set() and time.time() < deadline:
             time.sleep(0.3)
