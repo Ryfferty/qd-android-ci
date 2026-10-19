@@ -102,11 +102,12 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
                                     'int', ['int', 'long', 'long', 'long', 'long']);
     // R16 扩展: 任意码 exit/exit_group + kill/tgkill(打主pid且sig=9) 全拦。
     // 18 指令(python struct 预排+跳转校验); word19/27 = 主pid占位, 装载时运行时嵌入。
+    // R16b: ERRNO(0)→ERRNO(EPERM=1) — errno=0 疑似内核特例(返回0=看似成功=过滤器形同虚设)
     var FILTER = [32, 4, 251658261, 3221225655, 32, 0, 786453, 93,
                   720917, 94, 131093, 129, 168099861, 131, 6, 2147418112,
                   32, 16, 117440533, MAIN, 32, 24, 84148245, 9,
                   32, 16, 50331669, MAIN, 32, 32, 16777237, 9,
-                  6, 327680, 6, 2147418112];
+                  6, 327681, 6, 2147418112];
     var fbuf = Memory.alloc(144);
     for (var i = 0; i < FILTER.length; i++) {
       Memory.writeU32(fbuf.add(i * 4), FILTER[i]);
@@ -123,7 +124,7 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
                                    'long', ['long', 'long', 'long', 'pointer']);
     var r2 = _sysc(277, 1, 2, prog);       // seccomp(SET_MODE_FILTER, TSYNC, &fprog)
     L('[R15-SECCOMP] NO_NEW_PRIVS=' + r1 + ' tsync_install=' + r2 +
-      ' — exit/exit_group(code==0) → ERRNO(0), 全线程生效');
+      ' — exit/exit_group(任意码)+self-SIGKILL → ERRNO(EPERM), 全线程生效');
     if (r2 !== 0) {
       var __errno = new NativeFunction(Module.findExportByName('libc.so', '__errno'),
                                        'pointer', []);
