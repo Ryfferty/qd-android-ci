@@ -87,6 +87,43 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
     L('[R14-EXIT] exit 吞噬钩 armed (主pid=' + MAIN + ' 吞; _exit 未碰=vfork子安全)');
   } catch (e) { L('[R14-EXIT] 替换失败: ' + e); }
 })();
+
+// ═══ R15: seccomp 拦裸 syscall exit_group(code=0) ═══
+// R14 实证: App 自杀不走 libc exit/_exit(R9/R12b/R14 三轮 libc 级守卫全部零拦截)
+// = libmsaoaidsec VM 直接 raw syscall exit_group。libc 层不可见 ⇒ 唯一拦截层=
+// seccomp BPF。过滤器语义(9指令): 非 arm64→ALLOW; nr∉{93,94}→ALLOW;
+// arg0(code)≠0→ALLOW(尽量不误伤 vfork 子进程的正常退码); 只有 exit/exit_group
+// 且 code==0 → ERRNO(0)(调用失败, VM 继续跑)。装载: prctl(NO_NEW_PRIVS)+prctl(
+// SET_SECCOMP, MODE_FILTER)。指令字节由本地 python struct 预计算并逐跳转校验。
+(function SECCOMPGUARD() {
+  try {
+    var _prctl = new NativeFunction(Module.findExportByName('libc.so', 'prctl'),
+                                    'int', ['int', 'long', 'long', 'long', 'long']);
+    var FILTER = [32, 4, 100663317, 3221225655, 32, 0, 65557, 94,
+                  50331669, 93, 32, 16, 16777237, 0, 6, 327680, 6, 2147418112];
+    var fbuf = Memory.alloc(72);
+    for (var i = 0; i < FILTER.length; i++) {
+      Memory.writeU32(fbuf.add(i * 4), FILTER[i]);
+    }
+    var prog = Memory.alloc(16);          // struct sock_fprog {u16 len; pad; sock_filter*}
+    Memory.writeU16(prog, 9);             // len = 9 条指令
+    Memory.writePointer(prog.add(8), fbuf);
+    var r1 = _prctl(38, 1, 0, 0, 0);      // PR_SET_NO_NEW_PRIVS(prctl 装载是线程局部,
+                                          // 但 TSYNC 只要求调用线程已置位)
+    // prctl(PR_SET_SECCOMP) 只罩本线程(gum-js) — VM 在主线程的裸 syscall 拦不到 ⇒
+    // 必须走 seccomp() 系统调用(aarch64 nr=277) + TSYNC(flag=2) 同步全线程
+    var _sysc = new NativeFunction(Module.findExportByName('libc.so', 'syscall'),
+                                   'long', ['long', 'long', 'long', 'long']);
+    var r2 = _sysc(277, 1, 2, prog);       // seccomp(SET_MODE_FILTER, TSYNC, &fprog)
+    L('[R15-SECCOMP] NO_NEW_PRIVS=' + r1 + ' tsync_install=' + r2 +
+      ' — exit/exit_group(code==0) → ERRNO(0), 全线程生效');
+    if (r2 !== 0) {
+      var __errno = new NativeFunction(Module.findExportByName('libc.so', '__errno'),
+                                       'pointer', []);
+      L('[R15-SECCOMP] errno=' + Memory.readU32(__errno()) + ' (16=EBADF?13=EACCES…如实记录)');
+    }
+  } catch (e) { L('[R15-SECCOMP] 装载异常: ' + e); }
+})();
 L('[R13] script top-level executed (pid=' + Process.id + ' t=' + Date.now() + ')');
 if (typeof process !== "undefined" && process.setExceptionHandler) {
   process.setExceptionHandler(function (d) { try { R1KEY({ ev: "native_exception", addr: String(d.address), type: d.type }); } catch (e) {} return false; });
