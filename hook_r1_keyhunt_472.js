@@ -3,7 +3,7 @@
 //   非 libjiagu; 历史frida_attach_sora.py系全在它身上跑通), 用现有 frida-server spawn 基建拿钥。
 // 骨架 = hook_r1_keyhunt_min.js (R14 极简+R15 隐形轻装) — 零syscall级钩(convoy教训),
 //   只留: ②libknobs全点位(keyexp/SetB-CFB 的(key,IV,pt,ct)) + bss192 + ③SSL_write(r1 wire确认)。
-// R10 (2026-10-19): EXITGUARD2 vfork-safe 原生 stub (见 EXITGUARD2 块注) + jniCheck*
+// R10 (2026-10-19): jniCheck* 检测函数钩(保留); EXITGUARD2 原生 stub 已于 R13 剥除
 //   检测函数钩 (472 JNI 表定案) — R9 尸检: 挂死 = libfock vfork 子进程的 _exit 被 R9
 //   的 JS 回调式替换弄死 → vfork 父线程死锁; R8 对照实证检测响应 = exit(0)@+1.2s。
 //
@@ -29,6 +29,9 @@
 //   门控(ci/spawn_qd.sh), 与 480 线同基建。LSPatch loader 在进程内解 origin.apk 建 classloader,
 //   libknobs.so 由 App System.loadLibrary 照常装载(dlopen 触发器兜底捕捉)。
 // 输出同 v2/min 格式([R1KEY] ev 事件), ci/r1_gen.py harvest 兼容。
+// R13(2026-10-19): 剥 THREADRENAME+EXITGUARD2(SIGSEGV 实证 stub 污染 libmsaoaidsec VM
+//   寄存器; 且 R8-R12b 快挂全为僵尸装载从未执行) — 保留 jniCheck* 钩(libknobs 装载后
+//   武装)+RPC ping 诊断。
 // R3(2026-10-18): R2 实测 spawn+装载+READY 全通, 但 R15 存活件干扰壳 init(kill 拦截/exit 冻结)
 //   → ClassNotFound QDApplication 崩; 本版撤光 R15 件, 纯业务钩判别壳敌意。
 
@@ -42,255 +45,13 @@ var R10_KEEP = [];   // NativeCallback/NativeFunction/计数器 生命周期锚 
 function L(s) { console.log(s); }
 function R1KEY(obj) { try { L("[R1KEY] " + JSON.stringify(obj)); } catch (e) { L("[R1KEY_ERR] " + e); } }
 R1KEY({ ev: "script_loaded", t: Date.now(), frida: (typeof Frida !== "undefined" ? Frida.version : "?"), pid: Process.id, abi: Process.arch, v472: true });
+// R13: RPC ping — daemon 侧实证脚本真的在执行(load()返回≠执行, R8-R12b 全部僵尸:
+// 每轮 log 只有 CLI 首挂的 1 个 script_loaded 事件, 209 次快挂零执行)
+rpc.exports.ping = function () { return 'pong-' + Process.id; };
+L('[R13] script top-level executed (pid=' + Process.id + ' t=' + Date.now() + ')');
 if (typeof process !== "undefined" && process.setExceptionHandler) {
   process.setExceptionHandler(function (d) { try { R1KEY({ ev: "native_exception", addr: String(d.address), type: d.type }); } catch (e) {} return false; });
 }
-
-// ═══ R12: 线程名隐身 + libmsaoaidsec 装载监视 (2026-10-19) ═══
-// R11 僵尸栈铁证(debuggerd): 主线程卡死在 libmsaoaidsec.so 构造函数的
-// System.loadLibrary→dlopen→call_constructors 里(0x14824→0x95c8→0x11f38→
-// 0x20bdc 链表等待环=等一个永不到来的信号——其工作线程检测到 frida 后不回信)。
-// MSA 安全联盟 OAID 安全校验库, VM 混淆(魔常量调度), 深挖代价高 ⇒ 先打通用暴露面:
-// frida 线程名 gum-js-loop/gmain/gdbus 是最著名的指纹(libknobs jniCheckFridaByTask
-// 已实证扫 /proc/self/task/*/status 的这两个名字; libmsaoaidsec 大概率同款)。
-// 脚本装载即改写全部 frida 线程的 comm(同进程写 /proc/self/task/<tid>/comm 合法),
-// 时机在 libmsaoaidsec 装载(+~1s, TuringFD init +0.97s 后)之前。
-(function THREADRENAME() {
-  try {
-    var _open = new NativeFunction(Module.findExportByName('libc.so', 'open'), 'int', ['pointer', 'int', 'int']);
-    var _read = new NativeFunction(Module.findExportByName('libc.so', 'read'), 'long', ['int', 'pointer', 'long']);
-    var _write = new NativeFunction(Module.findExportByName('libc.so', 'write'), 'long', ['int', 'pointer', 'long']);
-    var _close = new NativeFunction(Module.findExportByName('libc.so', 'close'), 'int', ['int']);
-    var BAD = ['gum-js-loop', 'gmain', 'gdbus', 'pool-frida', 'frida'];
-    var renamed = [];
-    Process.enumerateThreads().forEach(function (t) {
-      try {
-        var path = Memory.allocUtf8String('/proc/self/task/' + t.id + '/comm');
-        var fd = _open(path, 2, 0);   // O_RDWR (十进制: 严格模式禁八进制字面量)
-        if (fd < 0) return;
-        var buf = Memory.alloc(64);
-        var n = _read(fd, buf, 63);
-        var cur = n > 0 ? Memory.readUtf8String(buf, Math.min(n, 15)) : '';
-        _close(fd);
-        var isBad = false;
-        for (var i = 0; i < BAD.length; i++) if (cur.indexOf(BAD[i]) >= 0) { isBad = true; break; }
-        if (!isBad) return;
-        fd = _open(path, 1 | 512, 0);   // O_WRONLY|O_TRUNC (十进制)
-        if (fd < 0) return;
-        var name = 'Thread-' + t.id;
-        var nn = Memory.allocUtf8String(name);
-        _write(fd, nn, name.length);
-        _close(fd);
-        renamed.push(cur + '→' + name);
-      } catch (e) {}
-    });
-    L('[R12-RENAME] frida线程隐身: ' + (renamed.length ? renamed.join(', ') : '(未发现可改名线程)'));
-  } catch (e) { L('[R12-RENAME] 失败: ' + e); }
-  // libmsaoaidsec 装载监视(它先于 libknobs 装载; 装载即阻塞主线程——看到本行=时机对上)
-  var msaoaidSeen = false;
-  var msTimer = setInterval(function () {
-    try {
-      if (msaoaidSeen) { clearInterval(msTimer); return; }
-      if (Process.findModuleByName('libmsaoaidsec.so')) {
-        msaoaidSeen = true;
-        L('[R12-MSAOAID] libmsaoaidsec.so 装载于 t=' + Date.now() + ' (构造器等待环在下游)');
-        clearInterval(msTimer);
-      }
-    } catch (e) {}
-  }, 100);
-})();
-
-// ═══ R10: EXITGUARD2 — vfork-safe 原生 stub 自杀中和 (2026-10-19) ═══
-// R9 教训定案: R9 的 NativeCallback 式 exit/_exit 替换 = 会话杀手 —
-//   472 libfock 的反调试 (arm64 0x97cc pipe → 0x97d8 vfork → 子进程把 8B 结果码
-//   写管道后 bl _exit@0x98ec) 的 vfork 子进程踩进我们的 JS 回调 → vfork 父线程
-//   (gathererga 同步方法内) 永久挂起 → "Long monitor contention ... for 10.009s"
-//   → App 挂死/ANR (R9 run 39204555462: Phase A 2108 ANR-SIGKILL, Phase C 4863
-//   挂满全程, EXITGUARD 0 拦截 = 子进程连回调都没进完就死了)。
-//   R8 对照 (run 39202707243): 无 exit 钩时同一 vfork 子进程正常 _exit → 检测完成
-//   → 主进程 exit(0) 47/47 干净退出 (+1.2s, 恰在 TuringFD init +0.97s 之后)。
-// R10 方案: Interceptor.replace 指向**纯原生机器码 stub** (Arm64Writer 级手工编码,
-//   编码已在本地 capstone 逐指令验证):
-//   - stub 先 raw-svc getpid(172); **子进程 (pid≠主pid) → 直接 svc exit_group(94)
-//     真退** — vfork 父线程立即恢复, 检测链照常走完 (零 JS 入口 = 零死锁面);
-//   - **主进程 → blr JS NativeCallback** (前 3 次带调用者回溯 = R11 定位检测响应
-//     函数的弹药; 200ms 垫防热循环) 后 ret — 自杀被吞, init 继续跑。
-// 顺带 (任务项): kill/tgkill/raise 的 self-SIGKILL 中和 — 同为纯原生 stub,
-//   只拦 (pid==主pid && sig==9) (raise 只拦 sig==9), 其余走 raw svc 真路径
-//   (JPush 生命周期不误伤); 静默吞 + 共享计数器 (CELL) 由 JS 定时器读出上报。
-(function EXITGUARD2() {
-  if (Process.arch !== 'arm64') {
-    L('[EXITGUARD2] 非 arm64 (' + Process.arch + ') — 原生 stub 未实现, 跳过');
-    return;
-  }
-  var MAIN_PID = Process.id;
-  var PID_LO = MAIN_PID & 0xffff, PID_HI = (MAIN_PID >>> 16) & 0xffff;
-  // 编码助手 (与本地 capstone 验证过的位模式一致)
-  function movReg(rd, rm) { return (0xAA000000 | (rm << 16) | (31 << 5) | rd) >>> 0; }
-  function movz(rd, imm) { return (0xD2800000 | (imm << 5) | rd) >>> 0; }
-  function movk16(rd, imm) { return (0xF2A00000 | (imm << 5) | rd) >>> 0; }
-  function SVC() { return 0xD4000001; }
-  function cmpReg(rn, rm) { return (0xEB000000 | (rm << 16) | (rn << 5) | 31) >>> 0; }
-  function cmpImm9(rn) { return (0xF1000000 | (9 << 10) | (rn << 5) | 31) >>> 0; }
-  function BEQ(off) { return (0x54000000 | ((off & 0x7ffff) << 5) | 0) >>> 0; }
-  function BNE(off) { return (0x54000000 | ((off & 0x7ffff) << 5) | 1) >>> 0; }
-  function LDRLIT(rt, off) { return (0x58000000 | ((off & 0x7ffff) << 5) | rt) >>> 0; }
-  function BLR(rn) { return (0xD63F0000 | (rn << 5)) >>> 0; }
-  function RET() { return 0xD65F03C0; }
-  function BSELF() { return 0x14000000; }   // b . (不可达自旋)
-  function NOP() { return 0xD503201F; }
-  function MOVW0Z() { return 0x52800000; }  // movz w0, #0
-  function LDRW(rt, rn) { return (0xB9400000 | (rn << 5) | rt) >>> 0; }
-  function STRW(rt, rn) { return (0xB9000000 | (rn << 5) | rt) >>> 0; }
-  function ADD1(rd, rn) { return (0x11000000 | (1 << 10) | (rn << 5) | rd) >>> 0; }
-
-  var CELL = Memory.alloc(64);   // RW 计数器块: [0]=kill吞 [8]=tgkill吞 [16]=raise吞
-  var exitBlocked = 0;
-  var EXIT_CB = new NativeCallback(function (code) {
-    exitBlocked++;
-    if (exitBlocked <= 3) {
-      var bt = '(bt失败)';
-      try {
-        // R11: 回溯不用 DebugSymbol(其符号解析走 loader 锁 — ABBA 风险); 用模块名+偏移
-        // (findModuleByAddress 走 /proc maps 缓存, 零锁) — 定位调用者模块足够。
-        bt = Thread.backtrace().slice(0, 10).map(function (a) {
-            var m = Process.findModuleByAddress(a);
-            return m ? (m.name + '+0x' + a.sub(m.base).toString(16)) : a.toString();
-        }).join(' | ');
-      } catch (e) {}
-      L('[EXITGUARD2] exit(' + code + ') 已吞 #' + exitBlocked + ' bt=' + bt);
-    } else if (exitBlocked % 200 === 0) {
-      R1KEY({ ev: 'exit_block', n: exitBlocked });
-    }
-    try { Thread.sleep(0.2); } catch (e) {}   // R9 同款热循环垫
-  }, 'void', ['int']);
-  R10_KEEP.push(EXIT_CB, CELL);   // 生命周期锚: 防脚本 GC 释放回调/计数器 (stub 字面量只存裸地址)
-
-  // 专用可执行页: mmap 一整页 (独立于 frida 内存池 — 避免 sub-page mprotect 误伤池数据;
-  //   mmap 页不受 JS GC 影响, 字面量裸地址永久有效)
-  var MMAP = new NativeFunction(Module.findExportByName('libc.so', 'mmap'),
-      'pointer', ['pointer', 'int', 'int', 'int', 'int', 'long']);
-  var MPROTECT = new NativeFunction(Module.findExportByName('libc.so', 'mprotect'),
-      'int', ['pointer', 'int', 'int']);
-  var PAGE = MMAP(ptr(0), 0x1000, 3 /*PROT_READ|WRITE*/, 0x22 /*MAP_PRIVATE|ANON*/, -1, 0);
-  if (PAGE.isNull() || PAGE.toString(16) === 'ffffffffffffffff') {
-    L('[EXITGUARD2] mmap stub 页失败 (' + PAGE + ') — 降级 Memory.alloc+protect (池页风险自担)');
-    PAGE = Memory.alloc(4096);
-    Memory.protect(PAGE, 4096, 'rwx');
-  }
-  R10_KEEP.push(MMAP, MPROTECT);
-  var PAGE_OFF = 0;
-
-  function emit(words, literals) {   // literals: {wordIdx: NativePointer value}
-    var p = PAGE.add(PAGE_OFF);
-    for (var i = 0; i < words.length; i++) p.add(i * 4).writeU32(words[i] >>> 0);
-    if (literals) {
-      for (var k in literals) { p.add(parseInt(k, 10) * 4).writePointer(literals[k]); }
-    }
-    PAGE_OFF += Math.ceil((words.length + 4) * 4 / 16) * 16;   // 16B 对齐推进
-    return p;
-  }
-  function sealPage() {
-    try { MPROTECT(PAGE, 0x1000, 5 /*PROT_READ|EXEC*/); } catch (e) {}
-  }
-
-  try {
-    // ── exit/_exit stub: w6 b.eq→w11(主进程); 子进程 w7-w9 svc exit_group 真退 ──
-    var EXITSTUB = emit([
-      movReg(17, 0),                                    // w0  mov x17, x0 (存退出码)
-      movz(8, 172), SVC(),                              // w1-2 raw getpid → x0
-      movz(16, PID_LO), movk16(16, PID_HI),             // w3-4 x16 = MAIN_PID
-      cmpReg(0, 16),                                    // w5
-      BEQ(5),                                           // w6  ==主pid → w11
-      movReg(0, 17), movz(8, 94), SVC(),                // w7-9 子进程: exit_group(码) 真退
-      BSELF(),                                          // w10 不可达自旋
-      movReg(0, 17),                                    // w11 主进程: 恢复退出码
-      LDRLIT(16, 4),                                    // w12 ldr x16, =EXIT_CB (w16)
-      BLR(16),                                          // w13 blr → JS 回调
-      RET(),                                            // w14
-      NOP()                                             // w15 padding (literal 8 对齐)
-    ], { 16: EXIT_CB });
-
-    // ── kill(pid, sig) stub: 只吞 (sig==9 && pid==主pid), 其余 raw SYS_kill(129) ──
-    var KILLSTUB = emit([
-      movReg(9, 0), movReg(10, 1),                      // w0-1 存 pid/sig
-      cmpImm9(1), BNE(13),                              // w2-3 sig≠9 → w16 真路径
-      movz(8, 172), SVC(),                              // w4-5 getpid
-      movz(16, PID_LO), movk16(16, PID_HI),             // w6-7
-      cmpReg(0, 16), BNE(7),                            // w8-9 ≠主pid → w16
-      LDRLIT(12, 12),                                   // w10 ldr x12, =CELL (w22)
-      LDRW(13, 12), ADD1(13, 13), STRW(13, 12),         // w11-13 计数器++
-      MOVW0Z(), RET(),                                  // w14-15 返回 0 (假装杀成功)
-      movReg(0, 9), movReg(1, 10),                      // w16 真路径开始
-      movz(8, 129), SVC(), RET(),                       // w18-20 raw SYS_kill
-      NOP()                                             // w21 padding
-    ], { 22: CELL });
-
-    // ── tgkill(tgid, tid, sig) stub: 只吞 (sig==9 && tgid==主pid), 其余 raw SYS_tgkill(131) ──
-    var TGKSTUB = emit([
-      movReg(9, 0), movReg(10, 1), movReg(11, 2),       // w0-2 存参
-      cmpImm9(2), BNE(11),                              // w3-4 sig≠9 → w15
-      movz(16, PID_LO), movk16(16, PID_HI),             // w5-6
-      cmpReg(9, 16), BNE(7),                            // w7-8 tgid≠主pid → w15
-      LDRLIT(12, 13),                                   // w9 ldr x12, =CELL+8 (w22)
-      LDRW(13, 12), ADD1(13, 13), STRW(13, 12),         // w10-12 计数器++
-      MOVW0Z(), RET(),                                  // w13-14
-      movReg(0, 9), movReg(1, 10), movReg(2, 11),       // w15 真路径
-      movz(8, 131), SVC(), RET(),                       // w18-20 raw SYS_tgkill
-      NOP()                                             // w21 padding
-    ], { 22: CELL.add(8) });
-
-    // ── raise(sig) stub: sig==9 → 吞; 其余 raw tgkill(getpid,gettid,sig) (POSIX 语义) ──
-    var RAISESTUB = emit([
-      cmpImm9(0), BEQ(14),                              // w0-1 sig==9 → w15 吞
-      movReg(9, 0),                                     // w2 存 sig
-      movz(8, 172), SVC(),                              // w3-4 getpid
-      movReg(10, 0),                                    // w5 x10=tgid
-      movz(8, 178), SVC(),                              // w6-7 gettid → x0
-      movReg(1, 0), movReg(0, 10), movReg(2, 9),        // w8-10 (tgid, tid, sig)
-      movz(8, 131), SVC(), RET(),                       // w11-13 raw SYS_tgkill
-      NOP(),                                            // w14
-      LDRLIT(12, 7),                                    // w15 ldr x12, =CELL+16 (w22)
-      LDRW(13, 12), ADD1(13, 13), STRW(13, 12),         // w16-18 计数器++
-      MOVW0Z(), RET(),                                  // w19-20
-      NOP()                                             // w21 padding
-    ], { 22: CELL.add(16) });
-
-    sealPage();   // 全部 stub 写完后整页 R+X (不留 RWX 面)
-
-    ['exit', '_exit'].forEach(function (n) {
-      var a = Module.findExportByName('libc.so', n);
-      if (!a) { L('[EXITGUARD2] ' + n + ' 符号未找到'); return; }
-      try {
-        Interceptor.replace(a, EXITSTUB);
-        L('[EXITGUARD2] ' + n + ' → 原生 stub (子进程真退/vfork安全, 主进程吞+回溯)');
-      } catch (e) { L('[EXITGUARD2] ' + n + ' 失败: ' + e); }
-    });
-    [['kill', KILLSTUB], ['tgkill', TGKSTUB], ['raise', RAISESTUB]].forEach(function (sp) {
-      var a = Module.findExportByName('libc.so', sp[0]);
-      if (!a) { L('[EXITGUARD2] ' + sp[0] + ' 符号未找到'); return; }
-      try {
-        Interceptor.replace(a, sp[1]);
-        L('[EXITGUARD2] ' + sp[0] + ' → 原生 stub (self-SIGKILL 吞, 其余真路径)');
-      } catch (e) { L('[EXITGUARD2] ' + sp[0] + ' 失败: ' + e); }
-    });
-    L('[EXITGUARD2] armed (pid=' + MAIN_PID + ' page=' + PAGE + ')');
-
-    // 计数器遥测: 静默吞掉的 kill/tgkill/raise 定期上报
-    var lastK = -1, lastT = -1, lastR = -1;
-    setInterval(function () {
-      try {
-        var k = CELL.readU32(), t = CELL.add(8).readU32(), r = CELL.add(16).readU32();
-        if (k !== lastK || t !== lastT || r !== lastR) {
-          lastK = k; lastT = t; lastR = r;
-          R1KEY({ ev: 'kill_block', kill: k, tgkill: t, raise: r, exit: exitBlocked });
-        }
-      } catch (e) {}
-    }, 5000);
-  } catch (e) {
-    L('[EXITGUARD2] 装配失败: ' + e);
-  }
-})();
 
 setTimeout(function BOOT() {
   try {

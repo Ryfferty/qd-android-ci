@@ -128,6 +128,10 @@ def make_on_message(pid):
                 with open(LOG, 'a') as f:
                     f.write('[R1KEY] script-error pid=%s %s\n'
                             % (pid, message.get('description', '')))
+            else:
+                # R13: 全量记录(send/其余类型) — 消息通道诊断
+                with open(LOG, 'a') as f:
+                    f.write('[R1KEY][msg pid=%s] %s\n' % (pid, str(message)[:200]))
         except Exception:
             pass
     return on_message
@@ -183,6 +187,14 @@ while time.time() < deadline:
             time.sleep(0.3)
         log('fast-attach pid=%s script_loaded ✓ (+%.2fs from catch, delay=%.2fs, js_alive=%s)'
             % (pid, time.time() - t_catch, DELAY, alive))
+        # R13: RPC ping — 实证脚本引擎真的在响应(load()返回≠执行; 旁路 console.log 通道)
+        try:
+            pong = script.exports_sync.ping()
+            log('fast-attach pid=%s rpc-ping → %s' % (pid, pong))
+            if not alive:
+                log('fast-attach pid=%s ★僵尸判定修正: rpc 通 ⇒ 脚本在跑, 是消息路由断' % pid)
+        except Exception as e:
+            log('fast-attach pid=%s rpc-ping 失败: %s' % (pid, str(e)[:120]))
         if not alive:
             # R11: 僵尸装载 = 引擎楔死嫌疑 → 立即抓全线程栈 (debuggerd -b)
             dump_thread_state(pid, 'zombie-script')
