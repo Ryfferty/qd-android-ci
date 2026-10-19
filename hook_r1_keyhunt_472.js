@@ -88,6 +88,45 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
   } catch (e) { L('[R14-EXIT] 替换失败: ' + e); }
 })();
 
+// ═══ R18: 线程名隐身(重装+诊断) — TuringFD/libknobs jniCheckFridaByTask 的已知指纹面 ═══
+// R12b 的改名版打印"未发现可改名线程"但 /proc 转储实证 gum-js-loop/gmain 存在 — 未解。
+// 本版: O_RDONLY 读 + O_WRONLY 写(拆开, 排除 O_RDWR 被拒的假说) + 前8线程逐个诊断
+// (tid/fd/n/cur 全录), 找到真因。
+(function THREADRENAME2() {
+  try {
+    var _open = new NativeFunction(Module.findExportByName('libc.so', 'open'), 'int', ['pointer', 'int', 'int']);
+    var _read = new NativeFunction(Module.findExportByName('libc.so', 'read'), 'long', ['int', 'pointer', 'long']);
+    var _write = new NativeFunction(Module.findExportByName('libc.so', 'write'), 'long', ['int', 'pointer', 'long']);
+    var _close = new NativeFunction(Module.findExportByName('libc.so', 'close'), 'int', ['int']);
+    var BAD = ['gum-js-loop', 'gmain', 'gdbus', 'pool-frida', 'frida'];
+    var renamed = [], diag = [];
+    Process.enumerateThreads().forEach(function (t) {
+      try {
+        var path = Memory.allocUtf8String('/proc/self/task/' + t.id + '/comm');
+        var fd = _open(path, 0, 0);            // O_RDONLY
+        if (fd < 0) { if (diag.length < 8) diag.push(t.id + ':fd=' + fd); return; }
+        var buf = Memory.alloc(64);
+        var n = _read(fd, buf, 63);
+        _close(fd);
+        var cur = n > 0 ? Memory.readUtf8String(buf, Math.min(n, 16)) : '';
+        if (diag.length < 8) diag.push(t.id + ':' + cur.trim());
+        var isBad = false;
+        for (var i = 0; i < BAD.length; i++) if (cur.indexOf(BAD[i]) >= 0) { isBad = true; break; }
+        if (!isBad) return;
+        var fd2 = _open(path, 1 | 512, 0);     // O_WRONLY|O_TRUNC
+        if (fd2 < 0) { diag.push(t.id + ':writefd=' + fd2); return; }
+        var name = 'Thread-' + t.id;
+        var nb = Memory.allocUtf8String(name);
+        _write(fd2, nb, name.length);
+        _close(fd2);
+        renamed.push(cur.trim() + '→' + name);
+      } catch (e) {}
+    });
+    L('[R18-RENAME] 改名: ' + (renamed.length ? renamed.join(', ') : '(无)') +
+      ' | 线程诊断(前8): ' + diag.join(' '));
+  } catch (e) { L('[R18-RENAME] 失败: ' + e); }
+})();
+
 // ═══ R15/R16: seccomp 拦裸 syscall 自杀族(exit/exit_group 任意码 + self-SIGKILL) ═══
 // R14 实证: App 自杀不走 libc exit/_exit(R9/R12b/R14 三轮 libc 级守卫全部零拦截)
 // = libmsaoaidsec VM 直接 raw syscall exit_group。libc 层不可见 ⇒ 唯一拦截层=
