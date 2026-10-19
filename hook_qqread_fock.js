@@ -79,6 +79,63 @@ function L(s) { try { console.log(s); } catch (e) { } }
 L('[FOCK] script loaded pid=' + Process.id + ' abi=' + Process.arch + ' frida=' +
   (typeof Frida !== 'undefined' ? Frida.version : '?'));
 
+// ═══ seccomp 拦裸 syscall 自杀族(qidian R15/R16 同款, 同 redroid+frida16.7.19 基建实证) ═══
+// r2 实证: attach 后 +23s 无痕死亡(无 crash trace / 无 libc exit/kill 观测) = 壳反frida检测后
+//   直接 raw syscall exit_group(360壳/腾讯系 libmsaoaidsec VM 惯用路径, libc 层不可见)。
+//   qidian 472 线 R9-R14 九轮定案同一结论, R15/R16 以 seccomp BPF 拦截后 spawn/attach 存活跑通。
+// 过滤器(18指令, python struct 预排): exit(93)/exit_group(94) 任意码 + kill(129)/tgkill(131)
+//   打主pid且sig=9 → ERRNO(EPERM); 其余 ALLOW。装载: prctl(NO_NEW_PRIVS) +
+//   seccomp(SET_MODE_FILTER, TSYNC)(aarch64 nr=277, flag=2) — TSYNC 同步全线程,
+//   后续新建线程(含壳 vfork 子)天然继承。
+(function SECCOMPGUARD() {
+  var MAIN = Process.id;
+  try {
+    var _prctl = new NativeFunction(Module.findExportByName('libc.so', 'prctl'),
+                                    'int', ['int', 'long', 'long', 'long', 'long']);
+    var FILTER = [32, 4, 251658261, 3221225655, 32, 0, 786453, 93,
+                  720917, 94, 131093, 129, 168099861, 131, 6, 2147418112,
+                  32, 16, 117440533, MAIN, 32, 24, 84148245, 9,
+                  32, 16, 50331669, MAIN, 32, 32, 16777237, 9,
+                  6, 327681, 6, 2147418112];
+    var fbuf = Memory.alloc(144);
+    for (var i = 0; i < FILTER.length; i++) {
+      Memory.writeU32(fbuf.add(i * 4), FILTER[i]);
+    }
+    var prog = Memory.alloc(16);          // struct sock_fprog {u16 len; pad; sock_filter*}
+    Memory.writeU16(prog, 18);
+    Memory.writePointer(prog.add(8), fbuf);
+    var r1 = _prctl(38, 1, 0, 0, 0);      // PR_SET_NO_NEW_PRIVS
+    // prctl(PR_SET_SECCOMP) 只罩本线程 — 必须走 seccomp()(aarch64 nr=277)+TSYNC 同步全线程
+    var _sysc = new NativeFunction(Module.findExportByName('libc.so', 'syscall'),
+                                   'long', ['long', 'long', 'long', 'pointer']);
+    var r2 = _sysc(277, 1, 2, prog);      // seccomp(SET_MODE_FILTER=1, TSYNC=2, &fprog)
+    L('[SECCOMP] NO_NEW_PRIVS=' + r1 + ' tsync_install=' + r2 +
+      ' — exit/exit_group(任意码)+self-SIGKILL → ERRNO(EPERM), 全线程生效');
+    // 双重验证: /proc/self/status 的 Seccomp 行 + kill(self,9) 探针
+    try {
+      var _fopen = new NativeFunction(Module.findExportByName('libc.so', 'fopen'),
+                                      'pointer', ['pointer', 'pointer']);
+      var _fgets = new NativeFunction(Module.findExportByName('libc.so', 'fgets'),
+                                      'pointer', ['pointer', 'int', 'pointer']);
+      var _fclose = new NativeFunction(Module.findExportByName('libc.so', 'fclose'),
+                                       'int', ['pointer']);
+      var fp = _fopen(Memory.allocUtf8String('/proc/self/status'), Memory.allocUtf8String('r'));
+      if (!fp.isNull()) {
+        var line = Memory.alloc(256);
+        while (!_fgets(line, 255, fp).isNull()) {
+          var txt = Memory.readUtf8String(line);
+          if (txt.indexOf('Seccomp') === 0) { L('[SECCOMP-VERIFY] ' + txt.trim()); }
+        }
+        _fclose(fp);
+      }
+    } catch (e) { }
+    try {
+      var kr = _sysc(129, MAIN, 9, 0);   // kill(self,9) 探针: 期望 EPERM(-1)
+      L('[SECCOMP-VERIFY] kill(self,9) probe=' + kr + ' (负值=过滤器活着; 0=致命没拦住)');
+    } catch (e) { }
+  } catch (e) { L('[SECCOMP] 装载异常: ' + e); }
+})();
+
 // ═══ Java 层状态 ═══
 var SEQ = 0;
 var HITS = { h1: 0, h2: 0, h3: 0, h4: 0, setup: 0, keypool: 0 };
