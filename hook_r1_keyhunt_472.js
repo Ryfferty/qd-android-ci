@@ -41,6 +41,36 @@ if (typeof process !== "undefined" && process.setExceptionHandler) {
   process.setExceptionHandler(function (d) { try { R1KEY({ ev: "native_exception", addr: String(d.address), type: d.type }); } catch (e) {} return false; });
 }
 
+// ═══ R9: exit 自杀中和 (R6/R8 logcat 实证: anti-frida 检测 → exit(0), 47/47 干净退出) ═══
+// 结构性绑定: agent 早到(R8 fast-attach +0.1~1s)→检查先于 knobs init(209循环事件全零);
+// agent 晚到(R6)→r 加密先于 attach(cfb=0, sslwire 只见缓存重放)。两头堵 ⇒ 唯一破局=
+// 让自杀失败: exit/_exit 替换为 no-op(每次垫 200ms 防热循环烧 CPU), 调用者回溯记录
+// (前3次带栈, 供 R10 直钩检测函数)。R3 曾撤 R15 的"exit 冻 30s"(spawn 模式卡死壳
+// init=convoy 死法); 本版 200ms 短垫 + attach 模式(R8 实证早 agent 与 LSPatch init
+// 共存无崩) — 若 R9 见 loader 崩(ClassNotFound 系)再改条件版(按回溯模块放行)。
+(function EXITGUARD() {
+  var blocked = 0;
+  ['exit', '_exit'].forEach(function (n) {
+    var a = Module.findExportByName('libc.so', n);
+    if (!a) { L('[EXITGUARD] ' + n + ' 符号未找到'); return; }
+    try {
+      Interceptor.replace(a, new NativeCallback(function (code) {
+        blocked++;
+        if (blocked <= 3) {
+          try {
+            var bt = Thread.backtrace().map(DebugSymbol.fromAddress).slice(0, 8).join(' | ');
+            L('[EXITGUARD] ' + n + '(' + code + ') 已中和 #' + blocked + ' bt=' + bt);
+          } catch (e) { L('[EXITGUARD] ' + n + '(' + code + ') 已中和 #' + blocked + ' (bt失败)'); }
+        } else if (blocked % 200 === 0) {
+          R1KEY({ ev: 'exit_block', n: blocked });
+        }
+        try { Thread.sleep(0.2); } catch (e) {}
+      }, 'void', ['int']));
+      L('[EXITGUARD] ' + n + ' 已中和(替换为no-op+200ms垫)');
+    } catch (e) { L('[EXITGUARD] ' + n + ' 替换失败: ' + e); }
+  });
+})();
+
 setTimeout(function BOOT() {
   try {
   // ═══ R3 纯净版: R15 存活件全撤 ═══
