@@ -293,6 +293,40 @@ jobs:
           adb -s $B exec-out "cat /data/data/$APP/files/r_key_info 2>/dev/null" > /tmp/out/prefs/r_key_info.bin
           adb -s $B exec-out "tar -c -C /data/data/$APP files/mmkv 2>/dev/null" > /tmp/out/prefs/mmkv.tar
           adb -s $B shell "ls -la /data/data/$APP/databases/ /data/data/$APP/files/mmkv/ 2>/dev/null" > /tmp/out/prefs/dbs_mmkv_listing.txt
+          # ── R7: databases 取证(r 缓存定位) — 全库拉回 runner, 剔除 QDConfig*(含
+          #    凭据, 绝不上传), e7 密扫兜底剔除残留, r 密文字节定位(路径只入日志) ──
+          adb -s $B exec-out "tar -c -C /data/data/$APP databases" > /tmp/dbs_all.tar 2>/dev/null
+          rm -rf /tmp/dbs_pull && mkdir -p /tmp/dbs_pull
+          tar -x -C /tmp/dbs_pull -f /tmp/dbs_all.tar 2>/dev/null
+          rm -f /tmp/dbs_pull/databases/QDConfig* 2>/dev/null
+          python3 - > /tmp/out/prefs/r_cache_hits.txt 2>/dev/null <<'PYEOF'
+            import glob, json
+            rh = None
+            for line in open('/tmp/keyhunt_collect.log', 'rb').read().split(b'\n'):
+                if line.startswith(b'[R1KEY] ') and b'"ev":"sslwire"' in line:
+                    try:
+                        rh = json.loads(line[8:].decode('utf-8', 'ignore'))['r']; break
+                    except Exception:
+                        pass
+            if rh:
+                needle = bytes.fromhex(rh[:96])
+                for p in sorted(glob.glob('/tmp/dbs_pull/databases/*')):
+                    try:
+                        if needle in open(p, 'rb').read():
+                            print('r-cache-hit:', p)
+                    except Exception:
+                        pass
+                print('searched r prefix:', rh[:32])
+          PYEOF
+          while read -r PAT; do
+            [ -z "$PAT" ] && continue
+            for F in $(grep -rlF -- "$PAT" /tmp/dbs_pull/databases/ 2>/dev/null); do
+              echo "credential-hit-removed: $F" >> /tmp/out/prefs/r_cache_hits.txt
+              rm -f "$F"
+            done
+          done < /tmp/e7_secrets.txt 2>/dev/null
+          tar -c -C /tmp/dbs_pull databases > /tmp/out/prefs/databases_no_qdconfig.tar 2>/dev/null
+          rm -rf /tmp/dbs_pull /tmp/dbs_all.tar
           # ── 现场收割: harvest → verdict (完整key只落artifact, job log打HIT行与指纹) ──
           python3 ci/r1_gen.py harvest /tmp/keyhunt_collect.log 2>&1 | tee /tmp/out/keyhunt_verdict.txt
           echo "=== 事件计数 ==="
