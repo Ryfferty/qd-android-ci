@@ -48,6 +48,45 @@ R1KEY({ ev: "script_loaded", t: Date.now(), frida: (typeof Frida !== "undefined"
 // R13: RPC ping — daemon 侧实证脚本真的在执行(load()返回≠执行, R8-R12b 全部僵尸:
 // 每轮 log 只有 CLI 首挂的 1 个 script_loaded 事件, 209 次快挂零执行)
 rpc.exports.ping = function () { return 'pong-' + Process.id; };
+
+// ═══ R14: exit 吞噬(只挂 exit 不碰 _exit = vfork 子进程天然安全) ═══
+// 完整因果链(R6-R13 九轮定案): consent → initApplication → System.loadLibrary
+// (libmsaoaidsec) → 其 VM 混淆检测 frida → **exit(0)** → init 死在此, 永远到不了
+// libknobs/knobs init/r1 加密。而 fresh 首启的 consent 在我们 attach 之后(driver
+// 隐私页门控), r 加密发生在 consent 触发的 init 里 ⇒ **吞掉这次 exit, init 续走,
+// r1 首发加密落进有钩窗口**。
+// 子进程安全: POSIX 规定 vfork 子进程只能调 _exit() — 我们只替换 exit, libfock
+// 的 vfork 子进程(bl _exit)零接触(实证: R9 挂 vfork 子进程进 JS runtime = wedge,
+// A5 的手编 stub = 污染 VM 寄存器 SIGSEGV; 本版纯 frida NativeCallback = ABI 由
+// frida 机器保证)。主 pid 吞噬 + 前3次带调用者回溯(检测函数定位弹药)。
+(function EXITSWALLOW() {
+  var MAIN = Process.id;
+  var _syscall = null;
+  try {
+    _syscall = new NativeFunction(Module.findExportByName('libc.so', 'syscall'),
+                                  'long', ['long', 'long', 'long', 'long']);
+  } catch (e) {}
+  var a = Module.findExportByName('libc.so', 'exit');
+  if (!a) { L('[R14-EXIT] exit 符号未找到'); return; }
+  var cnt = 0;
+  try {
+    Interceptor.replace(a, new NativeCallback(function (code) {
+      var me = Process.id;
+      if (me !== MAIN) {   // 保险: 非主 pid(vfork 子误用 exit 的违规场景)真退
+        if (_syscall) { _syscall(94, code); return; }
+      }
+      cnt++;
+      if (cnt <= 3) {
+        try {
+          L('[R14-EXIT] exit(' + code + ') 吞噬 #' + cnt + ' bt=' +
+            Thread.backtrace().map(DebugSymbol.fromAddress).slice(0, 6).join(' | '));
+        } catch (e) { L('[R14-EXIT] exit(' + code + ') 吞噬 #' + cnt + ' (bt失败)'); }
+      } else if (cnt % 100 === 0) { R1KEY({ ev: 'exit_block', n: cnt }); }
+      // 主 pid: 吞噬(直接返回, 调用方继续走)
+    }, 'void', ['int']));
+    L('[R14-EXIT] exit 吞噬钩 armed (主pid=' + MAIN + ' 吞; _exit 未碰=vfork子安全)');
+  } catch (e) { L('[R14-EXIT] 替换失败: ' + e); }
+})();
 L('[R13] script top-level executed (pid=' + Process.id + ' t=' + Date.now() + ')');
 if (typeof process !== "undefined" && process.setExceptionHandler) {
   process.setExceptionHandler(function (d) { try { R1KEY({ ev: "native_exception", addr: String(d.address), type: d.type }); } catch (e) {} return false; });

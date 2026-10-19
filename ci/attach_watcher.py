@@ -34,8 +34,8 @@ OLD = (sys.argv[2] if len(sys.argv) > 2 else '').strip()
 APP = 'com.qidian.QDReader'
 B = 'localhost:5555'
 LOG = '/tmp/keyhunt_collect.log'
-ADAPT = os.environ.get('CFB_CHECK', '1') == '1'
-DELAY = float(os.environ.get('EARLY_DELAY_MS', '800')) / 1000.0
+ADAPT = os.environ.get('CFB_CHECK', '0') == '1'
+DELAY = float(os.environ.get('EARLY_DELAY_MS', '3000')) / 1000.0
 DELAY_MAX = 0.8
 DELAY_MIN = 0.0
 DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
