@@ -112,8 +112,9 @@ rpc.exports.ping = function () { return 'pong-' + Process.id; };
                                           // 但 TSYNC 只要求调用线程已置位)
     // prctl(PR_SET_SECCOMP) 只罩本线程(gum-js) — VM 在主线程的裸 syscall 拦不到 ⇒
     // 必须走 seccomp() 系统调用(aarch64 nr=277) + TSYNC(flag=2) 同步全线程
+    // R15b: 指针参数位声明为 'pointer'(R15 的 'long'+NativePointer → TypeError Int64 expected)
     var _sysc = new NativeFunction(Module.findExportByName('libc.so', 'syscall'),
-                                   'long', ['long', 'long', 'long', 'long']);
+                                   'long', ['long', 'long', 'long', 'pointer']);
     var r2 = _sysc(277, 1, 2, prog);       // seccomp(SET_MODE_FILTER, TSYNC, &fprog)
     L('[R15-SECCOMP] NO_NEW_PRIVS=' + r1 + ' tsync_install=' + r2 +
       ' — exit/exit_group(code==0) → ERRNO(0), 全线程生效');
